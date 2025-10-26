@@ -1,0 +1,396 @@
+# Elastic License 2.0
+# Copyright (c) 2025 sliptonic
+# SPDX-License-Identifier: Elastic-2.0
+
+"""
+Integration tests for ToolAssembly bulk API endpoints.
+
+Tests bulk-first design: all operations accept arrays.
+
+Assumptions:
+- POST /api/v1/tool-assemblies - Create (bulk)
+- GET /api/v1/tool-assemblies - List/query with filters
+- PUT /api/v1/tool-assemblies - Update (bulk) with version checking
+- DELETE /api/v1/tool-assemblies - Delete (bulk)
+- components is JSON array of {item_id, role, position, gauge_offset}
+- Multi-tenant: Users only access their own data
+"""
+import pytest
+from datetime import datetime, UTC
+
+
+@pytest.mark.integration
+def test_bulk_create_tool_assemblies(client, db_session):
+    """Test bulk create of tool assemblies.
+    
+    Assumptions:
+    - Accepts array of assemblies
+    - components is array of tool item references
+    - Returns success count and per-item results
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    assemblies = [
+        {
+            "name": "10mm End Mill Assembly",
+            "description": "Complete cutting tool with holder",
+            "components": [
+                {"item_id": "tool-1", "role": "cutter", "position": 0},
+                {"item_id": "holder-1", "role": "holder", "position": 1}
+            ]
+        },
+        {
+            "name": "Drill Assembly",
+            "description": "HSS drill with ER collet",
+            "components": [
+                {"item_id": "drill-1", "role": "cutter", "position": 0}
+            ]
+        }
+    ]
+    
+    client.cookies.set("session", session_id)
+    
+    response = client.post(
+        "/api/v1/tool-assemblies",
+        json={"items": assemblies}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert data["success_count"] == 2
+    assert len(data["results"]) == 2
+    assert data["error_count"] == 0
+    
+    # Verify components stored correctly
+    assert data["results"][0]["components"] == assemblies[0]["components"]
+
+
+@pytest.mark.integration
+def test_create_validates_required_fields(client, db_session):
+    """Test validation of required fields.
+    
+    Assumptions:
+    - name and components are required
+    - Returns error for invalid items
+    - Partial success supported
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    assemblies = [
+        {
+            "name": "Valid Assembly",
+            "components": [{"item_id": "tool-1", "role": "cutter"}]
+        },
+        {
+            # Missing required 'name' field
+            "components": [{"item_id": "tool-2", "role": "cutter"}]
+        }
+    ]
+    
+    client.cookies.set("session", session_id)
+    
+    response = client.post(
+        "/api/v1/tool-assemblies",
+        json={"items": assemblies}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert data["success_count"] == 1
+    assert data["error_count"] == 1
+    assert len(data["errors"]) == 1
+
+
+@pytest.mark.integration
+def test_bulk_read_tool_assemblies(client, db_session):
+    """Test bulk read/list of tool assemblies.
+    
+    Assumptions:
+    - GET returns array of assemblies
+    - Filters by user_id automatically
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    # Create some assemblies
+    for i in range(3):
+        assembly = ToolAssembly(
+            name=f"Assembly {i}",
+            components=[{"item_id": f"tool-{i}", "role": "cutter"}],
+            user_id=user.id,
+            created_by=user.id,
+            updated_by=user.id
+        )
+        db_session.add(assembly)
+    db_session.commit()
+    
+    client.cookies.set("session", session_id)
+    
+    response = client.get("/api/v1/tool-assemblies")
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert "items" in data
+    assert len(data["items"]) == 3
+    assert data["total"] == 3
+
+
+@pytest.mark.integration
+def test_read_filters_by_user(client, db_session):
+    """Test multi-tenant isolation.
+    
+    Assumptions:
+    - Users only see their own assemblies
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user1 = create_user(db_session, "user1@example.com", "Password123")
+    user2 = create_user(db_session, "user2@example.com", "Password123")
+    
+    # Create assemblies for each user
+    for user in [user1, user2]:
+        assembly = ToolAssembly(
+            name=f"Assembly for {user.email}",
+            components=[{"item_id": "tool-1", "role": "cutter"}],
+            user_id=user.id,
+            created_by=user.id,
+            updated_by=user.id
+        )
+        db_session.add(assembly)
+    db_session.commit()
+    
+    # User1 session
+    session1 = create_session(user1.id)
+    client.cookies.set("session", session1)
+    
+    response = client.get("/api/v1/tool-assemblies")
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Should only see their own assembly
+    assert len(data["items"]) == 1
+    assert data["items"][0]["user_id"] == user1.id
+
+
+@pytest.mark.integration
+def test_bulk_update_tool_assemblies(client, db_session):
+    """Test bulk update with version checking.
+    
+    Assumptions:
+    - Updates version field
+    - Checks version for conflicts
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    # Create assemblies
+    assembly1 = ToolAssembly(
+        name="Assembly 1",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id,
+        version=1
+    )
+    assembly2 = ToolAssembly(
+        name="Assembly 2",
+        components=[{"item_id": "tool-2", "role": "cutter"}],
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id,
+        version=1
+    )
+    db_session.add_all([assembly1, assembly2])
+    db_session.commit()
+    
+    # Update both
+    updates = [
+        {
+            "id": assembly1.id,
+            "version": 1,
+            "description": "Updated description 1"
+        },
+        {
+            "id": assembly2.id,
+            "version": 1,
+            "description": "Updated description 2"
+        }
+    ]
+    
+    client.cookies.set("session", session_id)
+    
+    response = client.put(
+        "/api/v1/tool-assemblies",
+        json={"items": updates}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert data["success_count"] == 2
+    assert data["error_count"] == 0
+    
+    # Verify version incremented
+    for result in data["results"]:
+        assert result["version"] == 2
+
+
+@pytest.mark.integration
+def test_update_detects_version_conflict(client, db_session):
+    """Test version conflict detection.
+    
+    Assumptions:
+    - Update with wrong version fails
+    - Returns error with conflict details
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    # Create assembly
+    assembly = ToolAssembly(
+        name="Test Assembly",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id,
+        version=2
+    )
+    db_session.add(assembly)
+    db_session.commit()
+    
+    # Try to update with old version
+    client.cookies.set("session", session_id)
+    
+    response = client.put(
+        "/api/v1/tool-assemblies",
+        json={
+            "items": [{
+                "id": assembly.id,
+                "version": 1,  # Wrong version
+                "description": "Updated"
+            }]
+        }
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert data["success_count"] == 0
+    assert data["error_count"] == 1
+    assert "version" in data["errors"][0]["message"].lower() or "conflict" in data["errors"][0]["message"].lower()
+
+
+@pytest.mark.integration
+def test_bulk_delete_tool_assemblies(client, db_session):
+    """Test bulk delete of assemblies.
+    
+    Assumptions:
+    - DELETE accepts array of IDs
+    - Returns success count
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    # Create assemblies
+    assemblies = []
+    for i in range(3):
+        assembly = ToolAssembly(
+            name=f"Assembly {i}",
+            components=[{"item_id": f"tool-{i}", "role": "cutter"}],
+            user_id=user.id,
+            created_by=user.id,
+            updated_by=user.id
+        )
+        assemblies.append(assembly)
+        db_session.add(assembly)
+    db_session.commit()
+    
+    # Delete first two
+    client.cookies.set("session", session_id)
+    
+    response = client.request(
+        "DELETE",
+        "/api/v1/tool-assemblies",
+        json={"ids": [assemblies[0].id, assemblies[1].id]}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert data["success_count"] == 2
+    assert data["error_count"] == 0
+    
+    # Verify deletion
+    remaining = db_session.query(ToolAssembly).filter(ToolAssembly.user_id == user.id).all()
+    assert len(remaining) == 1
+
+
+@pytest.mark.integration
+def test_pagination(client, db_session):
+    """Test pagination of results.
+    
+    Assumptions:
+    - Supports limit and offset
+    - Returns total count
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+    
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+    
+    # Create 15 assemblies
+    for i in range(15):
+        assembly = ToolAssembly(
+            name=f"Assembly {i}",
+            components=[{"item_id": f"tool-{i}", "role": "cutter"}],
+            user_id=user.id,
+            created_by=user.id,
+            updated_by=user.id
+        )
+        db_session.add(assembly)
+    db_session.commit()
+    
+    # Get first page
+    client.cookies.set("session", session_id)
+    
+    response = client.get("/api/v1/tool-assemblies?limit=10&offset=0")
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    assert len(data["items"]) == 10
+    assert data["total"] == 15
+    assert data["limit"] == 10
+    assert data["offset"] == 0

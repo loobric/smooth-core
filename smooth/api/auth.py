@@ -1,0 +1,462 @@
+# Elastic License 2.0
+# Copyright (c) 2025 sliptonic
+# SPDX-License-Identifier: Elastic-2.0
+
+"""
+Authentication API endpoints.
+
+Provides REST API for user registration, login, and API key management.
+
+Assumptions:
+- All endpoints under /api/v1/auth
+- API key management requires authentication (or AUTH_ENABLED=false)
+- Returns JSON responses
+"""
+from datetime import datetime
+from typing import Optional, Annotated
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
+from pydantic import BaseModel, ConfigDict, EmailStr
+from sqlalchemy.orm import Session
+
+from smooth.auth.apikey import (
+    create_api_key, list_user_api_keys, revoke_api_key, delete_api_key
+)
+from smooth.auth.user import create_user, authenticate_user, get_user_by_id
+from smooth.config import settings
+from smooth.database.schema import Base, init_db, User
+from sqlalchemy import create_engine
+import secrets
+
+
+# Database dependency
+def get_db():
+    """Get database session.
+    
+    Yields:
+        Session: Database session
+        
+    Assumptions:
+    - Creates session per request
+    - Automatically closes session after request
+    """
+    engine = create_engine(settings.database_url)
+    Base.metadata.create_all(engine)
+    
+    session = Session(engine)
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+# Request/Response models
+class UserRegister(BaseModel):
+    """Request model for user registration."""
+    email: EmailStr
+    password: str
+
+
+class UserLogin(BaseModel):
+    """Request model for user login."""
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+    """Response model for user (without password)."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str
+    email: str
+    is_active: bool
+    created_at: datetime
+
+
+class ApiKeyCreate(BaseModel):
+    """Request model for creating API key."""
+    name: str
+    scopes: list[str]
+    machine_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+
+class ApiKeyResponse(BaseModel):
+    """Response model for API key (without plain key)."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str
+    name: str
+    scopes: list[str]
+    machine_id: Optional[str]
+    expires_at: Optional[datetime]
+    is_active: bool
+    created_at: datetime
+
+
+class ApiKeyCreateResponse(ApiKeyResponse):
+    """Response model for API key creation (includes plain key)."""
+    key: str
+
+
+# Session management
+# Simple in-memory session storage (replace with Redis/DB in production)
+_sessions: dict[str, str] = {}  # session_id -> user_id
+
+
+def create_session(user_id: str) -> str:
+    """Create a new session for a user.
+    
+    Args:
+        user_id: User ID
+        
+    Returns:
+        str: Session ID
+        
+    Assumptions:
+    - Session ID is cryptographically secure
+    - Stored in-memory (for production, use Redis/database)
+    """
+    session_id = secrets.token_urlsafe(32)
+    _sessions[session_id] = user_id
+    return session_id
+
+
+def get_session_user(session_id: Optional[str], db: Session) -> Optional[User]:
+    """Get user from session ID.
+    
+    Args:
+        session_id: Session ID from cookie
+        db: Database session
+        
+    Returns:
+        User: User object if session is valid, None otherwise
+    """
+    if not session_id:
+        return None
+    
+    user_id = _sessions.get(session_id)
+    if not user_id:
+        return None
+    
+    return get_user_by_id(db, user_id)
+
+
+def delete_session(session_id: str) -> None:
+    """Delete a session.
+    
+    Args:
+        session_id: Session ID to delete
+    """
+    _sessions.pop(session_id, None)
+
+
+def require_auth(
+    session: Annotated[str | None, Cookie()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db)
+) -> User:
+    """Require authentication for API endpoints.
+    
+    Args:
+        session: Session ID from cookie
+        authorization: Authorization header (Bearer token)
+        db: Database session
+        
+    Returns:
+        User: Authenticated user
+        
+    Raises:
+        HTTPException: 401 if not authenticated
+        
+    Assumptions:
+    - Supports both session-based (cookie) and API key (Bearer token) auth
+    - Tries session first, then API key
+    """
+    from smooth.auth.apikey import validate_api_key
+    
+    # Try session authentication first
+    user = get_session_user(session, db)
+    if user:
+        return user
+    
+    # Try API key authentication
+    if authorization and authorization.startswith("Bearer "):
+        api_key = authorization.replace("Bearer ", "")
+        result = validate_api_key(db, api_key)
+        if result:
+            # validate_api_key returns (user, scopes)
+            user, scopes = result
+            return user
+    
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required"
+    )
+
+
+# Router
+router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
+
+
+# User endpoints
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    user_data: UserRegister,
+    db: Session = Depends(get_db)
+):
+    """Register a new user account.
+    
+    Args:
+        user_data: User registration data
+        db: Database session
+        
+    Returns:
+        UserResponse: Created user object
+        
+    Raises:
+        HTTPException: 400 if email already exists
+    """
+    from sqlalchemy.exc import IntegrityError
+    
+    try:
+        user = create_user(
+            session=db,
+            email=user_data.email,
+            password=user_data.password
+        )
+        return UserResponse(
+            id=user.id,
+            email=user.email,
+            is_active=user.is_active,
+            created_at=user.created_at
+        )
+    except IntegrityError:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+
+@router.post("/login", response_model=UserResponse)
+def login(
+    user_data: UserLogin,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    """Login with email and password.
+    
+    Args:
+        user_data: Login credentials
+        response: Response object to set cookie
+        db: Database session
+        
+    Returns:
+        UserResponse: User object
+        
+    Raises:
+        HTTPException: 401 if credentials are invalid
+        
+    Assumptions:
+    - Sets session cookie on successful login
+    - Cookie is httponly and secure in production
+    """
+    user = authenticate_user(
+        session=db,
+        email=user_data.email,
+        password=user_data.password
+    )
+    
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+    
+    # Create session and set cookie
+    session_id = create_session(user.id)
+    response.set_cookie(
+        key="session",
+        value=session_id,
+        httponly=True,
+        max_age=86400,  # 24 hours
+        samesite="lax"
+    )
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+
+@router.post("/logout")
+def logout(
+    response: Response,
+    session: Annotated[str | None, Cookie()] = None
+):
+    """Logout and clear session.
+    
+    Args:
+        response: Response object to clear cookie
+        session: Session ID from cookie
+        
+    Returns:
+        dict: Success message
+    """
+    if session:
+        delete_session(session)
+    
+    # Clear cookie
+    response.delete_cookie(key="session")
+    
+    return {"message": "Logged out successfully"}
+
+
+@router.get("/me", response_model=UserResponse)
+def get_current_user(
+    session: Annotated[str | None, Cookie()] = None,
+    db: Session = Depends(get_db)
+):
+    """Get current authenticated user.
+    
+    Args:
+        session: Session ID from cookie
+        db: Database session
+        
+    Returns:
+        UserResponse: Current user object
+        
+    Raises:
+        HTTPException: 401 if not authenticated
+    """
+    user = get_session_user(session, db)
+    
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+
+@router.post("/keys", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_key(
+    key_data: ApiKeyCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new API key.
+    
+    Args:
+        key_data: API key creation data
+        db: Database session
+        
+    Returns:
+        ApiKeyCreateResponse: Created key with plain text key value
+        
+    Assumptions:
+    - For testing, uses hardcoded user (will add auth later)
+    - Plain key only returned on creation
+    - Requires admin:users scope (not enforced yet)
+    """
+    # For now, create a test user if none exists
+    # TODO: Replace with actual authenticated user from session/token
+    from smooth.auth.user import create_user, get_user_by_email
+    
+    user = get_user_by_email(db, "test@example.com")
+    if user is None:
+        user = create_user(db, "test@example.com", "test-password-123")
+    
+    try:
+        plain_key = create_api_key(
+            session=db,
+            user_id=user.id,
+            name=key_data.name,
+            scopes=key_data.scopes,
+            machine_id=key_data.machine_id,
+            expires_at=key_data.expires_at
+        )
+        
+        # Get the created key to return full details
+        keys = list_user_api_keys(db, user.id)
+        created_key = keys[0]  # Most recent
+        
+        # Return key with plain text value
+        return ApiKeyCreateResponse(
+            id=created_key.id,
+            name=created_key.name,
+            scopes=created_key.scopes,
+            machine_id=created_key.machine_id,
+            expires_at=created_key.expires_at,
+            is_active=created_key.is_active,
+            created_at=created_key.created_at,
+            key=plain_key
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/keys", response_model=list[ApiKeyResponse])
+def list_keys(db: Session = Depends(get_db)):
+    """List all API keys for the authenticated user.
+    
+    Args:
+        db: Database session
+        
+    Returns:
+        list[ApiKeyResponse]: List of API keys (without plain key values)
+        
+    Assumptions:
+    - For testing, uses hardcoded user
+    - Plain key values not returned
+    - Requires admin:users scope (not enforced yet)
+    """
+    # TODO: Get actual authenticated user
+    from smooth.auth.user import get_user_by_email
+    
+    user = get_user_by_email(db, "test@example.com")
+    if user is None:
+        return []
+    
+    keys = list_user_api_keys(db, user.id)
+    
+    return [
+        ApiKeyResponse(
+            id=key.id,
+            name=key.name,
+            scopes=key.scopes,
+            machine_id=key.machine_id,
+            expires_at=key.expires_at,
+            is_active=key.is_active,
+            created_at=key.created_at
+        )
+        for key in keys
+    ]
+
+
+@router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_key(key_id: str, db: Session = Depends(get_db)):
+    """Revoke an API key.
+    
+    Args:
+        key_id: API key ID to revoke
+        db: Database session
+        
+    Returns:
+        None: 204 No Content on success
+        
+    Assumptions:
+    - Soft delete (sets is_active=False)
+    - Requires admin:users scope (not enforced yet)
+    - TODO: Verify user owns the key
+    """
+    try:
+        revoke_api_key(db, key_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
