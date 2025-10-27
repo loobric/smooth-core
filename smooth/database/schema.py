@@ -70,6 +70,9 @@ class User(Base, TimestampMixin, VersionMixin):
     - Email is unique
     - Password is hashed (never plaintext)
     - Users own their tool data (multi-tenant)
+    - role: "user" (default), "manufacturer", "admin"
+    - manufacturer_profile: JSON field for manufacturer company info
+    - is_verified: Partnership verification for manufacturers
     """
     __tablename__ = "users"
     
@@ -78,6 +81,9 @@ class User(Base, TimestampMixin, VersionMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    role: Mapped[str] = mapped_column(String(50), default="user", nullable=False, index=True)
+    manufacturer_profile: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     # Relationships
     api_keys: Mapped[list["ApiKey"]] = relationship("ApiKey", back_populates="user")
@@ -136,6 +142,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - geometry and material are JSON fields for nested data
     - shape_data stores tool shape file references (FreeCAD .FCStd, STEP, STL, etc.)
     - iso_13399_reference is optional for standards compliance
+    - parent_tool_id: References another ToolItem if copied from catalog (nullable)
     - Indexes on version and updated_at for change detection queries
     """
     __tablename__ = "tool_items"
@@ -153,6 +160,29 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     capabilities: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     shape_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     iso_13399_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parent_tool_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("tool_items.id"), nullable=True, index=True)
+
+
+class ManufacturerCatalog(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Manufacturer catalog model - collections of catalog tools.
+    
+    Assumptions:
+    - user_id is manufacturer owner (role="manufacturer")
+    - tool_ids is JSON array of ToolItem IDs in this catalog
+    - tags is JSON array for searchability (e.g., ["lathe", "aluminum"])
+    - Same tool can exist in multiple catalogs
+    - is_published: only published catalogs visible to public
+    - catalog_year is optional (e.g., 2024)
+    """
+    __tablename__ = "manufacturer_catalogs"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    catalog_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tool_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
 
 class ToolAssembly(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
