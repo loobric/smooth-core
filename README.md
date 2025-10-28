@@ -39,7 +39,7 @@ Smooth Core's data model is informed by industry standards while remaining pragm
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and setup
-git clone https://github.com/yourusername/smooth-core.git
+git clone https://github.com/loobric/smooth-core.git
 cd smooth-core
 
 # Create virtual environment and install dependencies
@@ -159,17 +159,110 @@ pytest -v
 
 **Test coverage:** 90%+ across core modules
 
-## Database Support
+## Database Configuration
 
-**Development/Testing:**
-- SQLite (default, no setup required)
+Smooth Core supports multiple database backends via SQLAlchemy. Choose based on your deployment needs:
 
-**Production:**
-- PostgreSQL (recommended)
-- MySQL/MariaDB (supported via SQLAlchemy)
+### SQLite (Recommended for Self-Hosting)
 
-**Migrations:**
-Currently using `init_db()` for development. Alembic migrations planned for production deployments.
+**Best for:**
+- Single-instance deployments
+- Personal or small team use
+- Tool libraries under 10,000 items
+- Simple backup requirements
+- Quick setup with minimal infrastructure
+
+**Configuration:**
+```bash
+# In .env file
+DATABASE_URL=sqlite:///./data/smooth.db
+```
+
+**Advantages:**
+- ✅ Zero setup - works out of the box
+- ✅ Single file database (easy backups)
+- ✅ No separate database server needed
+- ✅ Excellent performance for typical use cases
+- ✅ Reliable and mature
+
+**Backup:**
+```bash
+# Simple file copy
+cp ./data/smooth.db ./backups/smooth_$(date +%Y%m%d).db
+```
+
+### PostgreSQL (Optional for Scale)
+
+**Best for:**
+- High-concurrency environments (50+ concurrent users)
+- Very large tool libraries (10,000+ items)
+- Multi-server deployments
+- Advanced database features (replication, clustering)
+- Enterprise compliance requirements
+
+**Configuration:**
+```bash
+# In .env file
+DATABASE_URL=postgresql://username:password@host:5432/database
+
+# With docker-compose
+POSTGRES_DB=smooth
+POSTGRES_USER=smooth
+POSTGRES_PASSWORD=your-secure-password
+DATABASE_URL=postgresql://smooth:your-secure-password@db:5432/smooth
+```
+
+**Docker Compose Example:**
+```yaml
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: smooth
+      POSTGRES_USER: smooth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      
+  smooth-core:
+    environment:
+      DATABASE_URL: postgresql://smooth:${POSTGRES_PASSWORD}@db:5432/smooth
+    depends_on:
+      - db
+```
+
+**Backup:**
+```bash
+# PostgreSQL dump
+pg_dump -U smooth smooth > backup.sql
+
+# With docker
+docker exec postgres pg_dump -U smooth smooth > backup.sql
+```
+
+### MySQL/MariaDB (Alternative)
+
+MySQL and MariaDB are also supported via SQLAlchemy:
+```bash
+DATABASE_URL=mysql+pymysql://user:password@host/database
+```
+
+### Migration Path
+
+You can start with SQLite and migrate to PostgreSQL later:
+
+```bash
+# 1. Export data from SQLite
+python -m smooth.cli backup --output backup.json
+
+# 2. Update DATABASE_URL to PostgreSQL
+DATABASE_URL=postgresql://...
+
+# 3. Restore data to PostgreSQL
+python -m smooth.cli restore --input backup.json
+```
+
+**Note:** Alembic migrations for schema changes are planned for future releases.
 
 ## Client Integration
 
