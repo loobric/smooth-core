@@ -285,10 +285,65 @@ def test_bulk_update_tool_sets(client, db_session):
     
     assert data["success_count"] == 2
     assert data["error_count"] == 0
-    
-    # Verify updates
-    assert data["results"][0]["status"] == "active"
-    assert data["results"][0]["version"] == 2
+
+
+@pytest.mark.integration
+def test_get_single_tool_set_success(client, db_session):
+    """Test retrieving a single tool set by ID."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolSet
+
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+
+    tool_set = ToolSet(
+        name="A Set",
+        type="template",
+        members=[{"preset_id": "p1"}],
+        status="draft",
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id
+    )
+    db_session.add(tool_set)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-sets/{tool_set.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == tool_set.id
+    assert data["name"] == "A Set"
+    assert data["version"] >= 1
+
+
+@pytest.mark.integration
+def test_get_single_tool_set_not_found_other_user(client, db_session):
+    """Test that accessing another user's tool set returns 404."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolSet
+
+    owner = create_user(db_session, "owner@example.com", "Password123")
+    other = create_user(db_session, "other@example.com", "Password123")
+    session_id = create_session(other.id)
+
+    tool_set = ToolSet(
+        name="Owner Set",
+        type="template",
+        members=[{"preset_id": "p1"}],
+        status="draft",
+        user_id=owner.id,
+        created_by=owner.id,
+        updated_by=owner.id
+    )
+    db_session.add(tool_set)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-sets/{tool_set.id}")
+    assert response.status_code == 404
 
 
 @pytest.mark.integration

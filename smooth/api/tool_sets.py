@@ -19,7 +19,7 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -205,6 +205,22 @@ def list_tool_sets(
         limit=limit,
         offset=offset
     )
+
+
+@router.get("/{tool_set_id}", response_model=ToolSetResponse)
+def get_tool_set(
+    tool_set_id: str,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Retrieve a single ToolSet by ID if owned by the current user."""
+    tool_set = db.query(ToolSet).filter(
+        ToolSet.id == tool_set_id,
+        ToolSet.user_id == current_user.id
+    ).first()
+    if not tool_set:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _to_response(tool_set)
 
 
 @router.put("", response_model=BulkOperationResponse)
