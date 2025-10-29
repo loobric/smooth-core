@@ -116,7 +116,6 @@ def create_sample_api_keys(user_id, count=2):
             "name": f"Test Key {i+1}",
             "key_hash": key_hash,
             "scopes": scopes,
-            "machine_id": f"machine-{i+1}" if i % 2 == 0 else None,
             "expires_at": None,
             "is_active": True,
             "created_at": datetime.now(UTC).isoformat(),

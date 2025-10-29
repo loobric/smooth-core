@@ -30,7 +30,6 @@ def create_api_key(
     user_id: str,
     name: str,
     scopes: list[str],
-    machine_id: Optional[str] = None,
     expires_at: Optional[datetime] = None
 ) -> str:
     """Create a new API key for a user.
@@ -40,7 +39,6 @@ def create_api_key(
         user_id: User ID who owns the key
         name: Descriptive name for the key
         scopes: List of permission scopes (e.g., ["read", "write:items"])
-        machine_id: Optional machine restriction
         expires_at: Optional expiration datetime
         
     Returns:
@@ -72,7 +70,6 @@ def create_api_key(
         name=name,
         key_hash=key_hash,
         scopes=scopes,
-        machine_id=machine_id,
         expires_at=expires_at,
         is_active=True
     )

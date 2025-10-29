@@ -163,40 +163,6 @@ def test_api_key_with_multiple_scopes(db_session):
 
 
 @pytest.mark.unit
-def test_api_key_machine_specific(db_session):
-    """Test creating API key limited to specific machine.
-    
-    Assumptions:
-    - machine_id is optional
-    - Stored with key
-    """
-    from smooth.auth.user import create_user
-    from smooth.auth.apikey import create_api_key
-    from smooth.database.schema import ApiKey
-    from sqlalchemy import select
-    
-    user = create_user(
-        session=db_session,
-        email="test@example.com",
-        password="Password123"
-    )
-    
-    plain_key = create_api_key(
-        session=db_session,
-        user_id=user.id,
-        name="Mill-01 Key",
-        scopes=["read", "write:presets"],
-        machine_id="mill-01"
-    )
-    
-    # Verify machine_id stored
-    stmt = select(ApiKey).where(ApiKey.user_id == user.id)
-    api_key = db_session.scalar(stmt)
-    
-    assert api_key.machine_id == "mill-01"
-
-
-@pytest.mark.unit
 def test_api_key_with_expiration(db_session):
     """Test creating API key with expiration date.
     

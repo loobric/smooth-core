@@ -90,12 +90,11 @@ class User(Base, TimestampMixin, VersionMixin):
 
 
 class ApiKey(Base, TimestampMixin, VersionMixin):
-    """API key model for machine/application authentication.
+    """API key model for application authentication.
     
     Assumptions:
     - API key belongs to a user account
     - Scopes define permissions (JSON array)
-    - machine_id limits key to specific machine (optional)
     - expires_at is optional expiration timestamp
     """
     __tablename__ = "api_keys"
@@ -105,7 +104,6 @@ class ApiKey(Base, TimestampMixin, VersionMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     scopes: Mapped[list] = mapped_column(JSON, nullable=False)
-    machine_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     

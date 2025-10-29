@@ -7,7 +7,7 @@
 Smooth Core is the central REST API and database system that provides:
 - **RESTful API** with bulk-first design for efficient data operations
 - **SQLAlchemy-based database** supporting SQLite (development) and PostgreSQL (production)
-- **Authentication & authorization** with user accounts and scoped API keys
+- **Authentication & authorization** with user accounts and scoped API keys and Tag-Based Access Control
 - **Audit logging** for compliance and traceability
 - **Change detection** for efficient client synchronization
 - **Backup/restore** for disaster recovery
@@ -106,6 +106,7 @@ User
 - Scoped permissions (read, write:items, write:presets, admin:*, etc.)
 - Optional machine-specific restrictions
 - Revocable, named, with expiration
+- Tags can be assigned to API keys and resources to refine access policy
 
 ### Permission Scopes
 - `read` - Read any tool data

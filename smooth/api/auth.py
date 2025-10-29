@@ -76,7 +76,6 @@ class ApiKeyCreate(BaseModel):
     """Request model for creating API key."""
     name: str
     scopes: list[str]
-    machine_id: Optional[str] = None
     expires_at: Optional[datetime] = None
 
 
@@ -87,7 +86,6 @@ class ApiKeyResponse(BaseModel):
     id: str
     name: str
     scopes: list[str]
-    machine_id: Optional[str]
     expires_at: Optional[datetime]
     is_active: bool
     created_at: datetime
@@ -389,7 +387,6 @@ def create_key(
             user_id=user.id,
             name=key_data.name,
             scopes=key_data.scopes,
-            machine_id=key_data.machine_id,
             expires_at=key_data.expires_at
         )
         
@@ -402,7 +399,6 @@ def create_key(
             id=created_key.id,
             name=created_key.name,
             scopes=created_key.scopes,
-            machine_id=created_key.machine_id,
             expires_at=created_key.expires_at,
             is_active=created_key.is_active,
             created_at=created_key.created_at,
@@ -430,7 +426,6 @@ def list_keys(db: Session = Depends(get_db), user: User = Depends(get_authentica
             id=key.id,
             name=key.name,
             scopes=key.scopes,
-            machine_id=key.machine_id,
             expires_at=key.expires_at,
             is_active=key.is_active,
             created_at=key.created_at

@@ -282,14 +282,14 @@ def test_api_key_model_exists():
     Assumptions:
     - ApiKey model exists for Phase 3
     - Has foreign key to User
-    - Has scopes, machine_id, expiration fields
+    - Has scopes and expiration fields
     """
     from smooth.database.schema import ApiKey
     
     assert ApiKey is not None
     assert hasattr(ApiKey, 'user_id')
     assert hasattr(ApiKey, 'scopes')
-    assert hasattr(ApiKey, 'machine_id')
+    assert hasattr(ApiKey, 'expires_at')
 
 
 @pytest.mark.unit
