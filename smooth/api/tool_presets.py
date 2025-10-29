@@ -18,7 +18,7 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -206,6 +206,22 @@ def list_tool_presets(
         limit=limit,
         offset=offset
     )
+
+
+@router.get("/{preset_id}", response_model=ToolPresetResponse)
+def get_tool_preset(
+    preset_id: str,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Retrieve a single ToolPreset by ID if owned by current user."""
+    preset = db.query(ToolPreset).filter(
+        ToolPreset.id == preset_id,
+        ToolPreset.user_id == current_user.id
+    ).first()
+    if not preset:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _to_response(preset)
 
 
 @router.put("", response_model=BulkOperationResponse)
