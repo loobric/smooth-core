@@ -103,9 +103,17 @@ def create_sample_api_keys(user_id, count=2):
         ["admin:users", "admin:backup"]
     ]
     
+    tag_sets = [
+        ["monitoring"],
+        ["backup", "scheduled"],
+        ["ci-cd", "deployment"],
+        ["admin"]
+    ]
+    
     keys = []
     for i in range(count):
         scopes = scope_sets[i % len(scope_sets)]
+        tags = tag_sets[i % len(tag_sets)]
         
         # Generate unique key hash for each key (using index to make it unique)
         key_hash = f"$2b$12$SAMPLE_KEY_HASH_FOR_TESTING_{i:04d}"
@@ -116,6 +124,7 @@ def create_sample_api_keys(user_id, count=2):
             "name": f"Test Key {i+1}",
             "key_hash": key_hash,
             "scopes": scopes,
+            "tags": tags,
             "expires_at": None,
             "is_active": True,
             "created_at": datetime.now(UTC).isoformat(),

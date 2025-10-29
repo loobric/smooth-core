@@ -25,7 +25,7 @@ def test_create_api_key(db_session):
     Assumptions:
     - Returns plain text key (only shown once)
     - Key is hashed in database
-    - Key has name and scopes
+    - Key has name, scopes, and tags
     """
     from smooth.auth.user import create_user
     from smooth.auth.apikey import create_api_key
@@ -38,16 +38,27 @@ def test_create_api_key(db_session):
     
     key_name = "Test Machine Key"
     scopes = ["read", "write:presets"]
+    tags = ["monitoring", "backup"]
     
     plain_key = create_api_key(
         session=db_session,
         user_id=user.id,
         name=key_name,
-        scopes=scopes
+        scopes=scopes,
+        tags=tags
     )
     
     assert plain_key is not None
     assert len(plain_key) > 20  # Reasonable key length
+    
+    # Verify tags were saved
+    from smooth.database.schema import ApiKey
+    from sqlalchemy import select
+    
+    stmt = select(ApiKey).where(ApiKey.user_id == user.id)
+    api_key = db_session.scalar(stmt)
+    assert api_key is not None
+    assert api_key.tags == tags
     assert isinstance(plain_key, str)
 
 

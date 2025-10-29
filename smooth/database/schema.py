@@ -95,6 +95,7 @@ class ApiKey(Base, TimestampMixin, VersionMixin):
     Assumptions:
     - API key belongs to a user account
     - Scopes define permissions (JSON array)
+    - Tags allow for flexible access control grouping
     - expires_at is optional expiration timestamp
     """
     __tablename__ = "api_keys"
@@ -104,6 +105,7 @@ class ApiKey(Base, TimestampMixin, VersionMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     scopes: Mapped[list] = mapped_column(JSON, nullable=False)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     
@@ -158,6 +160,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     capabilities: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     shape_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     iso_13399_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     parent_tool_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("tool_items.id"), nullable=True, index=True)
 
 

@@ -76,6 +76,7 @@ class ApiKeyCreate(BaseModel):
     """Request model for creating API key."""
     name: str
     scopes: list[str]
+    tags: list[str] = []
     expires_at: Optional[datetime] = None
 
 
@@ -86,6 +87,7 @@ class ApiKeyResponse(BaseModel):
     id: str
     name: str
     scopes: list[str]
+    tags: list[str]
     expires_at: Optional[datetime]
     is_active: bool
     created_at: datetime
@@ -381,12 +383,16 @@ def create_key(
     Returns:
         ApiKeyCreateResponse: Created key with plain text key value
     """
+    from smooth.auth.apikey import create_api_key
+    
     try:
+        # Create the API key
         plain_key = create_api_key(
             session=db,
             user_id=user.id,
             name=key_data.name,
             scopes=key_data.scopes,
+            tags=key_data.tags,
             expires_at=key_data.expires_at
         )
         
@@ -399,6 +405,7 @@ def create_key(
             id=created_key.id,
             name=created_key.name,
             scopes=created_key.scopes,
+            tags=created_key.tags,
             expires_at=created_key.expires_at,
             is_active=created_key.is_active,
             created_at=created_key.created_at,
@@ -419,6 +426,8 @@ def list_keys(db: Session = Depends(get_db), user: User = Depends(get_authentica
     Returns:
         list[ApiKeyResponse]: List of API keys (without plain key values)
     """
+    from smooth.auth.apikey import list_user_api_keys
+    
     keys = list_user_api_keys(db, user.id)
     
     return [
@@ -426,6 +435,7 @@ def list_keys(db: Session = Depends(get_db), user: User = Depends(get_authentica
             id=key.id,
             name=key.name,
             scopes=key.scopes,
+            tags=key.tags,
             expires_at=key.expires_at,
             is_active=key.is_active,
             created_at=key.created_at
