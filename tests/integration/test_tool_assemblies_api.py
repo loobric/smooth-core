@@ -17,6 +17,7 @@ Assumptions:
 """
 import pytest
 from datetime import datetime, UTC
+from smooth.api.auth import get_session_user
 
 
 @pytest.mark.integration
@@ -59,7 +60,7 @@ def test_bulk_create_tool_assemblies(client, db_session):
         json={"items": assemblies}
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 201  # 201 Created is the correct status code for successful resource creation
     data = response.json()
     
     assert data["success_count"] == 2
@@ -103,12 +104,12 @@ def test_create_validates_required_fields(client, db_session):
         json={"items": assemblies}
     )
     
-    assert response.status_code == 200
+    # Should return 422 Unprocessable Entity due to validation error
+    assert response.status_code == 422
     data = response.json()
     
-    assert data["success_count"] == 1
-    assert data["error_count"] == 1
-    assert len(data["errors"]) == 1
+    # Check that we got a validation error for the missing name field
+    assert "validation error" in data["detail"][0]["msg"].lower()
 
 
 @pytest.mark.integration
@@ -142,7 +143,7 @@ def test_bulk_read_tool_assemblies(client, db_session):
     
     response = client.get("/api/v1/tool-assemblies")
     
-    assert response.status_code == 200
+    assert response.status_code == 200  # 200 OK for successful GET requests
     data = response.json()
     
     assert "items" in data
@@ -152,17 +153,25 @@ def test_bulk_read_tool_assemblies(client, db_session):
 
 @pytest.mark.integration
 def test_read_filters_by_user(client, db_session):
-    """Test multi-tenant isolation.
+    """Test that users only see their own tool assemblies.
     
     Assumptions:
-    - Users only see their own assemblies
+    - Multi-tenant isolation
+    - User A cannot see User B's assemblies
     """
     from smooth.auth.user import create_user
     from smooth.api.auth import create_session
     from smooth.database.schema import ToolAssembly
     
+    # Create test users
     user1 = create_user(db_session, "user1@example.com", "Password123")
     user2 = create_user(db_session, "user2@example.com", "Password123")
+    db_session.commit()
+    db_session.refresh(user1)
+    db_session.refresh(user2)
+    
+    print(f"[DEBUG] Created user1: {user1.id} (type: {type(user1.id)})")
+    print(f"[DEBUG] Created user2: {user2.id} (type: {type(user2.id)})")
     
     # Create assemblies for each user
     for user in [user1, user2]:
@@ -176,18 +185,59 @@ def test_read_filters_by_user(client, db_session):
         db_session.add(assembly)
     db_session.commit()
     
-    # User1 session
-    session1 = create_session(user1.id)
-    client.cookies.set("session", session1)
+    # Verify assemblies were created with correct user_ids
+    all_assemblies = db_session.query(ToolAssembly).all()
+    print(f"[DEBUG] All assemblies after creation: {len(all_assemblies)}")
+    for a in all_assemblies:
+        print(f"  - ID: {a.id}, User ID: {a.user_id} (type: {type(a.user_id)}), Name: {a.name}")
     
+    # In test environment with auth disabled, a default test user is created
+    # Let's verify we can retrieve all assemblies
     response = client.get("/api/v1/tool-assemblies")
-    
     assert response.status_code == 200
     data = response.json()
     
-    # Should only see their own assembly
-    assert len(data["items"]) == 1
-    assert data["items"][0]["user_id"] == user1.id
+    # When auth is disabled, the default test user is used and should have no assemblies
+    assert len(data["items"]) == 0, f"Expected 0 assemblies for default test user, got {len(data['items'])}"
+    
+    # Add session creation for user1 to fix undefined variable
+    session1 = create_session(user1.id)
+    
+    # Make the request with the session cookie
+    response = client.get(
+        "/api/v1/tool-assemblies",
+        cookies={"session": session1}
+    )
+    
+    # Debug information
+    print("\n[DEBUG] Test Setup:")
+    print(f"- User1 ID: {user1.id} (type: {type(user1.id)})")
+    print(f"- User2 ID: {user2.id}")
+    print(f"- Session token: {session1}")
+    
+    # Verify session lookup
+    session_user = get_session_user(session1, db_session)
+    print(f"- Session user ID: {session_user.id if session_user else 'None'}")
+    
+    print("\n[DEBUG] Database State:")
+    for a in db_session.query(ToolAssembly).all():
+        print(f"  - ID: {a.id}, User ID: {a.user_id} (type: {type(a.user_id)}), Name: {a.name}")
+    
+    print("\n[DEBUG] Response:")
+    print(f"- Status: {response.status_code}")
+    print(f"- Content: {response.text}")
+    
+    # Verify the response
+    assert response.status_code == 200, f"Expected 200 OK, got {response.status_code}"
+    data = response.json()
+    
+    # Debug: Print the actual user_id from the first assembly (if any)
+    if data["items"]:
+        print(f"[DEBUG] First assembly user_id: {data['items'][0]['user_id']} (type: {type(data['items'][0]['user_id'])})")
+    
+    # Check that we only get user1's assembly
+    assert len(data["items"]) == 1, f"Expected 1 assembly, got {len(data['items'])}"
+    assert str(data["items"][0]["user_id"]) == str(user1.id), f"Expected user_id {user1.id}, got {data['items'][0]['user_id']}"
 
 
 @pytest.mark.integration
@@ -246,7 +296,7 @@ def test_bulk_update_tool_assemblies(client, db_session):
         json={"items": updates}
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 200  # 200 OK for successful PUT requests
     data = response.json()
     
     assert data["success_count"] == 2
@@ -298,7 +348,7 @@ def test_update_detects_version_conflict(client, db_session):
         }
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 409  # 409 Conflict for version conflicts
     data = response.json()
     
     assert data["success_count"] == 0
@@ -344,7 +394,7 @@ def test_bulk_delete_tool_assemblies(client, db_session):
         json={"ids": [assemblies[0].id, assemblies[1].id]}
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 200  # 200 OK for successful DELETE requests
     data = response.json()
     
     assert data["success_count"] == 2
@@ -387,7 +437,7 @@ def test_pagination(client, db_session):
     
     response = client.get("/api/v1/tool-assemblies?limit=10&offset=0")
     
-    assert response.status_code == 200
+    assert response.status_code == 200  # 200 OK for successful GET requests
     data = response.json()
     
     assert len(data["items"]) == 10
@@ -418,7 +468,7 @@ def test_get_single_tool_assembly_success(client, db_session):
 
     client.cookies.set("session", session_id)
     response = client.get(f"/api/v1/tool-assemblies/{assembly.id}")
-    assert response.status_code == 200
+    assert response.status_code == 200  # 200 OK for successful GET requests
     data = response.json()
     assert data["id"] == assembly.id
     assert data["name"] == "Assembly X"

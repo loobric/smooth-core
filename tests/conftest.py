@@ -152,14 +152,23 @@ def db_session():
     - Session is closed after test
     """
     from sqlalchemy.pool import StaticPool
+    from smooth.database.schema import init_db
     
+    # Create an in-memory SQLite database
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool
     )
-    Base.metadata.create_all(engine)
     
-    session = Session(engine)
-    yield session
-    session.close()
+    # Initialize the database with all tables
+    init_db(engine)
+    
+    # Create a new session for testing
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    
+    try:
+        yield session
+    finally:
+        session.close()

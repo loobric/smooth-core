@@ -143,6 +143,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - shape_data stores tool shape file references (FreeCAD .FCStd, STEP, STL, etc.)
     - iso_13399_reference is optional for standards compliance
     - parent_tool_id: References another ToolItem if copied from catalog (nullable)
+    - tags is JSON array for access control and organization
     - Indexes on version and updated_at for change detection queries
     """
     __tablename__ = "tool_items"
@@ -192,12 +193,15 @@ class ToolAssembly(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     Assumptions:
     - components is JSON array of {item_id, role, position, gauge_offset}
     - computed_geometry is JSON object calculated from components
+    - tags is JSON array for access control and organization
     - Indexes on version and updated_at for change detection queries
     """
     __tablename__ = "tool_assemblies"
     __table_args__ = (
         {'extend_existing': True}
     )
+    
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default='[]')
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -214,6 +218,7 @@ class ToolInstance(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - status: available, in_use, needs_inspection, retired
     - Indexes on version and updated_at for change detection queries
     - location, measured_geometry, lifecycle are JSON fields
+    - tags is JSON array for access control and organization
     """
     __tablename__ = "tool_instances"
     
@@ -224,6 +229,7 @@ class ToolInstance(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     location: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     measured_geometry: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     lifecycle: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default='[]')
     
     # Relationships
     assembly: Mapped["ToolAssembly"] = relationship("ToolAssembly")
@@ -237,6 +243,7 @@ class ToolPreset(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - machine_id identifies the CNC machine
     - tool_number is the T-code
     - offsets, orientation, limits are JSON fields
+    - tags is JSON array for access control and organization
     """
     __tablename__ = "tool_presets"
     
@@ -252,6 +259,7 @@ class ToolPreset(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     limits: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     loaded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     loaded_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default='[]')
     
     # Relationships
     instance: Mapped["ToolInstance"] = relationship("ToolInstance")
@@ -288,6 +296,7 @@ class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - type: machine_setup, job_specific, template, project
     - members is JSON array of tool references
     - status: draft, active, archived
+    - tags is JSON array for access control and organization
     """
     __tablename__ = "tool_sets"
     
@@ -301,6 +310,7 @@ class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     capacity: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
     activation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default='[]')
 
 
 class ToolSetHistory(Base):

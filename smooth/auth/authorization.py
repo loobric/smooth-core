@@ -250,5 +250,124 @@ def require_machine_access(
     """
     if not check_machine_access(machine_restriction, requested_machine):
         raise PermissionDeniedError(
-            f"API key not authorized for machine {requested_machine}"
+            f"API key not authorized for machine '{requested_machine}'"
+        )
+
+
+def check_tag_access(
+    api_key_tags: list[str],
+    resource_tags: list[str]
+) -> bool:
+    """Check if API key has access to a resource based on tags.
+    
+    Args:
+        api_key_tags: List of tags from the API key
+        resource_tags: List of tags from the resource
+        
+    Returns:
+        bool: True if access is allowed, False otherwise
+        
+    Assumptions:
+    - Empty api_key_tags means no tag-based restrictions
+    - Empty resource_tags means resource is accessible to all keys with required scopes
+    - Access is granted if any tag in api_key_tags matches any tag in resource_tags
+    """
+    if not api_key_tags:
+        return True  # No tag restrictions on the API key
+        
+    if not resource_tags:
+        return True  # Resource has no tags, accessible to all with required scopes
+        
+    # Check for any matching tags
+    return any(tag in resource_tags for tag in api_key_tags)
+
+
+def require_tag_access(
+    api_key_tags: list[str],
+    resource_tags: list[str],
+    resource_type: str,
+    resource_id: str
+) -> None:
+    """Require API key to have access to resource based on tags.
+    
+    Args:
+        api_key_tags: List of tags from the API key
+        resource_tags: List of tags from the resource
+        resource_type: Type of resource (for error message)
+        resource_id: ID of the resource (for error message)
+        
+    Raises:
+        PermissionDeniedError: If key doesn't have access to resource
+    """
+    if not check_tag_access(api_key_tags, resource_tags):
+        raise PermissionDeniedError(
+            f"API key not authorized to access {resource_type} {resource_id} - "
+            f"required tags not present in API key"
+        )
+
+
+def check_tag_scope_access(
+    scopes: list[str],
+    api_key_tags: list[str],
+    resource_tags: list[str],
+    resource_type: str
+) -> bool:
+    """Check if user has access based on scopes and tags.
+    
+    Args:
+        scopes: List of scopes granted to user
+        api_key_tags: List of tags from the API key
+        resource_tags: List of tags from the resource
+        resource_type: Type of resource being accessed
+        
+    Returns:
+        bool: True if access is allowed, False otherwise
+        
+    Assumptions:
+    - Users with 'admin:*' scope bypass tag checks
+    - Users with 'read:all' or 'write:all' bypass tag checks for those operations
+    - Otherwise, tag access is checked
+    """
+    # Admin users bypass all tag checks
+    if has_scope(scopes, "admin:*"):
+        return True
+        
+    # Check if this is a read or write operation
+    read_scope = f"read:{resource_type}"
+    write_scope = f"write:{resource_type}"
+    
+    # Users with read:all or write:all bypass tag checks
+    if (has_scope(scopes, "read:all") and has_scope(scopes, read_scope)) or \
+       (has_scope(scopes, "write:all") and has_scope(scopes, write_scope)):
+        return True
+        
+    # Otherwise, check tag-based access
+    return check_tag_access(api_key_tags, resource_tags)
+
+
+def require_tag_scope_access(
+    scopes: list[str],
+    api_key_tags: list[str],
+    resource_tags: list[str],
+    resource_type: str,
+    resource_id: str,
+    action: str = "access"
+) -> None:
+    """Require user to have access based on scopes and tags.
+    
+    Args:
+        scopes: List of scopes granted to user
+        api_key_tags: List of tags from the API key
+        resource_tags: List of tags from the resource
+        resource_type: Type of resource being accessed
+        resource_id: ID of the resource (for error message)
+        action: Action being performed (for error message)
+        
+    Raises:
+        PermissionDeniedError: If access is denied
+    """
+    if not check_tag_scope_access(scopes, api_key_tags, resource_tags, resource_type):
+        raise PermissionDeniedError(
+            f"Not authorized to {action} {resource_type} {resource_id} - "
+            f"missing required tags or scopes"
         )

@@ -86,21 +86,22 @@ def create_api_key(
 def validate_api_key(
     session: Session,
     plain_key: str
-) -> Optional[Tuple[User, list[str]]]:
-    """Validate an API key and return user and scopes.
+) -> Optional[Tuple[User, list[str], list[str]]]:
+    """Validate an API key and return user, scopes, and tags.
     
     Args:
         session: Database session
         plain_key: Plain text API key to validate
         
     Returns:
-        Tuple[User, list[str]]: User object and scopes if valid, None otherwise
+        Tuple[User, list[str], list[str]]: User object, scopes, and tags if valid, None otherwise
         
     Assumptions:
     - Returns None for invalid keys (no exception)
     - Returns None for expired keys
     - Returns None for inactive keys
     - Checks expiration during validation
+    - Returns tuple of (user, scopes, tags) on success
     """
     # Find all active API keys (need to check hashes)
     stmt = select(ApiKey).where(ApiKey.is_active == True)
@@ -130,7 +131,7 @@ def validate_api_key(
     if user is None or not user.is_active:
         return None
     
-    return (user, matching_key.scopes)
+    return (user, matching_key.scopes, matching_key.tags or [])
 
 
 def list_user_api_keys(session: Session, user_id: str) -> list[ApiKey]:

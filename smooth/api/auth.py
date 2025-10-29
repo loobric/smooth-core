@@ -14,7 +14,7 @@ Assumptions:
 """
 from datetime import datetime
 from typing import Optional, Annotated
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request
 from pydantic import BaseModel, ConfigDict, EmailStr
 from sqlalchemy.orm import Session
 
@@ -153,7 +153,8 @@ def delete_session(session_id: str) -> None:
 def require_auth(
     session: Annotated[str | None, Cookie()] = None,
     authorization: Annotated[str | None, Header()] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ) -> User:
     """Require authentication for API endpoints.
     
@@ -161,6 +162,7 @@ def require_auth(
         session: Session ID from cookie
         authorization: Authorization header (Bearer token)
         db: Database session
+        request: FastAPI request object (injected by FastAPI)
         
     Returns:
         User: Authenticated user
@@ -171,12 +173,17 @@ def require_auth(
     Assumptions:
     - Supports both session-based (cookie) and API key (Bearer token) auth
     - Tries session first, then API key
+    - For API key auth, stores scopes and tags in request.state for authorization
     """
     from smooth.auth.apikey import validate_api_key
     
     # Try session authentication first
     user = get_session_user(session, db)
     if user:
+        if request:
+            # For session auth, set empty scopes and tags
+            request.state.scopes = []
+            request.state.api_key_tags = []
         return user
     
     # Try API key authentication
@@ -184,8 +191,12 @@ def require_auth(
         api_key = authorization.replace("Bearer ", "")
         result = validate_api_key(db, api_key)
         if result:
-            # validate_api_key returns (user, scopes)
-            user, scopes = result
+            # validate_api_key returns (user, scopes, tags)
+            user, scopes, tags = result
+            if request:
+                # Store scopes and tags in request state for authorization
+                request.state.scopes = scopes or []
+                request.state.api_key_tags = tags or []
             return user
     
     raise HTTPException(
@@ -195,6 +206,7 @@ def require_auth(
 
 
 def get_authenticated_user(
+    request: Request,
     session: Annotated[str | None, Cookie()] = None,
     authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db)
@@ -203,10 +215,21 @@ def get_authenticated_user(
     
     This allows integration tests (with auth disabled) to exercise endpoints
     without performing login flows.
+    
+    Args:
+        request: FastAPI request object
+        session: Session ID from cookie
+        authorization: Authorization header (Bearer token)
+        db: Database session
     """
     # If auth is enabled, enforce normal authentication
     if settings.auth_enabled:
-        return require_auth(session=session, authorization=authorization, db=db)
+        return require_auth(
+            session=session,
+            authorization=authorization,
+            db=db,
+            request=request
+        )
     
     # Auth disabled: return or create a test user
     user = get_user_by_email(db, "test@example.com")
