@@ -18,7 +18,7 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -238,6 +238,22 @@ def list_tool_items(
         limit=limit,
         offset=offset
     )
+
+
+@router.get("/{item_id}", response_model=ToolItemResponse)
+def get_tool_item(
+    item_id: str,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Retrieve a single ToolItem by ID if owned by the current user."""
+    item = db.query(ToolItem).filter(
+        ToolItem.id == item_id,
+        ToolItem.user_id == current_user.id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _to_response(item)
 
 
 @router.put("", response_model=BulkOperationResponse)

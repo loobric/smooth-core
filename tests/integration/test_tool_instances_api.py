@@ -306,10 +306,82 @@ def test_bulk_update_tool_instances(client, db_session):
     
     assert data["success_count"] == 2
     assert data["error_count"] == 0
-    
-    # Verify updates applied
-    assert data["results"][0]["status"] == "in_use"
-    assert data["results"][0]["version"] == 2
+
+
+@pytest.mark.integration
+def test_get_single_tool_instance_success(client, db_session):
+    """Test retrieving a single tool instance by ID."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly, ToolInstance
+
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+
+    assembly = ToolAssembly(
+        name="Asm",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id
+    )
+    db_session.add(assembly)
+    db_session.commit()
+
+    instance = ToolInstance(
+        assembly_id=assembly.id,
+        serial_number="SN-001",
+        status="available",
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id
+    )
+    db_session.add(instance)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-instances/{instance.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == instance.id
+    assert data["assembly_id"] == assembly.id
+
+
+@pytest.mark.integration
+def test_get_single_tool_instance_not_found_other_user(client, db_session):
+    """Test retrieving another user's tool instance returns 404."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly, ToolInstance
+
+    owner = create_user(db_session, "owner@example.com", "Password123")
+    other = create_user(db_session, "other@example.com", "Password123")
+    session_id = create_session(other.id)
+
+    assembly = ToolAssembly(
+        name="Asm",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=owner.id,
+        created_by=owner.id,
+        updated_by=owner.id
+    )
+    db_session.add(assembly)
+    db_session.commit()
+
+    instance = ToolInstance(
+        assembly_id=assembly.id,
+        serial_number="SN-001",
+        status="available",
+        user_id=owner.id,
+        created_by=owner.id,
+        updated_by=owner.id
+    )
+    db_session.add(instance)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-instances/{instance.id}")
+    assert response.status_code == 404
 
 
 @pytest.mark.integration

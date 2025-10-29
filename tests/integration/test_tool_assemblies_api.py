@@ -394,3 +394,57 @@ def test_pagination(client, db_session):
     assert data["total"] == 15
     assert data["limit"] == 10
     assert data["offset"] == 0
+
+
+@pytest.mark.integration
+def test_get_single_tool_assembly_success(client, db_session):
+    """Test retrieving a single tool assembly by ID."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+
+    user = create_user(db_session, "test@example.com", "Password123")
+    session_id = create_session(user.id)
+
+    assembly = ToolAssembly(
+        name="Assembly X",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id
+    )
+    db_session.add(assembly)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-assemblies/{assembly.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == assembly.id
+    assert data["name"] == "Assembly X"
+
+
+@pytest.mark.integration
+def test_get_single_tool_assembly_not_found_other_user(client, db_session):
+    """Test retrieving another user's tool assembly returns 404."""
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    from smooth.database.schema import ToolAssembly
+
+    owner = create_user(db_session, "owner@example.com", "Password123")
+    other = create_user(db_session, "other@example.com", "Password123")
+    session_id = create_session(other.id)
+
+    assembly = ToolAssembly(
+        name="Owner Assembly",
+        components=[{"item_id": "tool-1", "role": "cutter"}],
+        user_id=owner.id,
+        created_by=owner.id,
+        updated_by=owner.id
+    )
+    db_session.add(assembly)
+    db_session.commit()
+
+    client.cookies.set("session", session_id)
+    response = client.get(f"/api/v1/tool-assemblies/{assembly.id}")
+    assert response.status_code == 404

@@ -18,7 +18,7 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -198,6 +198,22 @@ def list_tool_assemblies(
         limit=limit,
         offset=offset
     )
+
+
+@router.get("/{assembly_id}", response_model=ToolAssemblyResponse)
+def get_tool_assembly(
+    assembly_id: str,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Retrieve a single ToolAssembly by ID if owned by the current user."""
+    assembly = db.query(ToolAssembly).filter(
+        ToolAssembly.id == assembly_id,
+        ToolAssembly.user_id == current_user.id
+    ).first()
+    if not assembly:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _to_response(assembly)
 
 
 @router.put("", response_model=BulkOperationResponse)
