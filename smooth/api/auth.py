@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from smooth.auth.apikey import (
     create_api_key, list_user_api_keys, revoke_api_key, delete_api_key
 )
-from smooth.auth.user import create_user, authenticate_user, get_user_by_id
+from smooth.auth.user import create_user, authenticate_user, get_user_by_id, get_user_by_email
 from smooth.config import settings
 from smooth.database.schema import Base, init_db, User
 from sqlalchemy import create_engine
@@ -194,6 +194,27 @@ def require_auth(
     )
 
 
+def get_authenticated_user(
+    session: Annotated[str | None, Cookie()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db)
+) -> User:
+    """Return an authenticated user if auth is enabled, otherwise a test user.
+    
+    This allows integration tests (with auth disabled) to exercise endpoints
+    without performing login flows.
+    """
+    # If auth is enabled, enforce normal authentication
+    if settings.auth_enabled:
+        return require_auth(session=session, authorization=authorization, db=db)
+    
+    # Auth disabled: return or create a test user
+    user = get_user_by_email(db, "test@example.com")
+    if user is None:
+        user = create_user(db, "test@example.com", "test-password-123")
+    return user
+
+
 # Router
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
@@ -349,30 +370,19 @@ def get_current_user(
 @router.post("/keys", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_key(
     key_data: ApiKeyCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user)
 ):
-    """Create a new API key.
+    """Create a new API key for the authenticated user.
     
     Args:
         key_data: API key creation data
         db: Database session
+        user: Authenticated user (from session or API key)
         
     Returns:
         ApiKeyCreateResponse: Created key with plain text key value
-        
-    Assumptions:
-    - For testing, uses hardcoded user (will add auth later)
-    - Plain key only returned on creation
-    - Requires admin:users scope (not enforced yet)
     """
-    # For now, create a test user if none exists
-    # TODO: Replace with actual authenticated user from session/token
-    from smooth.auth.user import create_user, get_user_by_email
-    
-    user = get_user_by_email(db, "test@example.com")
-    if user is None:
-        user = create_user(db, "test@example.com", "test-password-123")
-    
     try:
         plain_key = create_api_key(
             session=db,
@@ -403,27 +413,16 @@ def create_key(
 
 
 @router.get("/keys", response_model=list[ApiKeyResponse])
-def list_keys(db: Session = Depends(get_db)):
+def list_keys(db: Session = Depends(get_db), user: User = Depends(get_authenticated_user)):
     """List all API keys for the authenticated user.
     
     Args:
         db: Database session
+        user: Authenticated user
         
     Returns:
         list[ApiKeyResponse]: List of API keys (without plain key values)
-        
-    Assumptions:
-    - For testing, uses hardcoded user
-    - Plain key values not returned
-    - Requires admin:users scope (not enforced yet)
     """
-    # TODO: Get actual authenticated user
-    from smooth.auth.user import get_user_by_email
-    
-    user = get_user_by_email(db, "test@example.com")
-    if user is None:
-        return []
-    
     keys = list_user_api_keys(db, user.id)
     
     return [
@@ -441,19 +440,19 @@ def list_keys(db: Session = Depends(get_db)):
 
 
 @router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-def revoke_key(key_id: str, db: Session = Depends(get_db)):
+def revoke_key(key_id: str, db: Session = Depends(get_db), user: User = Depends(get_authenticated_user)):
     """Revoke an API key.
     
     Args:
         key_id: API key ID to revoke
         db: Database session
+        user: Authenticated user
         
     Returns:
         None: 204 No Content on success
         
     Assumptions:
     - Soft delete (sets is_active=False)
-    - Requires admin:users scope (not enforced yet)
     - TODO: Verify user owns the key
     """
     try:

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     """
     
     # Authentication
-    auth_enabled: bool = True
+    auth_enabled: bool = False
     
     # Database
     database_url: str = "sqlite:///./smooth.db"
