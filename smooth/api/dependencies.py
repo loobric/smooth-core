@@ -66,7 +66,7 @@ def require_tag_access(
         request: Request,
         resource_id: str = None,
         db: Session = Depends(get_db),
-        current_user: User = Depends(get_current_user)
+        current_user: User = Depends(get_authenticated_user)
     ) -> None:
         """Check if the current request has access to the resource."""
         # If no resource_id was provided, try to get it from the path parameters

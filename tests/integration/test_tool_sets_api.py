@@ -309,8 +309,10 @@ def test_get_single_tool_set_success(client, db_session):
     db_session.add(tool_set)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-sets/{tool_set.id}")
+    response = client.get(
+        f"/api/v1/tool-sets/{tool_set.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == tool_set.id
@@ -341,8 +343,10 @@ def test_get_single_tool_set_not_found_other_user(client, db_session):
     db_session.add(tool_set)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-sets/{tool_set.id}")
+    response = client.get(
+        f"/api/v1/tool-sets/{tool_set.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 404
 
 

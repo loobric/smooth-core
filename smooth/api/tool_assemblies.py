@@ -286,9 +286,9 @@ def get_assembly_tags(assembly_id: str, db: Session) -> List[str]:
 async def get_tool_assembly(
     assembly_id: str,
     request: Request,
-    _: None = Depends(get_tool_assembly_access),
     current_user: User = Depends(get_authenticated_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: None = Depends(get_tool_assembly_access)
 ):
     """Retrieve a single ToolAssembly by ID if user has access.
     
@@ -303,11 +303,11 @@ async def get_tool_assembly(
     if not assembly:
         raise HTTPException(status_code=404, detail="Tool assembly not found")
     
-    # Check ownership (bypasses tag checks)
-    if assembly.user_id == current_user.id:
-        return _to_response(assembly)
+    # For session auth, only allow access to own resources
+    is_api_key_auth = getattr(request.state, 'is_api_key_auth', False)
+    if not is_api_key_auth and assembly.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Tool assembly not found")
     
-    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(assembly)
 
 
@@ -346,6 +346,7 @@ async def update_tool_assemblies(
     
     results = []
     errors = []
+    has_version_conflict = False
     
     # First pass: validate all updates
     updates = []
@@ -392,6 +393,7 @@ async def update_tool_assemblies(
             
             # Check version
             if assembly.version != item.version:
+                has_version_conflict = True
                 errors.append(ErrorDetail(
                     index=i,
                     id=item.id,
@@ -407,6 +409,19 @@ async def update_tool_assemblies(
                 id=getattr(item, 'id', None),
                 message=str(e)
             ))
+    
+    # If there are version conflicts and no successful updates, return 409
+    if has_version_conflict and not updates:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "success_count": 0,
+                "error_count": len(errors),
+                "results": [],
+                "errors": [e.model_dump() for e in errors]
+            }
+        )
     
     # Second pass: apply updates
     for i, item, assembly in updates:
@@ -450,6 +465,19 @@ async def update_tool_assemblies(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update tool assemblies: {str(e)}"
             )
+    
+    # If we had version conflicts, return 409
+    if has_version_conflict:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "success_count": len(results),
+                "error_count": len(errors),
+                "results": [r.model_dump() for r in results],
+                "errors": [e.model_dump() for e in errors]
+            }
+        )
     
     return BulkOperationResponse(
         success_count=len(results),

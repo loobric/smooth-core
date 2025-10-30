@@ -635,8 +635,10 @@ def test_get_single_tool_item_success(client, db_session):
     db_session.add(item)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-items/{item.id}")
+    response = client.get(
+        f"/api/v1/tool-items/{item.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == item.id
@@ -666,6 +668,8 @@ def test_get_single_tool_item_not_found_other_user(client, db_session):
     db_session.add(item)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-items/{item.id}")
+    response = client.get(
+        f"/api/v1/tool-items/{item.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 404

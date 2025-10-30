@@ -273,9 +273,9 @@ def list_tool_sets(
 def get_tool_set(
     tool_set_id: str,
     req: Request,
-    _: None = Depends(get_tool_set_access),
     current_user: User = Depends(get_authenticated_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: None = Depends(get_tool_set_access)
 ):
     """Retrieve a single ToolSet by ID if user has access.
     
@@ -290,11 +290,11 @@ def get_tool_set(
     if not tool_set:
         raise HTTPException(status_code=404, detail="Tool set not found")
     
-    # Check ownership (bypasses tag checks)
-    if tool_set.user_id == current_user.id:
-        return _to_response(tool_set)
+    # For session auth, only allow access to own resources
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    if not is_api_key_auth and tool_set.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Tool set not found")
     
-    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(tool_set)
 
 

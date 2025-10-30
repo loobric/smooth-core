@@ -339,8 +339,10 @@ def test_get_single_tool_instance_success(client, db_session):
     db_session.add(instance)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-instances/{instance.id}")
+    response = client.get(
+        f"/api/v1/tool-instances/{instance.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == instance.id
@@ -379,8 +381,10 @@ def test_get_single_tool_instance_not_found_other_user(client, db_session):
     db_session.add(instance)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-instances/{instance.id}")
+    response = client.get(
+        f"/api/v1/tool-instances/{instance.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 404
 
 

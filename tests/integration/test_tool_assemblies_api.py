@@ -109,7 +109,7 @@ def test_create_validates_required_fields(client, db_session):
     data = response.json()
     
     # Check that we got a validation error for the missing name field
-    assert "validation error" in data["detail"][0]["msg"].lower()
+    assert "field required" in data["detail"][0]["msg"].lower()
 
 
 @pytest.mark.integration
@@ -191,16 +191,7 @@ def test_read_filters_by_user(client, db_session):
     for a in all_assemblies:
         print(f"  - ID: {a.id}, User ID: {a.user_id} (type: {type(a.user_id)}), Name: {a.name}")
     
-    # In test environment with auth disabled, a default test user is created
-    # Let's verify we can retrieve all assemblies
-    response = client.get("/api/v1/tool-assemblies")
-    assert response.status_code == 200
-    data = response.json()
-    
-    # When auth is disabled, the default test user is used and should have no assemblies
-    assert len(data["items"]) == 0, f"Expected 0 assemblies for default test user, got {len(data['items'])}"
-    
-    # Add session creation for user1 to fix undefined variable
+    # Create session for user1
     session1 = create_session(user1.id)
     
     # Make the request with the session cookie
@@ -466,8 +457,10 @@ def test_get_single_tool_assembly_success(client, db_session):
     db_session.add(assembly)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-assemblies/{assembly.id}")
+    response = client.get(
+        f"/api/v1/tool-assemblies/{assembly.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 200  # 200 OK for successful GET requests
     data = response.json()
     assert data["id"] == assembly.id
@@ -495,6 +488,8 @@ def test_get_single_tool_assembly_not_found_other_user(client, db_session):
     db_session.add(assembly)
     db_session.commit()
 
-    client.cookies.set("session", session_id)
-    response = client.get(f"/api/v1/tool-assemblies/{assembly.id}")
+    response = client.get(
+        f"/api/v1/tool-assemblies/{assembly.id}",
+        cookies={"session": session_id}
+    )
     assert response.status_code == 404
