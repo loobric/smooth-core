@@ -123,6 +123,18 @@ def get_tool_assembly_tags(resource_id: str, db: Session) -> List[str]:
     assembly = db.query(ToolAssembly).filter(ToolAssembly.id == resource_id).first()
     return assembly.tags if assembly and assembly.tags else []
 
+def get_tool_set_tags(resource_id: str, db: Session) -> List[str]:
+    """Get tags for a tool set."""
+    from smooth.database.schema import ToolSet
+    tool_set = db.query(ToolSet).filter(ToolSet.id == resource_id).first()
+    return tool_set.tags if tool_set and tool_set.tags else []
+
+def get_tool_item_tags(resource_id: str, db: Session) -> List[str]:
+    """Get tags for a tool item."""
+    from smooth.database.schema import ToolItem
+    tool_item = db.query(ToolItem).filter(ToolItem.id == resource_id).first()
+    return tool_item.tags if tool_item and tool_item.tags else []
+
 # Common tag-based access dependencies
 get_tool_assembly_access = require_tag_access(
     resource_type="tool_assembly",
@@ -142,5 +154,12 @@ get_tool_preset_access = require_tag_access(
 
 get_tool_set_access = require_tag_access(
     resource_type="tool_set",
-    resource_id_param="set_id"
+    resource_id_param="tool_set_id",
+    resource_tags_getter=get_tool_set_tags
+)
+
+get_tool_item_access = require_tag_access(
+    resource_type="tool_item",
+    resource_id_param="item_id",
+    resource_tags_getter=get_tool_item_tags
 )

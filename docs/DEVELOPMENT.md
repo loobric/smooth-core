@@ -175,18 +175,23 @@ Core dependencies:
 - ✅ Core functions: `check_tag_access()`, `require_tag_access()`, `check_tag_scope_access()` in `auth/authorization.py`
 - ✅ API key creation: Tags can be set via `/api/v1/auth/keys` endpoint
 - ✅ API key validation: `validate_api_key()` returns tags tuple
-- ✅ Request state: Tags stored in `request.state.api_key_tags` during auth
+- ✅ Request state: Tags stored in `request.state.api_key_tags`, `is_api_key_auth` flag distinguishes session vs API key auth
 - ✅ Dependencies: `require_tag_access()` factory creates tag-aware endpoint guards
-- ⚠️ Partial: Tag enforcement in some endpoints (tool_assemblies uses `get_tool_assembly_access`)
+- ✅ Tool assemblies: Full tag enforcement (create, read, update, delete, list)
+- ✅ Integration tests: Comprehensive test coverage in `test_tag_enforcement.py`
+- ✅ Documentation: AUTHENTICATION.md updated with tag usage patterns and examples
+- ✅ Admin bypass: `admin:*` scope bypasses all tag checks
+- ✅ Session auth: Bypasses tag checks (users own all their resources)
+
+**Completed:**
+- ✅ Tool sets: Full tag enforcement (create, read, update, delete, list)
+- ✅ Integration tests: `test_tool_sets_tag_enforcement.py`
 
 **Remaining Work:**
-- [ ] Write tests for tag-based filtering in list/query endpoints
-- [ ] Implement tag filtering for bulk operations (list all tools, presets, etc.)
-- [ ] Add tag enforcement to remaining CRUD endpoints (tool_items, tool_instances, tool_presets, tool_sets)
-- [ ] Write integration tests for cross-resource tag scenarios
-- [ ] Document tag-based access patterns in AUTHENTICATION.md (remove "Future Feature" label)
-- [ ] Add resource_tags_getter implementations for each resource type in dependencies.py
-- [ ] Test admin bypass behavior (admin:* should skip tag checks)
+- [ ] Add tag enforcement to tool_items endpoints
+- [ ] Add tag enforcement to tool_instances endpoints
+- [ ] Add tag enforcement to tool_presets endpoints
+- [ ] Add `resource_tags_getter` implementations for remaining resource types
 
 ### Notification System
 - [ ] Write tests for MQTT message publishing

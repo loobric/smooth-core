@@ -19,11 +19,12 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from smooth.api.auth import get_db, require_auth
+from smooth.api.auth import get_db, require_auth, get_authenticated_user
+from smooth.api.dependencies import get_tool_set_access
 from smooth.database.schema import User, ToolSet, ToolSetHistory
 from smooth.versioning import snapshot_tool_set, get_tool_set_history, restore_tool_set, compare_versions
 
@@ -43,6 +44,7 @@ class ToolSetCreate(BaseModel):
     capacity: Optional[dict] = None
     status: Optional[str] = "draft"
     activation: Optional[dict] = None
+    tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
 
 
 class ToolSetUpdate(BaseModel):
@@ -58,6 +60,7 @@ class ToolSetUpdate(BaseModel):
     capacity: Optional[dict] = None
     status: Optional[str] = None
     activation: Optional[dict] = None
+    tags: Optional[List[str]] = None
 
 
 class ToolSetResponse(BaseModel):
@@ -72,6 +75,7 @@ class ToolSetResponse(BaseModel):
     capacity: Optional[dict]
     status: str
     activation: Optional[dict]
+    tags: List[str]
     user_id: str
     created_by: str
     updated_by: str
@@ -120,16 +124,37 @@ class QueryResponse(BaseModel):
 
 @router.post("", response_model=BulkOperationResponse)
 def create_tool_sets(
+    req: Request,
     request: BulkCreateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Create tool sets in bulk."""
+    """Create tool sets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, set_data in enumerate(request.items):
         try:
+            # Validate tags if using API key with tags
+            if is_api_key_auth and api_key_tags and set_data.tags:
+                # Check if all tags in the request are allowed by the API key
+                invalid_tags = [t for t in set_data.tags if t not in api_key_tags]
+                if invalid_tags:
+                    errors.append(ErrorDetail(
+                        index=index,
+                        message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                    ))
+                    continue
+            
             # Validate required fields
             if not set_data.name:
                 raise ValueError("Field 'name' is required")
@@ -150,6 +175,7 @@ def create_tool_sets(
                 capacity=set_data.capacity,
                 status=set_data.status or "draft",
                 activation=set_data.activation,
+                tags=set_data.tags or [],
                 user_id=current_user.id,
                 created_by=current_user.id,
                 updated_by=current_user.id
@@ -181,23 +207,59 @@ def create_tool_sets(
 
 @router.get("", response_model=QueryResponse)
 def list_tool_sets(
-    current_user: User = Depends(require_auth),
+    req: Request,
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
     type: Optional[str] = Query(None, description="Filter by type"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    tags: Optional[List[str]] = Query(None, description="Filter by tags (logical AND)"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    """List tool sets with filters and pagination."""
-    query = db.query(ToolSet).filter(ToolSet.user_id == current_user.id)
+    """List tool sets with filters and pagination.
+    
+    Notes:
+    - For API key authentication, only returns tool sets with tags that match the API key's tags
+    - For session authentication, returns all tool sets owned by the user
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
+    # Base query - filter by user for session auth or all accessible tool sets for API key
+    if is_api_key_auth:
+        # For API keys, we need to check tag access
+        query = db.query(ToolSet)
+        
+        # If API key has tags, filter by matching tags
+        if api_key_tags:
+            # Get all tool sets and filter in Python for SQLite compatibility
+            all_sets = query.all()
+            matching_ids = [
+                s.id for s in all_sets 
+                if s.tags and any(tag in s.tags for tag in api_key_tags)
+            ]
+            if matching_ids:
+                query = query.filter(ToolSet.id.in_(matching_ids))
+            else:
+                # No matching tool sets, return empty result
+                query = query.filter(ToolSet.id == None)
+    else:
+        # For session auth, only show user's own tool sets
+        query = db.query(ToolSet).filter(ToolSet.user_id == current_user.id)
     
     if type:
         query = query.filter(ToolSet.type == type)
     if status:
         query = query.filter(ToolSet.status == status)
     
+    # Apply additional tag filters from query params
+    if tags:
+        for tag in tags:
+            query = query.filter(ToolSet.tags.contains([tag]))
+    
     total = query.count()
-    tool_sets = query.limit(limit).offset(offset).all()
+    tool_sets = query.offset(offset).limit(limit).all()
     
     return QueryResponse(
         items=[_to_response(tool_set) for tool_set in tool_sets],
@@ -210,35 +272,63 @@ def list_tool_sets(
 @router.get("/{tool_set_id}", response_model=ToolSetResponse)
 def get_tool_set(
     tool_set_id: str,
-    current_user: User = Depends(require_auth),
+    req: Request,
+    _: None = Depends(get_tool_set_access),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Retrieve a single ToolSet by ID if owned by the current user."""
+    """Retrieve a single ToolSet by ID if user has access.
+    
+    Access is granted if:
+    - User is the owner of the tool set, or
+    - User has an API key with matching tags for the tool set
+    """
     tool_set = db.query(ToolSet).filter(
-        ToolSet.id == tool_set_id,
-        ToolSet.user_id == current_user.id
+        ToolSet.id == tool_set_id
     ).first()
+    
     if not tool_set:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Tool set not found")
+    
+    # Check ownership (bypasses tag checks)
+    if tool_set.user_id == current_user.id:
+        return _to_response(tool_set)
+    
+    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(tool_set)
 
 
 @router.put("", response_model=BulkOperationResponse)
 def update_tool_sets(
+    req: Request,
     request: BulkUpdateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Update tool sets in bulk."""
+    """Update tool sets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    - Only the owner of a tool set can update it
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, update_data in enumerate(request.items):
         try:
-            tool_set = db.query(ToolSet).filter(
-                ToolSet.id == update_data.id,
-                ToolSet.user_id == current_user.id
-            ).first()
+            # Get existing tool set
+            query = db.query(ToolSet).filter(ToolSet.id == update_data.id)
+            
+            # For session auth, only allow updating own tool sets
+            if not is_api_key_auth:
+                query = query.filter(ToolSet.user_id == current_user.id)
+            
+            tool_set = query.first()
             
             if not tool_set:
                 errors.append(ErrorDetail(
@@ -247,6 +337,28 @@ def update_tool_sets(
                     message="Tool set not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags:
+                # Check if API key has access to the existing tool set's tags
+                if tool_set.tags and not any(tag in api_key_tags for tag in tool_set.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=update_data.id,
+                        message="API key not authorized to update this tool set"
+                    ))
+                    continue
+                
+                # Check if new tags are allowed
+                if update_data.tags is not None:
+                    invalid_tags = [t for t in update_data.tags if t not in api_key_tags]
+                    if invalid_tags:
+                        errors.append(ErrorDetail(
+                            index=index,
+                            id=update_data.id,
+                            message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                        ))
+                        continue
             
             if tool_set.version != update_data.version:
                 errors.append(ErrorDetail(
@@ -278,6 +390,8 @@ def update_tool_sets(
                 tool_set.status = update_data.status
             if update_data.activation is not None:
                 tool_set.activation = update_data.activation
+            if update_data.tags is not None:
+                tool_set.tags = update_data.tags
             
             tool_set.updated_by = current_user.id
             tool_set.updated_at = datetime.now(UTC)
@@ -401,20 +515,34 @@ def compare_tool_set_versions(
 
 @router.delete("", response_model=BulkOperationResponse)
 def delete_tool_sets(
+    req: Request,
     request: BulkDeleteRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Delete tool sets in bulk."""
+    """Delete tool sets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that the API key has access to all tool sets
+    - For session authentication, only allows deleting own tool sets
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, set_id in enumerate(request.ids):
         try:
-            tool_set = db.query(ToolSet).filter(
-                ToolSet.id == set_id,
-                ToolSet.user_id == current_user.id
-            ).first()
+            # Get existing tool set
+            query = db.query(ToolSet).filter(ToolSet.id == set_id)
+            
+            # For session auth, only allow deleting own tool sets
+            if not is_api_key_auth:
+                query = query.filter(ToolSet.user_id == current_user.id)
+            
+            tool_set = query.first()
             
             if not tool_set:
                 errors.append(ErrorDetail(
@@ -423,6 +551,16 @@ def delete_tool_sets(
                     message="Tool set not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags and tool_set.tags:
+                if not any(tag in api_key_tags for tag in tool_set.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=set_id,
+                        message="API key not authorized to delete this tool set"
+                    ))
+                    continue
             
             response = _to_response(tool_set)
             db.delete(tool_set)
@@ -463,6 +601,7 @@ def _to_response(tool_set: ToolSet) -> ToolSetResponse:
         capacity=tool_set.capacity,
         status=tool_set.status,
         activation=tool_set.activation,
+        tags=tool_set.tags or [],
         user_id=tool_set.user_id,
         created_by=tool_set.created_by,
         updated_by=tool_set.updated_by,

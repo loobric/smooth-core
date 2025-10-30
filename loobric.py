@@ -10,6 +10,7 @@ Usage:
     loobric.py --base-url https://api.loobric.com create-key <name> [options]
     loobric.py --base-url https://api.loobric.com list-keys
     loobric.py --base-url https://api.loobric.com revoke-key <key_id>
+    loobric.py --base-url https://api.loobric.com list-tool-sets [--type TYPE] [--status STATUS]
     loobric.py --base-url https://api.loobric.com logout
 
 Environment Variables:
@@ -342,6 +343,65 @@ def revoke_key(key_id: str):
     print(f"✓ API key {key_id} revoked successfully.")
 
 
+def list_tool_sets(
+    type_filter: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """List tool sets with optional filters.
+    
+    Args:
+        type_filter: Filter by type (e.g., 'machine_setup', 'job_specific', 'template', 'project')
+        status_filter: Filter by status (e.g., 'draft', 'active', 'archived')
+        limit: Maximum number of results to return
+        offset: Number of results to skip
+    """
+    params = {"limit": limit, "offset": offset}
+    if type_filter:
+        params["type"] = type_filter
+    if status_filter:
+        params["status"] = status_filter
+    
+    # Build query string
+    query_string = "&".join(f"{k}={v}" for k, v in params.items())
+    endpoint = f"/tool-sets?{query_string}"
+    
+    data = make_request("GET", endpoint, require_auth=True)
+    
+    if not data.get("items"):
+        print("No tool sets found.")
+        return
+    
+    print(f"\nTool Sets (showing {len(data['items'])} of {data['total']} total):")
+    print("=" * 80)
+    for tool_set in data["items"]:
+        print(f"  ID: {tool_set.get('id')}")
+        print(f"  Name: {tool_set.get('name')}")
+        if tool_set.get('description'):
+            print(f"  Description: {tool_set.get('description')}")
+        print(f"  Type: {tool_set.get('type')}")
+        print(f"  Status: {tool_set.get('status')}")
+        if tool_set.get('machine_id'):
+            print(f"  Machine ID: {tool_set.get('machine_id')}")
+        if tool_set.get('job_id'):
+            print(f"  Job ID: {tool_set.get('job_id')}")
+        members = tool_set.get('members', [])
+        print(f"  Members: {len(members)} tool(s)")
+        if tool_set.get('created_at'):
+            print(f"  Created: {tool_set.get('created_at')}")
+        if tool_set.get('updated_at'):
+            print(f"  Updated: {tool_set.get('updated_at')}")
+        print(f"  Version: {tool_set.get('version')}")
+        print("=" * 80)
+    
+    # Show pagination info
+    if data['total'] > len(data['items']):
+        remaining = data['total'] - (offset + len(data['items']))
+        if remaining > 0:
+            print(f"\n{remaining} more tool set(s) available. Use --offset {offset + limit} to see more.")
+
+
 def logout():
     """End session."""
     global SESSION_COOKIE
@@ -463,6 +523,39 @@ Environment Variables:
     revoke_parser = subparsers.add_parser("revoke-key", help="Revoke an API key")
     revoke_parser.add_argument("key_id", help="ID of the key to revoke")
     revoke_parser.set_defaults(func=lambda args: revoke_key(args.key_id))
+
+    # === list-tool-sets ===
+    list_tool_sets_parser = subparsers.add_parser(
+        "list-tool-sets",
+        help="List tool sets",
+        description="List tool sets with optional filters for type and status."
+    )
+    list_tool_sets_parser.add_argument(
+        "--type",
+        help="Filter by type (machine_setup, job_specific, template, project)"
+    )
+    list_tool_sets_parser.add_argument(
+        "--status",
+        help="Filter by status (draft, active, archived)"
+    )
+    list_tool_sets_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of results (default: 100)"
+    )
+    list_tool_sets_parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Number of results to skip (default: 0)"
+    )
+    list_tool_sets_parser.set_defaults(func=lambda args: list_tool_sets(
+        type_filter=args.type,
+        status_filter=args.status,
+        limit=args.limit,
+        offset=args.offset
+    ))
 
     # === logout ===
     logout_parser = subparsers.add_parser(

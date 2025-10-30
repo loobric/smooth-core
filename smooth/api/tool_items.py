@@ -18,12 +18,13 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from smooth.api.auth import get_db, require_auth
+from smooth.api.auth import get_db, require_auth, get_authenticated_user
+from smooth.api.dependencies import get_tool_item_access
 from smooth.database.schema import User, ToolItem
 
 
@@ -45,6 +46,7 @@ class ToolItemCreate(BaseModel):
     geometry: Optional[dict] = None
     material: Optional[dict] = None
     iso_13399_reference: Optional[str] = None
+    tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
 
 
 class ToolItemUpdate(BaseModel):
@@ -58,6 +60,7 @@ class ToolItemUpdate(BaseModel):
     geometry: Optional[dict] = None
     material: Optional[dict] = None
     iso_13399_reference: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 class ToolItemResponse(BaseModel):
@@ -70,6 +73,7 @@ class ToolItemResponse(BaseModel):
     geometry: Optional[dict]
     material: Optional[dict]
     iso_13399_reference: Optional[str]
+    tags: List[str]
     user_id: str
     created_by: str
     updated_by: str
@@ -118,13 +122,15 @@ class QueryResponse(BaseModel):
 
 @router.post("", response_model=BulkOperationResponse)
 def create_tool_items(
+    req: Request,
     request: BulkCreateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
     """Create tool items in bulk.
     
     Args:
+        req: FastAPI request object
         request: Bulk create request with array of items
         current_user: Authenticated user
         db: Database session
@@ -132,16 +138,30 @@ def create_tool_items(
     Returns:
         BulkOperationResponse with success/error counts and results
         
-    Assumptions:
-    - Auto-generates IDs if not provided
-    - Sets user_id, created_by, updated_by from authenticated user
-    - Partial success: valid items created, invalid items return errors
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
     """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, item_data in enumerate(request.items):
         try:
+            # Validate tags if using API key with tags
+            if is_api_key_auth and api_key_tags and item_data.tags:
+                # Check if all tags in the request are allowed by the API key
+                invalid_tags = [t for t in item_data.tags if t not in api_key_tags]
+                if invalid_tags:
+                    errors.append(ErrorDetail(
+                        index=index,
+                        message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                    ))
+                    continue
+            
             # Validate required fields
             if not item_data.type:
                 raise ValueError("Field 'type' is required")
@@ -156,6 +176,7 @@ def create_tool_items(
                 geometry=item_data.geometry,
                 material=item_data.material,
                 iso_13399_reference=item_data.iso_13399_reference,
+                tags=item_data.tags or [],
                 user_id=current_user.id,
                 created_by=current_user.id,
                 updated_by=current_user.id
@@ -188,35 +209,47 @@ def create_tool_items(
 
 @router.get("", response_model=QueryResponse)
 def list_tool_items(
-    current_user: User = Depends(require_auth),
+    req: Request,
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
     type: Optional[str] = Query(None, description="Filter by tool type"),
     manufacturer: Optional[str] = Query(None, description="Filter by manufacturer"),
     product_code: Optional[str] = Query(None, description="Filter by product code"),
+    tags: Optional[List[str]] = Query(None, description="Filter by tags (logical AND)"),
     limit: int = Query(100, ge=1, le=1000, description="Number of items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip")
 ):
     """List tool items with filters and pagination.
     
-    Args:
-        current_user: Authenticated user
-        db: Database session
-        type: Optional filter by tool type
-        manufacturer: Optional filter by manufacturer
-        product_code: Optional filter by product code
-        limit: Max items to return
-        offset: Items to skip
-        
-    Returns:
-        QueryResponse with items, total count, limit, offset
-        
-    Assumptions:
-    - Automatically filters by user_id (multi-tenant)
-    - Supports pagination
-    - Returns total count for pagination
+    Notes:
+    - For API key authentication, only returns tool items with tags that match the API key's tags
+    - For session authentication, returns all tool items owned by the user
     """
-    # Build query with user filter
-    query = db.query(ToolItem).filter(ToolItem.user_id == current_user.id)
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
+    # Base query - filter by user for session auth or all accessible items for API key
+    if is_api_key_auth:
+        # For API keys, we need to check tag access
+        query = db.query(ToolItem)
+        
+        # If API key has tags, filter by matching tags
+        if api_key_tags:
+            # Get all items and filter in Python for SQLite compatibility
+            all_items = query.all()
+            matching_ids = [
+                i.id for i in all_items 
+                if i.tags and any(tag in i.tags for tag in api_key_tags)
+            ]
+            if matching_ids:
+                query = query.filter(ToolItem.id.in_(matching_ids))
+            else:
+                # No matching items, return empty result
+                query = query.filter(ToolItem.id == None)
+    else:
+        # For session auth, only show user's own items
+        query = db.query(ToolItem).filter(ToolItem.user_id == current_user.id)
     
     # Apply filters
     if type:
@@ -226,11 +259,16 @@ def list_tool_items(
     if product_code:
         query = query.filter(ToolItem.product_code == product_code)
     
+    # Apply additional tag filters from query params
+    if tags:
+        for tag in tags:
+            query = query.filter(ToolItem.tags.contains([tag]))
+    
     # Get total count
     total = query.count()
     
     # Apply pagination
-    items = query.limit(limit).offset(offset).all()
+    items = query.offset(offset).limit(limit).all()
     
     return QueryResponse(
         items=[_to_response(item) for item in items],
@@ -243,51 +281,63 @@ def list_tool_items(
 @router.get("/{item_id}", response_model=ToolItemResponse)
 def get_tool_item(
     item_id: str,
-    current_user: User = Depends(require_auth),
+    req: Request,
+    _: None = Depends(get_tool_item_access),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Retrieve a single ToolItem by ID if owned by the current user."""
+    """Retrieve a single ToolItem by ID if user has access.
+    
+    Access is granted if:
+    - User is the owner of the tool item, or
+    - User has an API key with matching tags for the tool item
+    """
     item = db.query(ToolItem).filter(
-        ToolItem.id == item_id,
-        ToolItem.user_id == current_user.id
+        ToolItem.id == item_id
     ).first()
+    
     if not item:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Tool item not found")
+    
+    # Check ownership (bypasses tag checks)
+    if item.user_id == current_user.id:
+        return _to_response(item)
+    
+    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(item)
 
 
 @router.put("", response_model=BulkOperationResponse)
 def update_tool_items(
+    req: Request,
     request: BulkUpdateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
     """Update tool items in bulk.
     
-    Args:
-        request: Bulk update request with array of items
-        current_user: Authenticated user
-        db: Database session
-        
-    Returns:
-        BulkOperationResponse with success/error counts and results
-        
-    Assumptions:
-    - Checks version for optimistic locking
-    - Users can only update their own items
-    - Partial success: valid updates applied, invalid updates return errors
-    - Increments version on successful update
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    - Only the owner of a tool item can update it
     """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, update_data in enumerate(request.items):
         try:
-            # Find item (with user check)
-            item = db.query(ToolItem).filter(
-                ToolItem.id == update_data.id,
-                ToolItem.user_id == current_user.id
-            ).first()
+            # Get existing item
+            query = db.query(ToolItem).filter(ToolItem.id == update_data.id)
+            
+            # For session auth, only allow updating own items
+            if not is_api_key_auth:
+                query = query.filter(ToolItem.user_id == current_user.id)
+            
+            item = query.first()
             
             if not item:
                 errors.append(ErrorDetail(
@@ -296,6 +346,28 @@ def update_tool_items(
                     message="Item not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags:
+                # Check if API key has access to the existing item's tags
+                if item.tags and not any(tag in api_key_tags for tag in item.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=update_data.id,
+                        message="API key not authorized to update this item"
+                    ))
+                    continue
+                
+                # Check if new tags are allowed
+                if update_data.tags is not None:
+                    invalid_tags = [t for t in update_data.tags if t not in api_key_tags]
+                    if invalid_tags:
+                        errors.append(ErrorDetail(
+                            index=index,
+                            id=update_data.id,
+                            message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                        ))
+                        continue
             
             # Check version for optimistic locking
             if item.version != update_data.version:
@@ -321,6 +393,8 @@ def update_tool_items(
                 item.material = update_data.material
             if update_data.iso_13399_reference is not None:
                 item.iso_13399_reference = update_data.iso_13399_reference
+            if update_data.tags is not None:
+                item.tags = update_data.tags
             
             # Update metadata
             item.updated_by = current_user.id
@@ -353,35 +427,34 @@ def update_tool_items(
 
 @router.delete("", response_model=BulkOperationResponse)
 def delete_tool_items(
+    req: Request,
     request: BulkDeleteRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
     """Delete tool items in bulk.
     
-    Args:
-        request: Bulk delete request with array of IDs
-        current_user: Authenticated user
-        db: Database session
-        
-    Returns:
-        BulkOperationResponse with success/error counts
-        
-    Assumptions:
-    - Users can only delete their own items
-    - Hard delete (not soft delete)
-    - Partial success: valid deletes applied, invalid deletes return errors
+    Notes:
+    - For API key authentication, validates that the API key has access to all items
+    - For session authentication, only allows deleting own items
     """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, item_id in enumerate(request.ids):
         try:
-            # Find item (with user check)
-            item = db.query(ToolItem).filter(
-                ToolItem.id == item_id,
-                ToolItem.user_id == current_user.id
-            ).first()
+            # Get existing item
+            query = db.query(ToolItem).filter(ToolItem.id == item_id)
+            
+            # For session auth, only allow deleting own items
+            if not is_api_key_auth:
+                query = query.filter(ToolItem.user_id == current_user.id)
+            
+            item = query.first()
             
             if not item:
                 errors.append(ErrorDetail(
@@ -390,6 +463,16 @@ def delete_tool_items(
                     message="Item not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags and item.tags:
+                if not any(tag in api_key_tags for tag in item.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=item_id,
+                        message="API key not authorized to delete this item"
+                    ))
+                    continue
             
             # Store response before deletion
             response = _to_response(item)
@@ -439,6 +522,7 @@ def _to_response(item: ToolItem) -> ToolItemResponse:
         geometry=item.geometry,
         material=item.material,
         iso_13399_reference=item.iso_13399_reference,
+        tags=item.tags or [],
         user_id=item.user_id,
         created_by=item.created_by,
         updated_by=item.updated_by,
