@@ -6,16 +6,25 @@
 Loobric CLI Utility - Manage authentication and API keys for Smooth Core
 
 Usage:
-    loobric.py --base-url https://api.loobric.com login <email>
-    loobric.py --base-url https://api.loobric.com create-key <name> [options]
-    loobric.py --base-url https://api.loobric.com list-keys
-    loobric.py --base-url https://api.loobric.com revoke-key <key_id>
-    loobric.py --base-url https://api.loobric.com list-tool-sets [--type TYPE] [--status STATUS]
-    loobric.py --base-url https://api.loobric.com logout
+    # Interactive login (saves session)
+    loobric.py --login
+    loobric.py --logout
+    
+    # Session-based auth (after login)
+    loobric.py list-keys
+    loobric.py create-key <name> [options]
+    
+    # API key auth (one-off commands)
+    loobric.py --api-key <key> list-keys
+    loobric.py --api-key <key> --base-url https://api.loobric.com list-tool-sets
 
 Environment Variables:
     LOOBRIC_BASE_URL - Default base URL (can be overridden with --base-url)
-    LOOBRIC_API_KEY  - API key for authentication (alternative to login)
+
+Authentication Priority:
+    1. --api-key flag (if provided)
+    2. Saved session cookie (from login)
+    3. No auth (will fail for protected endpoints)
 """
 
 import argparse
@@ -154,11 +163,14 @@ def make_request(
         content = response.read().decode("utf-8")
 
         # Extract session cookie from Set-Cookie header (for login)
-        set_cookie = response.getheader("Set-Cookie")
-        if set_cookie and not API_KEY:  # Only use cookies if not using API key
-            cookie_value = set_cookie.split(";")[0]
-            if cookie_value.startswith("session="):
-                SESSION_COOKIE = cookie_value.split("=", 1)[1]
+        set_cookie = response.getheader("set-cookie") or response.getheader("Set-Cookie")
+        if set_cookie:
+            # Parse: "session=VALUE; HttpOnly; ..." -> extract VALUE
+            for part in set_cookie.split(";"):
+                part = part.strip()
+                if part.startswith("session="):
+                    SESSION_COOKIE = part.split("=", 1)[1]
+                    break
 
         if 200 <= status < 300:
             return json.loads(content) if content.strip() else {}
@@ -186,6 +198,8 @@ def make_request(
 
 def register(email: str = None, password: str = None):
     """Register a new user account.
+    
+    First user registration is open. Subsequent registrations require admin auth.
     
     Args:
         email: User email address (will prompt if not provided)
@@ -456,6 +470,15 @@ Environment Variables:
         help="Interactive login (prompts for URL, email, password)"
     )
     parser.add_argument(
+        "--logout",
+        action="store_true",
+        help="End current session (clears session cookie)"
+    )
+    parser.add_argument(
+        "--api-key",
+        help="API key for authentication (overrides session cookie and $LOOBRIC_API_KEY)"
+    )
+    parser.add_argument(
         "--base-url", "-b",
         default=os.environ.get("LOOBRIC_BASE_URL"),
         help="Base API URL (default: $LOOBRIC_BASE_URL or saved session)"
@@ -502,7 +525,7 @@ Environment Variables:
     login_parser.set_defaults(func=lambda args: login(
         email=args.email,
         password=args.password,
-        base_url=args.url
+        base_url=args.url or args.base_url
     ))
 
     # === create-key ===
@@ -576,24 +599,40 @@ Environment Variables:
         login()
         return
     
-    # Load saved session first (may set BASE_URL)
-    API_KEY = os.environ.get("LOOBRIC_API_KEY")
-    if not API_KEY:
-        session_data = load_session()
+    # Handle --logout shortcut
+    if args.logout:
+        # Load session to get BASE_URL for logout request
+        API_KEY = os.environ.get("LOOBRIC_API_KEY")
+        if not API_KEY:
+            session_data = load_session()
+        logout()
+        return
     
-    # Set BASE_URL from args, environment, or session
+    # Set BASE_URL from args or environment first (before loading session)
     if args.base_url:
         BASE_URL = args.base_url.rstrip("/")
-    elif not BASE_URL:
+    
+    # Load session first (for session-based auth)
+    session_data = load_session()
+    
+    # Set API key only if explicitly provided via --api-key flag
+    # Environment variable is NOT used automatically to avoid conflicts with session auth
+    if args.api_key:
+        API_KEY = args.api_key
+    
+    # Validate BASE_URL is set
+    if not BASE_URL:
         print("Error: Base URL required. Use --base-url, set LOOBRIC_BASE_URL, or run 'loobric.py --login' first", file=sys.stderr)
         sys.exit(1)
     
     if args.verbose:
         print(f"Base URL: {BASE_URL}", file=sys.stderr)
         if API_KEY:
-            print(f"Using API key from LOOBRIC_API_KEY", file=sys.stderr)
+            print(f"Using API key from --api-key flag", file=sys.stderr)
         elif SESSION_COOKIE:
             print(f"Using saved session from {SESSION_FILE}", file=sys.stderr)
+        else:
+            print(f"No authentication (login required for protected endpoints)", file=sys.stderr)
 
     # Run command if one was provided
     if hasattr(args, 'func'):
