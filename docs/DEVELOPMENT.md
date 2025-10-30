@@ -143,17 +143,6 @@ Core dependencies:
 ### Planned Future Work
 
 ### Authentication & Authorization
-**Completed:**
-- ✅ User registration and login endpoints
-- ✅ Session-based authentication with cookies
-- ✅ API key creation and management
-- ✅ First user automatically becomes admin
-- ✅ Admin-only user registration (after first user)
-- ✅ User-scoped API key listing (users only see their own keys)
-- ✅ CLI tool for user and API key management
-- ✅ Authentication enabled by default (production-like)
-- ✅ Test fixtures for disabling auth when needed
-
 **Remaining Work:**
 - [ ] Password reset/recovery flow
 - [ ] Email verification
@@ -162,38 +151,6 @@ Core dependencies:
 - [ ] API key expiration enforcement
 - [ ] Rate limiting per user/API key
 
-### Manufacturer Support
-- [X] Write tests for manufacturer accounts
-- [ ] Implement manufacturer accounts
-- [X] Write tests for manufacturer tools
-- [ ] Implement manufacturer tool import
-
-### Tag-based API key control
-
-**Current State:**
-- ✅ Database schema: `ApiKey.tags` and resource `tags` columns added (migration: `add_tags_columns.py`)
-- ✅ Core functions: `check_tag_access()`, `require_tag_access()`, `check_tag_scope_access()` in `auth/authorization.py`
-- ✅ API key creation: Tags can be set via `/api/v1/auth/keys` endpoint
-- ✅ API key validation: `validate_api_key()` returns tags tuple
-- ✅ Request state: Tags stored in `request.state.api_key_tags`, `is_api_key_auth` flag distinguishes session vs API key auth
-- ✅ Dependencies: `require_tag_access()` factory creates tag-aware endpoint guards
-- ✅ Tool assemblies: Full tag enforcement (create, read, update, delete, list)
-- ✅ Integration tests: Comprehensive test coverage in `test_tag_enforcement.py`
-- ✅ Documentation: AUTHENTICATION.md updated with tag usage patterns and examples
-- ✅ Admin bypass: `admin:*` scope bypasses all tag checks
-- ✅ Session auth: Bypasses tag checks (users own all their resources)
-
-**Completed:**
-- ✅ Tool assemblies: Full tag enforcement (create, read, update, delete, list)
-- ✅ Tool sets: Full tag enforcement (create, read, update, delete, list)
-- ✅ Tool items: Full tag enforcement (create, read, update, delete, list)
-- ✅ Tool presets: Full tag enforcement (create, read, update, delete, list)
-- ✅ Tool instances: Full tag enforcement (create, read, update, delete, list)
-- ✅ Integration tests: Complete test coverage for all resources
-- ✅ All resource_tags_getter implementations complete
-
-**Tag Enforcement Complete:**
-Tag-based access control is now fully implemented across all resource types in the Smooth API. API keys with tags can only access resources with matching tags, while session authentication bypasses tag checks (users own all their resources).
 
 ### Notification System
 - [ ] Write tests for MQTT message publishing

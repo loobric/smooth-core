@@ -18,7 +18,7 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +38,7 @@ class ToolItemCreate(BaseModel):
     Assumptions:
     - Type is required but validated in endpoint for partial success
     - Other fields are optional
+    - If parent_tool_id is provided, copies data from parent ToolItem in manufacturer's account
     """
     type: Optional[str] = Field(None, description="Tool type: cutting_tool, holder, insert, adapter")
     manufacturer: Optional[str] = None
@@ -47,12 +48,13 @@ class ToolItemCreate(BaseModel):
     material: Optional[dict] = None
     iso_13399_reference: Optional[str] = None
     tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
+    parent_tool_id: Optional[str] = Field(None, description="ID of catalog tool to copy from")
 
 
 class ToolItemUpdate(BaseModel):
     """Schema for updating a tool item."""
     id: str
-    version: int
+    version: Optional[int] = None  # Optional for /bulk endpoint, will fetch current version
     type: Optional[str] = None
     manufacturer: Optional[str] = None
     product_code: Optional[str] = None
@@ -74,6 +76,7 @@ class ToolItemResponse(BaseModel):
     material: Optional[dict]
     iso_13399_reference: Optional[str]
     tags: List[str]
+    parent_tool_id: Optional[str]
     user_id: str
     created_by: str
     updated_by: str
@@ -87,9 +90,19 @@ class BulkCreateRequest(BaseModel):
     items: List[ToolItemCreate]
 
 
+class BulkPostRequest(BaseModel):
+    """Bulk post request (alternate format for /bulk endpoint)."""
+    tools: List[ToolItemCreate]
+
+
 class BulkUpdateRequest(BaseModel):
     """Bulk update request."""
     items: List[ToolItemUpdate]
+
+
+class BulkPatchRequest(BaseModel):
+    """Bulk patch request (alternate format for /bulk endpoint)."""
+    updates: List[ToolItemUpdate]
 
 
 class BulkDeleteRequest(BaseModel):
@@ -120,6 +133,28 @@ class QueryResponse(BaseModel):
     offset: int
 
 
+@router.post("/bulk", status_code=status.HTTP_201_CREATED)
+def bulk_post_tool_items(
+    req: Request,
+    request: BulkPostRequest,
+    current_user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk create tool items (alternate endpoint format).
+    
+    Returns:
+        dict: {"tools_created": count, "tool_ids": [...]}
+    """
+    # Convert to standard format and call main create function
+    standard_request = BulkCreateRequest(items=request.tools)
+    result = _create_tool_items_impl(req, standard_request, current_user, db)
+    
+    return {
+        "tools_created": result.success_count,
+        "tool_ids": [r.id for r in result.results]
+    }
+
+
 @router.post("", response_model=BulkOperationResponse)
 def create_tool_items(
     req: Request,
@@ -127,7 +162,17 @@ def create_tool_items(
     current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Create tool items in bulk.
+    """Create tool items in bulk."""
+    return _create_tool_items_impl(req, request, current_user, db)
+
+
+def _create_tool_items_impl(
+    req: Request,
+    request: BulkCreateRequest,
+    current_user: User,
+    db: Session
+) -> BulkOperationResponse:
+    """Internal implementation for bulk create.
     
     Args:
         req: FastAPI request object
@@ -162,25 +207,49 @@ def create_tool_items(
                     ))
                     continue
             
-            # Validate required fields
-            if not item_data.type:
-                raise ValueError("Field 'type' is required")
-            
-            # Create tool item
-            tool_item = ToolItem(
-                id=str(uuid4()),
-                type=item_data.type,
-                manufacturer=item_data.manufacturer,
-                product_code=item_data.product_code,
-                description=item_data.description,
-                geometry=item_data.geometry,
-                material=item_data.material,
-                iso_13399_reference=item_data.iso_13399_reference,
-                tags=item_data.tags or [],
-                user_id=current_user.id,
-                created_by=current_user.id,
-                updated_by=current_user.id
-            )
+            # If parent_tool_id provided, copy from parent
+            if item_data.parent_tool_id:
+                parent = db.query(ToolItem).filter(ToolItem.id == item_data.parent_tool_id).first()
+                if not parent:
+                    raise ValueError(f"Parent tool {item_data.parent_tool_id} not found")
+                
+                # Copy data from parent, allow overrides from request
+                tool_item = ToolItem(
+                    id=str(uuid4()),
+                    type=item_data.type or parent.type,
+                    manufacturer=item_data.manufacturer or parent.manufacturer,
+                    product_code=item_data.product_code or parent.product_code,
+                    description=item_data.description or parent.description,
+                    geometry=item_data.geometry or parent.geometry,
+                    material=item_data.material or parent.material,
+                    iso_13399_reference=item_data.iso_13399_reference or parent.iso_13399_reference,
+                    tags=item_data.tags or parent.tags or [],
+                    parent_tool_id=item_data.parent_tool_id,
+                    user_id=current_user.id,
+                    created_by=current_user.id,
+                    updated_by=current_user.id
+                )
+            else:
+                # Validate required fields for new tools
+                if not item_data.type:
+                    raise ValueError("Field 'type' is required")
+                
+                # Create tool item
+                tool_item = ToolItem(
+                    id=str(uuid4()),
+                    type=item_data.type,
+                    manufacturer=item_data.manufacturer,
+                    product_code=item_data.product_code,
+                    description=item_data.description,
+                    geometry=item_data.geometry,
+                    material=item_data.material,
+                    iso_13399_reference=item_data.iso_13399_reference,
+                    tags=item_data.tags or [],
+                    parent_tool_id=None,
+                    user_id=current_user.id,
+                    created_by=current_user.id,
+                    updated_by=current_user.id
+                )
             
             db.add(tool_item)
             db.flush()  # Flush to get the generated timestamps
@@ -307,6 +376,27 @@ def get_tool_item(
     return _to_response(item)
 
 
+@router.patch("/bulk")
+def bulk_patch_tool_items(
+    req: Request,
+    request: BulkPatchRequest,
+    current_user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db)
+):
+    """Bulk update tool items (alternate endpoint format).
+    
+    Returns:
+        dict: {"tools_updated": count}
+    """
+    # Convert to standard format and call main update function
+    standard_request = BulkUpdateRequest(items=request.updates)
+    result = _update_tool_items_impl(req, standard_request, current_user, db)
+    
+    return {
+        "tools_updated": result.success_count
+    }
+
+
 @router.put("", response_model=BulkOperationResponse)
 def update_tool_items(
     req: Request,
@@ -314,7 +404,17 @@ def update_tool_items(
     current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Update tool items in bulk.
+    """Update tool items in bulk."""
+    return _update_tool_items_impl(req, request, current_user, db)
+
+
+def _update_tool_items_impl(
+    req: Request,
+    request: BulkUpdateRequest,
+    current_user: User,
+    db: Session
+) -> BulkOperationResponse:
+    """Internal implementation for bulk update.
     
     Notes:
     - For API key authentication, validates that all tags in the request are allowed by the API key
@@ -369,8 +469,8 @@ def update_tool_items(
                         ))
                         continue
             
-            # Check version for optimistic locking
-            if item.version != update_data.version:
+            # Check version for optimistic locking (if version provided)
+            if update_data.version is not None and item.version != update_data.version:
                 errors.append(ErrorDetail(
                     index=index,
                     id=update_data.id,
@@ -523,6 +623,7 @@ def _to_response(item: ToolItem) -> ToolItemResponse:
         material=item.material,
         iso_13399_reference=item.iso_13399_reference,
         tags=item.tags or [],
+        parent_tool_id=item.parent_tool_id,
         user_id=item.user_id,
         created_by=item.created_by,
         updated_by=item.updated_by,

@@ -26,14 +26,15 @@ def test_grant_manufacturer_role(client, admin_headers):
     """Test granting manufacturer role to existing user.
     
     Assumptions:
-    - User self-registers as normal user
+    - Admin creates user account
     - Admin grants "manufacturer" role via PATCH /users/{id}/roles
     - Can add manufacturer_profile when granting role
     - Only admin can grant roles
     """
-    # User self-registers
+    # Admin creates user
     user_response = client.post(
         "/api/v1/auth/register",
+        headers=admin_headers,
         json={
             "email": "catalog@sandvik.com",
             "password": "secure_password"
@@ -76,6 +77,7 @@ def test_revoke_manufacturer_role(client, admin_headers):
     # Setup: Create user with manufacturer role
     user = client.post(
         "/api/v1/auth/register",
+        headers=admin_headers,
         json={"email": "temp@example.com", "password": "pass"}
     ).json()
     
@@ -101,16 +103,17 @@ def test_revoke_manufacturer_role(client, admin_headers):
 
 
 @pytest.mark.integration
-def test_non_admin_cannot_grant_roles(client, user_headers):
+def test_non_admin_cannot_grant_roles(client, user_headers, admin_headers):
     """Test that non-admin users cannot grant roles.
     
     Assumptions:
     - Only admin can modify user roles
     - Regular users get 403 Forbidden
     """
-    # Create another user
+    # Create another user (admin creates it)
     target_user = client.post(
         "/api/v1/auth/register",
+        headers=admin_headers,
         json={"email": "target@example.com", "password": "pass"}
     ).json()
     
@@ -406,7 +409,7 @@ def test_user_bulk_override_catalog_tool_specs(client, user_headers, manufacture
     assert tool1["parent_tool_id"] == mfr_tools["tool_ids"][0]  # Reference maintained
     
     # Verify original catalog tools unchanged
-    cat_tool1 = client.get(f"/api/v1/tool-items/{mfr_tools['tool_ids'][0]}").json()
+    cat_tool1 = client.get(f"/api/v1/tool-items/{mfr_tools['tool_ids'][0]}", headers=manufacturer_headers).json()
     assert cat_tool1["geometry"]["diameter"]["value"] == 12.7
 
 

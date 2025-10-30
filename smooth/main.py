@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from smooth.config import settings
 from smooth.api.auth import router as auth_router
 from smooth.api.backup_api import router as backup_router
+from smooth.api.users import router as users_router
+from smooth.api.catalogs import router as catalogs_router
 from smooth.api.tool_items import router as tool_items_router
 from smooth.api.tool_assemblies import router as tool_assemblies_router
 from smooth.api.tool_instances import router as tool_instances_router
@@ -84,6 +86,8 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(auth_router)
     app.include_router(backup_router)
+    app.include_router(users_router)
+    app.include_router(catalogs_router)
     app.include_router(tool_items_router)
     app.include_router(tool_assemblies_router)
     app.include_router(tool_instances_router)

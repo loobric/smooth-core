@@ -169,6 +169,71 @@ def disable_auth(monkeypatch):
 
 
 @pytest.fixture
+def admin_headers(client, db_session):
+    """Create admin user and return authorization headers.
+    
+    Returns:
+        dict: Headers with session cookie for admin user
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    
+    # Create admin user
+    admin = create_user(db_session, "admin@example.com", "AdminPass123")
+    admin.is_admin = True
+    admin.role = "admin"
+    db_session.commit()
+    
+    session_id = create_session(admin.id)
+    return {"Cookie": f"session={session_id}"}
+
+
+@pytest.fixture
+def user_headers(client, db_session):
+    """Create regular user and return authorization headers.
+    
+    Returns:
+        dict: Headers with session cookie for regular user
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    
+    # Create regular user (ensure it's not admin)
+    user = create_user(db_session, "user@example.com", "UserPass123")
+    user.is_admin = False
+    user.role = "user"
+    db_session.commit()
+    
+    session_id = create_session(user.id)
+    return {"Cookie": f"session={session_id}"}
+
+
+@pytest.fixture
+def manufacturer_headers(client, db_session):
+    """Create manufacturer user and return authorization headers.
+    
+    Manufacturer users can create catalog ToolItems that regular users can copy.
+    
+    Returns:
+        dict: Headers with session cookie for manufacturer user
+    """
+    from smooth.auth.user import create_user
+    from smooth.api.auth import create_session
+    
+    # Create manufacturer user
+    manufacturer = create_user(db_session, "manufacturer@example.com", "MfgPass123")
+    manufacturer.role = "manufacturer"
+    manufacturer.manufacturer_profile = {
+        "company_name": "Test Manufacturing Co",
+        "website": "https://test-mfg.com"
+    }
+    db_session.commit()
+    
+    session_id = create_session(manufacturer.id)
+    return {"Cookie": f"session={session_id}"}
+
+
+@pytest.fixture
 def db_session():
     """Create an in-memory SQLite database for testing.
     
