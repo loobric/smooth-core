@@ -93,22 +93,41 @@ def require_tag_access(
             'DELETE': 'delete'
         }.get(request.method.upper(), 'access')
         
+        # Get auth info from request state
+        scopes = getattr(request.state, 'scopes', [])
+        api_key_tags = getattr(request.state, 'api_key_tags', [])
+        
         # Check tag-based access
-        require_tag_scope_access(
-            scopes=getattr(request.state, 'scopes', []),
-            api_key_tags=getattr(request.state, 'api_key_tags', []),
-            resource_tags=resource_tags,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            action=action
-        )
+        from smooth.auth.authorization import PermissionDeniedError
+        try:
+            require_tag_scope_access(
+                scopes=scopes,
+                api_key_tags=api_key_tags,
+                resource_tags=resource_tags,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                action=action
+            )
+        except PermissionDeniedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e)
+            )
     
     return _dependency
+
+# Resource tags getter functions
+def get_tool_assembly_tags(resource_id: str, db: Session) -> List[str]:
+    """Get tags for a tool assembly."""
+    from smooth.database.schema import ToolAssembly
+    assembly = db.query(ToolAssembly).filter(ToolAssembly.id == resource_id).first()
+    return assembly.tags if assembly and assembly.tags else []
 
 # Common tag-based access dependencies
 get_tool_assembly_access = require_tag_access(
     resource_type="tool_assembly",
-    resource_id_param="assembly_id"
+    resource_id_param="assembly_id",
+    resource_tags_getter=get_tool_assembly_tags
 )
 
 get_tool_instance_access = require_tag_access(

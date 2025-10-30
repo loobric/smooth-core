@@ -46,10 +46,28 @@ def get_db() -> Session:
         db.close()
 
 def init_db() -> None:
-    """Initialize database tables.
+    """Initialize database tables if they don't exist.
     
     This should be called during application startup to ensure all
-    database tables are created.
+    database tables are created. Uses SQLAlchemy's create_all() which
+    only creates tables that don't already exist - it will not overwrite
+    or modify existing tables.
+    
+    Assumptions:
+    - Safe to call multiple times
+    - Does not drop or modify existing tables
+    - Does not affect existing data
     """
     from smooth.database.schema import Base  # Import here to avoid circular imports
-    Base.metadata.create_all(bind=engine)
+    from sqlalchemy import inspect
+    
+    # Check if tables already exist
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+    
+    if existing_tables:
+        print(f"Database has {len(existing_tables)} existing tables - skipping initialization")
+    else:
+        print("Initializing fresh database schema...")
+        Base.metadata.create_all(bind=engine)
+        print("Database schema created")

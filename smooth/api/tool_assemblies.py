@@ -129,7 +129,8 @@ async def create_tool_assemblies(
     - For session authentication, allows any tags
     """
     # Get API key tags if using API key auth
-    api_key_tags = getattr(request.state, 'api_key_tags', None)
+    is_api_key_auth = getattr(request.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(request.state, 'api_key_tags', [])
     
     results = []
     errors = []
@@ -137,7 +138,7 @@ async def create_tool_assemblies(
     for i, item in enumerate(create_request.items):
         try:
             # Validate tags if using API key with tags
-            if api_key_tags is not None and item.tags:
+            if is_api_key_auth and api_key_tags and item.tags:
                 # Check if all tags in the request are allowed by the API key
                 invalid_tags = [t for t in item.tags if t not in api_key_tags]
                 if invalid_tags:
@@ -223,76 +224,56 @@ async def list_tool_assemblies(
     - For API key authentication, only returns assemblies with tags that match the API key's tags
     - For session authentication, returns all assemblies owned by the user
     """
-    print(f"\n[DEBUG] list_tool_assemblies - Current user ID: {current_user.id}")
-    print(f"[DEBUG] Request URL: {request.url}")
-    print(f"[DEBUG] Request headers: {dict(request.headers)}")
-    
     # Get API key tags if using API key auth
-    api_key_tags = getattr(request.state, 'api_key_tags', None)
-    print(f"[DEBUG] API key tags: {api_key_tags}")
+    is_api_key_auth = getattr(request.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(request.state, 'api_key_tags', [])
     
     # Base query - filter by user for session auth or all accessible assemblies for API key
-    if api_key_tags is not None:
+    if is_api_key_auth:
         # For API keys, we need to check tag access
         query = db.query(ToolAssembly)
-        print("[DEBUG] Using API key authentication")
         
         # If API key has tags, filter by matching tags
         if api_key_tags:
-            # Create a condition that matches if any of the API key tags is in the assembly's tags
-            tag_conditions = [ToolAssembly.tags.contains([tag]) for tag in api_key_tags]
-            query = query.filter(or_(*tag_conditions))
-            print(f"[DEBUG] Applied tag filters: {api_key_tags}")
+            # For SQLite, we need to filter in Python since JSON querying is limited
+            # We'll fetch all and filter, or use a different approach
+            # For now, filter by checking if any tag matches
+            from sqlalchemy import func
+            # Get all assemblies and filter in Python for SQLite compatibility
+            all_assemblies = query.all()
+            matching_ids = [
+                a.id for a in all_assemblies 
+                if a.tags and any(tag in a.tags for tag in api_key_tags)
+            ]
+            if matching_ids:
+                query = query.filter(ToolAssembly.id.in_(matching_ids))
+            else:
+                # No matching assemblies, return empty result
+                query = query.filter(ToolAssembly.id == None)
     else:
         # For session auth, only show user's own assemblies
         user_id = str(current_user.id)
-        print(f"[DEBUG] Using session authentication, filtering by user_id: {user_id}")
-        
-        # Debug: Print all assemblies in the database
-        all_assemblies = db.query(ToolAssembly).all()
-        print(f"[DEBUG] All assemblies in DB: {len(all_assemblies)}")
-        for a in all_assemblies:
-            print(f"  - ID: {a.id}, User ID: {a.user_id}, Name: {a.name}")
-        
-        # Create the query with the filter
         query = db.query(ToolAssembly).filter(
             ToolAssembly.user_id == user_id
         )
-        print(f"[DEBUG] Query filter: user_id = {user_id}")
     
     # Apply additional tag filters from query params
     if tags:
         for tag in tags:
             query = query.filter(ToolAssembly.tags.contains([tag]))
-        print(f"[DEBUG] Applied additional tag filters: {tags}")
-    
-    # Get the SQL query for debugging
-    from sqlalchemy.dialects import sqlite
-    compiled_query = str(query.statement.compile(dialect=sqlite.dialect(), 
-                                               compile_kwargs={"literal_binds": True}))
-    print(f"[DEBUG] SQL Query: {compiled_query}")
     
     # Get total count before pagination
     total = query.count()
-    print(f"[DEBUG] Total assemblies matching filter: {total}")
     
     # Apply pagination
     assemblies = query.offset(offset).limit(limit).all()
-    print(f"[DEBUG] Found {len(assemblies)} assemblies after pagination")
     
-    # Debug: Print the assemblies that will be returned
-    for i, a in enumerate(assemblies):
-        print(f"[DEBUG] Assembly {i+1}: ID={a.id}, User ID={a.user_id}, Name={a.name}")
-    
-    response = QueryResponse(
+    return QueryResponse(
         items=[_to_response(a) for a in assemblies],
         total=total,
         limit=limit,
         offset=offset
     )
-    
-    print(f"[DEBUG] Response: {response}")
-    return response
 
 
 def get_assembly_tags(assembly_id: str, db: Session) -> List[str]:
@@ -360,7 +341,8 @@ async def update_tool_assemblies(
     - Only the owner of an assembly can update it
     """
     # Get API key tags if using API key auth
-    api_key_tags = getattr(request.state, 'api_key_tags', None)
+    is_api_key_auth = getattr(request.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(request.state, 'api_key_tags', [])
     
     results = []
     errors = []
@@ -373,7 +355,7 @@ async def update_tool_assemblies(
             query = db.query(ToolAssembly).filter(ToolAssembly.id == item.id)
             
             # For session auth, only allow updating own assemblies
-            if api_key_tags is None:
+            if not is_api_key_auth:
                 query = query.filter(ToolAssembly.user_id == current_user.id)
             
             assembly = query.first()
@@ -387,7 +369,7 @@ async def update_tool_assemblies(
                 continue
                 
             # For API key auth, check if tags are allowed
-            if api_key_tags is not None:
+            if is_api_key_auth and api_key_tags:
                 # Check if API key has access to the existing assembly's tags
                 if assembly.tags and not any(tag in api_key_tags for tag in assembly.tags):
                     errors.append(ErrorDetail(
@@ -500,7 +482,8 @@ async def delete_tool_assemblies(
     - For session authentication, only allows deleting own assemblies
     """
     # Get API key tags if using API key auth
-    api_key_tags = getattr(request.state, 'api_key_tags', None)
+    is_api_key_auth = getattr(request.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(request.state, 'api_key_tags', [])
     
     results = []
     errors = []
@@ -513,7 +496,7 @@ async def delete_tool_assemblies(
             query = db.query(ToolAssembly).filter(ToolAssembly.id == assembly_id)
             
             # For session auth, only allow deleting own assemblies
-            if api_key_tags is None:
+            if not is_api_key_auth:
                 query = query.filter(ToolAssembly.user_id == current_user.id)
             
             assembly = query.first()
@@ -527,7 +510,7 @@ async def delete_tool_assemblies(
                 continue
                 
             # For API key auth, check if tags are allowed
-            if api_key_tags is not None and assembly.tags:
+            if is_api_key_auth and api_key_tags and assembly.tags:
                 if not any(tag in api_key_tags for tag in assembly.tags):
                     errors.append(ErrorDetail(
                         index=i,
@@ -548,8 +531,9 @@ async def delete_tool_assemblies(
     # Second pass: perform deletes
     for i, assembly in to_delete:
         try:
+            response_data = _to_response(assembly)
             db.delete(assembly)
-            results.append({"id": assembly.id})
+            results.append(response_data)
             
         except Exception as e:
             errors.append(ErrorDetail(

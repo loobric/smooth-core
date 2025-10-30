@@ -8,11 +8,13 @@ Pytest configuration and shared fixtures.
 This module provides test fixtures that are shared across the test suite.
 
 Assumptions:
-- Tests run with authentication disabled by default
+- Tests run with authentication ENABLED by default (production-like)
+- Tests that need auth disabled must use the disable_auth fixture
 - Each test gets a fresh TestClient instance
 - Database fixtures use in-memory SQLite
 """
 import pytest
+import os
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -36,11 +38,12 @@ def app():
 
 
 @pytest.fixture
-def client(db_session):
+def client(db_session, request):
     """Create test client sharing the same database session.
     
     Args:
         db_session: Shared database session fixture
+        request: Pytest request object to check for disable_auth marker
         
     Returns:
         TestClient: FastAPI test client
@@ -48,9 +51,18 @@ def client(db_session):
     Assumptions:
     - Shares database session with tests
     - Overrides get_db dependency to use shared session
+    - Auth disabled if test uses disable_auth fixture
     """
     from smooth.main import create_app
     from smooth.api.auth import get_db
+    from smooth.config import settings
+    
+    # Store original auth_enabled value
+    original_auth_enabled = settings.auth_enabled
+    
+    # Check if disable_auth fixture was used
+    if 'disable_auth' in request.fixturenames:
+        settings.auth_enabled = False
     
     app = create_app()
     
@@ -66,6 +78,9 @@ def client(db_session):
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
+    
+    # Restore original auth setting
+    settings.auth_enabled = original_auth_enabled
 
 
 @pytest.fixture
@@ -135,6 +150,22 @@ def db_with_sample_data(db_session):
     restore_backup(db_session, backup)
     
     return db_session
+
+
+@pytest.fixture
+def disable_auth(monkeypatch):
+    """Disable authentication for tests that need it.
+    
+    Use this fixture for tests that specifically need to test
+    unauthenticated behavior or legacy tests that haven't been
+    updated to use proper authentication.
+    
+    Example:
+        def test_something(client, disable_auth):
+            # Auth is disabled for this test
+            response = client.get("/api/endpoint")
+    """
+    monkeypatch.setenv("AUTH_ENABLED", "false")
 
 
 @pytest.fixture

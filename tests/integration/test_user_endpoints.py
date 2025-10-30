@@ -55,8 +55,9 @@ def test_register_duplicate_email(client):
     Assumptions:
     - Returns 400 Bad Request
     - Error message indicates duplicate email
+    - Must be logged in as admin to register second user
     """
-    # Register first user
+    # Register first user (becomes admin)
     client.post(
         "/api/v1/auth/register",
         json={
@@ -65,7 +66,16 @@ def test_register_duplicate_email(client):
         }
     )
     
-    # Attempt duplicate registration
+    # Login as admin
+    client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "duplicate@example.com",
+            "password": "Password123"
+        }
+    )
+    
+    # Attempt duplicate registration (as admin)
     response = client.post(
         "/api/v1/auth/register",
         json={

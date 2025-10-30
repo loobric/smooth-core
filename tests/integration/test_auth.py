@@ -35,15 +35,16 @@ def test_auth_disabled_allows_all_requests(client):
 
 
 @pytest.mark.integration
-def test_create_api_key(client):
+def test_create_api_key(client, disable_auth):
     """Test creating an API key with scopes.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - Endpoint is POST /api/v1/auth/keys
-    - Requires admin:users scope (or auth disabled)
+    - Auth disabled for this test
     - Returns key with id, name, scopes, and key value (only on creation)
     - Key value is only shown once
     """
@@ -68,15 +69,16 @@ def test_create_api_key(client):
 
 
 @pytest.mark.integration
-def test_list_api_keys(client):
+def test_list_api_keys(client, disable_auth):
     """Test listing all API keys.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - Endpoint is GET /api/v1/auth/keys
-    - Requires admin:users scope (or auth disabled)
+    - Auth disabled for this test
     - Returns array of keys without key values
     """
     # Create a key first
@@ -100,15 +102,16 @@ def test_list_api_keys(client):
 
 
 @pytest.mark.integration
-def test_revoke_api_key(client):
+def test_revoke_api_key(client, disable_auth):
     """Test revoking an API key.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - Endpoint is DELETE /api/v1/auth/keys/{key_id}
-    - Requires admin:users scope (or auth disabled)
+    - Auth disabled for this test
     - Returns 204 No Content on success
     """
     # Create a key first
@@ -127,16 +130,17 @@ def test_revoke_api_key(client):
 
 
 @pytest.mark.integration
-def test_authenticated_request_with_valid_key(client):
+def test_authenticated_request_with_valid_key(client, disable_auth):
     """Test making authenticated request with valid API key.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - API key passed in Authorization header: "Bearer <key>"
     - Valid key with appropriate scope allows access
-    - This test will need AUTH_ENABLED=true environment
+    - Auth disabled for this test
     """
     # Create a key
     create_response = client.post(
@@ -159,15 +163,17 @@ def test_authenticated_request_with_valid_key(client):
 
 
 @pytest.mark.integration
-def test_request_without_required_scope(client):
+def test_request_without_required_scope(client, disable_auth):
     """Test that request fails when API key lacks required scope.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - Key with only "read" scope cannot perform write operations
     - Returns 403 Forbidden
+    - Auth disabled for this test
     """
     # Create a read-only key
     create_response = client.post(
@@ -192,15 +198,17 @@ def test_request_without_required_scope(client):
 
 
 @pytest.mark.integration
-def test_machine_specific_key_access(client):
+def test_machine_specific_key_access(client, disable_auth):
     """Test that machine-specific key is limited to that machine.
     
     Args:
         client: TestClient fixture
+        disable_auth: Fixture to disable authentication
         
     Assumptions:
     - Key can be limited to specific machine_id
     - Requests for other machines return 403
+    - Auth disabled for this test
     """
     # Create machine-specific key
     create_response = client.post(

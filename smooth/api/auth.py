@@ -24,29 +24,8 @@ from smooth.auth.apikey import (
 from smooth.auth.user import create_user, authenticate_user, get_user_by_id, get_user_by_email
 from smooth.config import settings
 from smooth.database.schema import Base, init_db, User
-from sqlalchemy import create_engine
+from smooth.database.session import get_db
 import secrets
-
-
-# Database dependency
-def get_db():
-    """Get database session.
-    
-    Yields:
-        Session: Database session
-        
-    Assumptions:
-    - Creates session per request
-    - Automatically closes session after request
-    """
-    engine = create_engine(settings.database_url)
-    Base.metadata.create_all(engine)
-    
-    session = Session(engine)
-    try:
-        yield session
-    finally:
-        session.close()
 
 
 # Request/Response models
@@ -171,7 +150,7 @@ def require_auth(
         HTTPException: 401 if not authenticated
         
     Assumptions:
-    - Supports both session-based (cookie) and API key (Bearer token) auth
+    - Supports both session-based (cookie) and API key (Bearer) auth
     - Tries session first, then API key
     - For API key auth, stores scopes and tags in request.state for authorization
     """
@@ -181,9 +160,10 @@ def require_auth(
     user = get_session_user(session, db)
     if user:
         if request:
-            # For session auth, set empty scopes and tags
+            # For session auth, don't set api_key_tags (leave as None)
+            # This signals session auth vs API key auth
             request.state.scopes = []
-            request.state.api_key_tags = []
+            request.state.is_api_key_auth = False
         return user
     
     # Try API key authentication
@@ -197,6 +177,7 @@ def require_auth(
                 # Store scopes and tags in request state for authorization
                 request.state.scopes = scopes or []
                 request.state.api_key_tags = tags or []
+                request.state.is_api_key_auth = True
             return user
     
     raise HTTPException(
@@ -243,24 +224,59 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 
 
 # User endpoints
+def _get_current_user_if_not_first(
+    session: Annotated[str | None, Cookie()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db),
+    request: Request = None
+) -> Optional[User]:
+    """Get current user only if this is not the first user registration.
+    
+    Returns None for first user (allows open registration).
+    Returns authenticated user for subsequent registrations.
+    """
+    user_count = db.query(User).count()
+    if user_count == 0:
+        return None
+    return require_auth(session, authorization, db, request)
+
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(
     user_data: UserRegister,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(_get_current_user_if_not_first)
 ):
     """Register a new user account.
+    
+    First user registration is open and creates an admin account.
+    Subsequent registrations require admin authentication.
     
     Args:
         user_data: User registration data
         db: Database session
+        current_user: Current authenticated user (None for first user)
         
     Returns:
         UserResponse: Created user object
         
     Raises:
         HTTPException: 400 if email already exists
+        HTTPException: 403 if not admin (for subsequent users)
     """
     from sqlalchemy.exc import IntegrityError
+    
+    # Check if this is the first user
+    user_count = db.query(User).count()
+    is_first_user = user_count == 0
+    
+    # If not first user, require admin authentication
+    if not is_first_user:
+        if not current_user or not current_user.is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Only administrators can create new users"
+            )
     
     try:
         user = create_user(
@@ -268,6 +284,14 @@ def register(
             email=user_data.email,
             password=user_data.password
         )
+        
+        # Make first user an admin
+        if is_first_user:
+            user.is_admin = True
+            user.role = "admin"
+            db.commit()
+            db.refresh(user)
+        
         return UserResponse(
             id=user.id,
             email=user.email,

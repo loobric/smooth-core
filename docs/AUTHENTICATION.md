@@ -1,172 +1,116 @@
-# Authentication and Authorization
+# Authentication
 
-This document outlines the authentication and authorization mechanisms in Smooth Core.
+Smooth uses simple authentication to protect your tool data while keeping it easy to integrate with machines and applications.
 
-## Authentication Methods
+## Two Ways to Authenticate
 
-### 1. User Authentication
+### 1. User Accounts (Web UI)
+- Email and password login
+- Session-based
+- For managing tools, data, and creating API keys
 
-#### Email/Password
-- Standard email and password authentication
-- Password hashed using Argon2
-- Session-based with secure, HTTP-only cookies
-- Configurable session duration (default: 24 hours)
+### 2. API Keys (Machine/client Access)
+- For CNC machines, scripts, and applications
+- Created by users through the web UI
+- Can be scoped and tagged for specific purposes
 
-#### OAuth 2.0 (Planned)
-- Support for Google, GitHub, and Microsoft accounts
-- JWT-based stateless authentication
-- Automatic account linking
+## API Keys
 
-### 2. API Key Authentication
-- Scoped API keys for programmatic access
-- Key rotation support
-- Last used tracking
-- Revocation capability
+### Creating API Keys
 
-## Authorization
+1. Log in to Smooth web UI
+2. Navigate to Settings → API Keys
+3. Click "Create New Key"
+4. Set:
+   - **Name**: Descriptive name (e.g., "Mill #3", "Backup Script")
+   - **Scopes**: What the key can do (read, write:items, write:presets, etc.)
+   - **Tags**: Optional labels to narrow what a token can act on.
+   - **Expiration**: Optional expiration date
 
-### Role-Based Access Control (RBAC)
+5. Copy the key immediately—it won't be shown again
 
-#### User Roles
-1. **Admin**
-   - Full system access
-   - User management
-   - System configuration
+### Using API Keys
 
-2. **Manager**
-   - Create/read/update tool data
-   - Manage tool assignments
-   - View audit logs
+Include the key in the `Authorization` header:
 
-3. **Operator**
-   - View tool data
-   - Record tool usage
-   - Limited write access
-
-4. **Viewer**
-   - Read-only access
-   - No modifications allowed
+```bash
+curl -H "Authorization: Bearer sk_abc123..." \
+  https://api.loobric.com/api/v1/tools
+```
 
 ### Scopes
 
-API keys can be scoped to specific operations:
+Control what each key can access:
 
-```yaml
-scopes:
-  - tools:read
-  - tools:write
-  - presets:read
-  - presets:write
-  - admin:users
-  - admin:system
-```
+- `read` - View all data
+- `write:items` - Create/update tool items
+- `write:presets` - Create/update presets
+- `write:assemblies` - Create/update assemblies
+- `admin:users` - Manage users (admin only)
+- `admin:backup` - Backup/restore operations
 
-## Token Management
+### Tags (Future Feature)
 
-### JWT Tokens
-- Short-lived access tokens (15 minutes)
-- Long-lived refresh tokens (7 days)
-- Token rotation
-- Automatic token revocation on password change
+Tags enable flexible access control:
 
-### API Keys
-- Generated per application/user
-- Can be revoked at any time
-- Support for expiration dates
-- Last used tracking
-
-## Security Features
-
-### Rate Limiting
-- Configurable rate limits
-- IP-based and user-based limiting
-- Separate limits for authenticated and unauthenticated requests
-
-### Security Headers
-- Strict-Transport-Security
-- X-Content-Type-Options
-- X-Frame-Options
-- Content-Security-Policy
-
-### Password Policies
-- Minimum length: 12 characters
-- Requires uppercase, lowercase, numbers, and special characters
-- Password history (last 5 passwords)
-- Account lockout after failed attempts
-
-## Implementation Details
-
-### Authentication Flow
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant A as API
-    participant D as Database
-    
-    C->>A: POST /auth/login {email, password}
-    A->>D: Verify credentials
-    D-->>A: User record
-    A->>A: Generate tokens
-    A-->>C: Set HTTP-only cookie with refresh token
-    A-->>C: Return access token (JSON)
-    
-    loop Until token expires
-        C->>A: Request with access token
-        A->>A: Validate token
-        A-->>C: Response
-    end
-    
-    C->>A: Request with expired token
-    A-->>C: 401 Unauthorized
-    C->>A: POST /auth/refresh {refresh_token}
-    A->>A: Validate refresh token
-    A-->>C: New access token
-```
-
-### Token Structure
-
-**Access Token (JWT)**
 ```json
 {
-  "sub": "user123",
-  "email": "user@example.com",
-  "roles": ["operator", "manager"],
-  "scopes": ["tools:read", "tools:write"],
-  "iat": 1625097600,
-  "exp": 1625098500
+  "name": "Mill #3 API Key",
+  "scopes": ["read", "write:presets"],
+  "tags": ["mill-3", "production", "shop-floor"]
 }
 ```
 
-**Refresh Token**
-- Stored in HTTP-only, secure, same-site cookie
-- Randomly generated string
-- Mapped to user session in database
+**Use cases:**
+- Restrict keys to specific machines or locations
+- Group keys by purpose (backup, monitoring, integration)
+- Filter and audit key usage by tag
+- Implement custom access policies
 
-## Best Practices
+## Security
 
-1. Always use HTTPS
-2. Store refresh tokens securely (HTTP-only cookies)
-3. Implement token rotation
-4. Set appropriate token expiration times
-5. Regularly rotate API keys
-6. Monitor for suspicious activity
-7. Log authentication events
+### Passwords
+- Hashed with bcrypt (never stored in plaintext)
+- Minimum 8 characters recommended
+
+### API Keys
+- Cryptographically secure (32-byte tokens)
+- Hashed in database (like passwords)
+- Shown only once at creation
+- Can be revoked anytime
+
+### Sessions
+- HTTP-only cookies (not accessible to JavaScript)
+- Secure flag in production (HTTPS only)
+- Automatic expiration
+
+## Disabling Authentication
+
+For testing or single-user deployments:
+
+```bash
+export AUTH_ENABLED=false
+```
+
+**Warning:** Only use in trusted environments. All API endpoints become publicly accessible.
+
+## Multi-Tenancy
+
+All data is isolated by user account:
+- Each user sees only their own tools, presets, and assemblies
+- API keys inherit the user's data access
+- Queries automatically filtered by `user_id`
 
 ## Troubleshooting
 
-### Common Issues
-1. **Invalid Token**
-   - Check token expiration
-   - Verify token signature
-   - Ensure proper token format
+**"Invalid API key"**
+- Key may be expired, revoked, or mistyped
+- Check key is active in Settings → API Keys
 
-2. **Access Denied**
-   - Verify user role has required permissions
-   - Check API key scopes
-   - Confirm resource ownership
+**"Insufficient permissions"**
+- Key lacks required scope for the operation
+- Create new key with appropriate scopes
 
-3. **Rate Limited**
-   - Reduce request frequency
-   - Implement request queuing
-   - Contact support for limit increases
+**"Session expired"**
+- Log in again through web UI
+- Sessions expire after 24 hours of inactivity

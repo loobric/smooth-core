@@ -51,5 +51,4 @@ htmlcov/
 # Business strategy (private)
 OPEN_CORE.md
 
-# Test scripts (temporary)
-scripts/init_test_db.py
+

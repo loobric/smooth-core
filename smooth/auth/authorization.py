@@ -269,7 +269,7 @@ def check_tag_access(
         
     Assumptions:
     - Empty api_key_tags means no tag-based restrictions
-    - Empty resource_tags means resource is accessible to all keys with required scopes
+    - Empty resource tags means resource is accessible to all keys with required scopes
     - Access is granted if any tag in api_key_tags matches any tag in resource_tags
     """
     if not api_key_tags:
@@ -325,23 +325,20 @@ def check_tag_scope_access(
         
     Assumptions:
     - Users with 'admin:*' scope bypass tag checks
+    - Users with 'read' scope can read all resources (subject to tag checks)
     - Users with 'read:all' or 'write:all' bypass tag checks for those operations
     - Otherwise, tag access is checked
     """
     # Admin users bypass all tag checks
     if has_scope(scopes, "admin:*"):
         return True
-        
-    # Check if this is a read or write operation
-    read_scope = f"read:{resource_type}"
-    write_scope = f"write:{resource_type}"
     
     # Users with read:all or write:all bypass tag checks
-    if (has_scope(scopes, "read:all") and has_scope(scopes, read_scope)) or \
-       (has_scope(scopes, "write:all") and has_scope(scopes, write_scope)):
+    if has_scope(scopes, "read:all") or has_scope(scopes, "write:all"):
         return True
-        
-    # Otherwise, check tag-based access
+    
+    # Check tag-based access (if user has appropriate scope)
+    # The 'read' scope grants read access to all resources, subject to tag filtering
     return check_tag_access(api_key_tags, resource_tags)
 
 

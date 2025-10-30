@@ -12,6 +12,8 @@ Assumptions:
 - Authentication middleware is optional based on settings
 - API versioning is handled via path prefix
 """
+import os
+from pathlib import Path
 from fastapi import FastAPI
 from smooth.config import settings
 from smooth.api.auth import router as auth_router
@@ -36,7 +38,26 @@ def create_app() -> FastAPI:
     - OpenAPI docs are enabled by default
     - Title and version are set for documentation
     - CORS is not configured yet (will be added later if needed)
+    - Database schema is initialized on startup
     """
+    # Initialize database schema
+    from smooth.database.session import init_db
+    init_db()
+    
+    # Print database configuration on startup
+    db_url = settings.database_url
+    if db_url.startswith("sqlite:///"):
+        # Extract the path from sqlite:///path
+        db_path = db_url.replace("sqlite:///", "")
+        # Resolve to absolute path
+        if db_path.startswith("./"):
+            db_path = db_path[2:]
+        abs_path = Path(db_path).resolve()
+        print(f"Database: {abs_path}")
+        print(f"Database exists: {abs_path.exists()}")
+    else:
+        print(f"Database: {db_url}")
+    
     app = FastAPI(
         title="Smooth Tool Data Exchange",
         description="Vendor-neutral tool data synchronization system",

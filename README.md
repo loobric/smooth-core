@@ -14,7 +14,7 @@ Smooth Core is the central REST API and database system that provides a unified 
 - **RESTful API** with bulk operations for efficient data handling
 - **Multi-tenant Architecture** with automatic data isolation
 - **Standards-Aligned** with ISO 13399, STEP-NC, and MTConnect
-- **Comprehensive Security** with role-based access control and audit logging
+- **Comprehensive Security** with role-based access control, tag-based api and audit logging
 - **Developer-Friendly** with OpenAPI documentation and client libraries
 
 ## Quick Start Documentation

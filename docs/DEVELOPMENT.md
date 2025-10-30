@@ -58,7 +58,9 @@ smooth-core/
 └── docs/                # Documentation
 ```
 
-## Running Tests
+## Testing
+
+### Running Tests
 ```bash
 # Run tests with coverage
 pytest --cov=smooth tests/
@@ -69,6 +71,33 @@ pytest tests/unit/test_module.py
 # Run with detailed output
 pytest -v
 ```
+
+### Authentication in Tests
+
+**Important:** Authentication is **enabled by default** (`AUTH_ENABLED=true`). This ensures tests run in a production-like environment and catch authentication/authorization bugs.
+
+#### Disabling Authentication for Specific Tests
+
+Only disable authentication when absolutely necessary (e.g., testing unauthenticated endpoints). Use a pytest fixture:
+
+```python
+@pytest.fixture
+def disable_auth(monkeypatch):
+    """Disable authentication for tests that need it."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+
+def test_unauthenticated_endpoint(client, disable_auth):
+    """Test that works without authentication."""
+    response = client.get("/api/health")
+    assert response.status_code == 200
+```
+
+#### Best Practices
+
+- **Default to auth enabled**: Write tests that properly authenticate users
+- **Explicit opt-out**: Only disable auth when testing specific unauthenticated flows
+- **Use fixtures**: Create reusable fixtures for common auth scenarios (admin user, normal user, etc.)
+- **Test auth failures**: Verify that endpoints properly reject unauthenticated/unauthorized requests
 
 ## Database Migrations
 
@@ -113,11 +142,51 @@ Core dependencies:
 
 ### Planned Future Work
 
+### Authentication & Authorization
+**Completed:**
+- ✅ User registration and login endpoints
+- ✅ Session-based authentication with cookies
+- ✅ API key creation and management
+- ✅ First user automatically becomes admin
+- ✅ Admin-only user registration (after first user)
+- ✅ User-scoped API key listing (users only see their own keys)
+- ✅ CLI tool for user and API key management
+- ✅ Authentication enabled by default (production-like)
+- ✅ Test fixtures for disabling auth when needed
+
+**Remaining Work:**
+- [ ] Password reset/recovery flow
+- [ ] Email verification
+- [ ] Multi-factor authentication (MFA)
+- [ ] User role management (beyond admin/user)
+- [ ] API key expiration enforcement
+- [ ] Rate limiting per user/API key
+
 ### Manufacturer Support
 - [X] Write tests for manufacturer accounts
-- [\] Implement manufacturer accounts
+- [ ] Implement manufacturer accounts
 - [X] Write tests for manufacturer tools
-- [\] Implement manufacturer tool import
+- [ ] Implement manufacturer tool import
+
+### Tag-based API key control
+
+**Current State:**
+- ✅ Database schema: `ApiKey.tags` and resource `tags` columns added (migration: `add_tags_columns.py`)
+- ✅ Core functions: `check_tag_access()`, `require_tag_access()`, `check_tag_scope_access()` in `auth/authorization.py`
+- ✅ API key creation: Tags can be set via `/api/v1/auth/keys` endpoint
+- ✅ API key validation: `validate_api_key()` returns tags tuple
+- ✅ Request state: Tags stored in `request.state.api_key_tags` during auth
+- ✅ Dependencies: `require_tag_access()` factory creates tag-aware endpoint guards
+- ⚠️ Partial: Tag enforcement in some endpoints (tool_assemblies uses `get_tool_assembly_access`)
+
+**Remaining Work:**
+- [ ] Write tests for tag-based filtering in list/query endpoints
+- [ ] Implement tag filtering for bulk operations (list all tools, presets, etc.)
+- [ ] Add tag enforcement to remaining CRUD endpoints (tool_items, tool_instances, tool_presets, tool_sets)
+- [ ] Write integration tests for cross-resource tag scenarios
+- [ ] Document tag-based access patterns in AUTHENTICATION.md (remove "Future Feature" label)
+- [ ] Add resource_tags_getter implementations for each resource type in dependencies.py
+- [ ] Test admin bypass behavior (admin:* should skip tag checks)
 
 ### Notification System
 - [ ] Write tests for MQTT message publishing
