@@ -18,11 +18,12 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from smooth.api.auth import get_db, require_auth
+from smooth.api.auth import get_db, require_auth, get_authenticated_user
+from smooth.api.dependencies import get_tool_preset_access
 from smooth.database.schema import User, ToolPreset
 
 
@@ -43,6 +44,7 @@ class ToolPresetCreate(BaseModel):
     limits: Optional[dict] = None
     loaded_at: Optional[datetime] = None
     loaded_by: Optional[str] = None
+    tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
 
 
 class ToolPresetUpdate(BaseModel):
@@ -60,6 +62,7 @@ class ToolPresetUpdate(BaseModel):
     limits: Optional[dict] = None
     loaded_at: Optional[datetime] = None
     loaded_by: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 class ToolPresetResponse(BaseModel):
@@ -76,6 +79,7 @@ class ToolPresetResponse(BaseModel):
     limits: Optional[dict]
     loaded_at: Optional[str]
     loaded_by: Optional[str]
+    tags: List[str]
     user_id: str
     created_by: str
     updated_by: str
@@ -124,16 +128,37 @@ class QueryResponse(BaseModel):
 
 @router.post("", response_model=BulkOperationResponse)
 def create_tool_presets(
+    req: Request,
     request: BulkCreateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Create tool presets in bulk."""
+    """Create tool presets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, preset_data in enumerate(request.items):
         try:
+            # Validate tags if using API key with tags
+            if is_api_key_auth and api_key_tags and preset_data.tags:
+                # Check if all tags in the request are allowed by the API key
+                invalid_tags = [t for t in preset_data.tags if t not in api_key_tags]
+                if invalid_tags:
+                    errors.append(ErrorDetail(
+                        index=index,
+                        message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                    ))
+                    continue
+            
             # Validate required fields
             if not preset_data.machine_id:
                 raise ValueError("Field 'machine_id' is required")
@@ -154,6 +179,7 @@ def create_tool_presets(
                 limits=preset_data.limits,
                 loaded_at=preset_data.loaded_at,
                 loaded_by=preset_data.loaded_by,
+                tags=preset_data.tags or [],
                 user_id=current_user.id,
                 created_by=current_user.id,
                 updated_by=current_user.id
@@ -185,20 +211,56 @@ def create_tool_presets(
 
 @router.get("", response_model=QueryResponse)
 def list_tool_presets(
-    current_user: User = Depends(require_auth),
+    req: Request,
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
     machine_id: Optional[str] = Query(None, description="Filter by machine_id"),
+    tags: Optional[List[str]] = Query(None, description="Filter by tags (logical AND)"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    """List tool presets with filters and pagination."""
-    query = db.query(ToolPreset).filter(ToolPreset.user_id == current_user.id)
+    """List tool presets with filters and pagination.
+    
+    Notes:
+    - For API key authentication, only returns tool presets with tags that match the API key's tags
+    - For session authentication, returns all tool presets owned by the user
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
+    # Base query - filter by user for session auth or all accessible presets for API key
+    if is_api_key_auth:
+        # For API keys, we need to check tag access
+        query = db.query(ToolPreset)
+        
+        # If API key has tags, filter by matching tags
+        if api_key_tags:
+            # Get all presets and filter in Python for SQLite compatibility
+            all_presets = query.all()
+            matching_ids = [
+                p.id for p in all_presets 
+                if p.tags and any(tag in p.tags for tag in api_key_tags)
+            ]
+            if matching_ids:
+                query = query.filter(ToolPreset.id.in_(matching_ids))
+            else:
+                # No matching presets, return empty result
+                query = query.filter(ToolPreset.id == None)
+    else:
+        # For session auth, only show user's own presets
+        query = db.query(ToolPreset).filter(ToolPreset.user_id == current_user.id)
     
     if machine_id:
         query = query.filter(ToolPreset.machine_id == machine_id)
     
+    # Apply additional tag filters from query params
+    if tags:
+        for tag in tags:
+            query = query.filter(ToolPreset.tags.contains([tag]))
+    
     total = query.count()
-    presets = query.limit(limit).offset(offset).all()
+    presets = query.offset(offset).limit(limit).all()
     
     return QueryResponse(
         items=[_to_response(preset) for preset in presets],
@@ -211,35 +273,63 @@ def list_tool_presets(
 @router.get("/{preset_id}", response_model=ToolPresetResponse)
 def get_tool_preset(
     preset_id: str,
-    current_user: User = Depends(require_auth),
+    req: Request,
+    _: None = Depends(get_tool_preset_access),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Retrieve a single ToolPreset by ID if owned by current user."""
+    """Retrieve a single ToolPreset by ID if user has access.
+    
+    Access is granted if:
+    - User is the owner of the tool preset, or
+    - User has an API key with matching tags for the tool preset
+    """
     preset = db.query(ToolPreset).filter(
-        ToolPreset.id == preset_id,
-        ToolPreset.user_id == current_user.id
+        ToolPreset.id == preset_id
     ).first()
+    
     if not preset:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Tool preset not found")
+    
+    # Check ownership (bypasses tag checks)
+    if preset.user_id == current_user.id:
+        return _to_response(preset)
+    
+    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(preset)
 
 
 @router.put("", response_model=BulkOperationResponse)
 def update_tool_presets(
+    req: Request,
     request: BulkUpdateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Update tool presets in bulk."""
+    """Update tool presets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    - Only the owner of a tool preset can update it
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, update_data in enumerate(request.items):
         try:
-            preset = db.query(ToolPreset).filter(
-                ToolPreset.id == update_data.id,
-                ToolPreset.user_id == current_user.id
-            ).first()
+            # Get existing preset
+            query = db.query(ToolPreset).filter(ToolPreset.id == update_data.id)
+            
+            # For session auth, only allow updating own presets
+            if not is_api_key_auth:
+                query = query.filter(ToolPreset.user_id == current_user.id)
+            
+            preset = query.first()
             
             if not preset:
                 errors.append(ErrorDetail(
@@ -248,6 +338,28 @@ def update_tool_presets(
                     message="Preset not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags:
+                # Check if API key has access to the existing preset's tags
+                if preset.tags and not any(tag in api_key_tags for tag in preset.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=update_data.id,
+                        message="API key not authorized to update this preset"
+                    ))
+                    continue
+                
+                # Check if new tags are allowed
+                if update_data.tags is not None:
+                    invalid_tags = [t for t in update_data.tags if t not in api_key_tags]
+                    if invalid_tags:
+                        errors.append(ErrorDetail(
+                            index=index,
+                            id=update_data.id,
+                            message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                        ))
+                        continue
             
             if preset.version != update_data.version:
                 errors.append(ErrorDetail(
@@ -280,6 +392,8 @@ def update_tool_presets(
                 preset.loaded_at = update_data.loaded_at
             if update_data.loaded_by is not None:
                 preset.loaded_by = update_data.loaded_by
+            if update_data.tags is not None:
+                preset.tags = update_data.tags
             
             preset.updated_by = current_user.id
             preset.updated_at = datetime.now(UTC)
@@ -310,20 +424,34 @@ def update_tool_presets(
 
 @router.delete("", response_model=BulkOperationResponse)
 def delete_tool_presets(
+    req: Request,
     request: BulkDeleteRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Delete tool presets in bulk."""
+    """Delete tool presets in bulk.
+    
+    Notes:
+    - For API key authentication, validates that the API key has access to all presets
+    - For session authentication, only allows deleting own presets
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, preset_id in enumerate(request.ids):
         try:
-            preset = db.query(ToolPreset).filter(
-                ToolPreset.id == preset_id,
-                ToolPreset.user_id == current_user.id
-            ).first()
+            # Get existing preset
+            query = db.query(ToolPreset).filter(ToolPreset.id == preset_id)
+            
+            # For session auth, only allow deleting own presets
+            if not is_api_key_auth:
+                query = query.filter(ToolPreset.user_id == current_user.id)
+            
+            preset = query.first()
             
             if not preset:
                 errors.append(ErrorDetail(
@@ -332,6 +460,16 @@ def delete_tool_presets(
                     message="Preset not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags and preset.tags:
+                if not any(tag in api_key_tags for tag in preset.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=preset_id,
+                        message="API key not authorized to delete this preset"
+                    ))
+                    continue
             
             response = _to_response(preset)
             db.delete(preset)
@@ -374,6 +512,7 @@ def _to_response(preset: ToolPreset) -> ToolPresetResponse:
         limits=preset.limits,
         loaded_at=preset.loaded_at.isoformat() if preset.loaded_at else None,
         loaded_by=preset.loaded_by,
+        tags=preset.tags or [],
         user_id=preset.user_id,
         created_by=preset.created_by,
         updated_by=preset.updated_by,

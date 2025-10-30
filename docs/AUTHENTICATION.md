@@ -100,14 +100,12 @@ curl -H "Authorization: Bearer sk_mill3..." \
 
 **Tag Enforcement:**
 
-Currently implemented for:
+Fully implemented for all resource types:
 - Tool assemblies (create, read, update, delete, list)
 - Tool sets (create, read, update, delete, list)
-
-Coming soon:
-- Tool items
-- Tool instances
-- Tool presets
+- Tool items (create, read, update, delete, list)
+- Tool presets (create, read, update, delete, list)
+- Tool instances (create, read, update, delete, list)
 
 ## Security
 

@@ -184,14 +184,16 @@ Core dependencies:
 - ✅ Session auth: Bypasses tag checks (users own all their resources)
 
 **Completed:**
+- ✅ Tool assemblies: Full tag enforcement (create, read, update, delete, list)
 - ✅ Tool sets: Full tag enforcement (create, read, update, delete, list)
-- ✅ Integration tests: `test_tool_sets_tag_enforcement.py`
+- ✅ Tool items: Full tag enforcement (create, read, update, delete, list)
+- ✅ Tool presets: Full tag enforcement (create, read, update, delete, list)
+- ✅ Tool instances: Full tag enforcement (create, read, update, delete, list)
+- ✅ Integration tests: Complete test coverage for all resources
+- ✅ All resource_tags_getter implementations complete
 
-**Remaining Work:**
-- [ ] Add tag enforcement to tool_items endpoints
-- [ ] Add tag enforcement to tool_instances endpoints
-- [ ] Add tag enforcement to tool_presets endpoints
-- [ ] Add `resource_tags_getter` implementations for remaining resource types
+**Tag Enforcement Complete:**
+Tag-based access control is now fully implemented across all resource types in the Smooth API. API keys with tags can only access resources with matching tags, while session authentication bypasses tag checks (users own all their resources).
 
 ### Notification System
 - [ ] Write tests for MQTT message publishing

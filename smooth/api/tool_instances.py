@@ -18,11 +18,12 @@ Assumptions:
 from typing import Annotated, Optional, List
 from uuid import uuid4
 from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from smooth.api.auth import get_db, require_auth
+from smooth.api.auth import get_db, require_auth, get_authenticated_user
+from smooth.api.dependencies import get_tool_instance_access
 from smooth.database.schema import User, ToolInstance
 
 
@@ -38,6 +39,7 @@ class ToolInstanceCreate(BaseModel):
     location: Optional[dict] = None
     measured_geometry: Optional[dict] = None
     lifecycle: Optional[dict] = None
+    tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
 
 
 class ToolInstanceUpdate(BaseModel):
@@ -50,6 +52,7 @@ class ToolInstanceUpdate(BaseModel):
     location: Optional[dict] = None
     measured_geometry: Optional[dict] = None
     lifecycle: Optional[dict] = None
+    tags: Optional[List[str]] = None
 
 
 class ToolInstanceResponse(BaseModel):
@@ -61,6 +64,7 @@ class ToolInstanceResponse(BaseModel):
     location: Optional[dict]
     measured_geometry: Optional[dict]
     lifecycle: Optional[dict]
+    tags: List[str]
     user_id: str
     created_by: str
     updated_by: str
@@ -109,16 +113,37 @@ class QueryResponse(BaseModel):
 
 @router.post("", response_model=BulkOperationResponse)
 def create_tool_instances(
+    req: Request,
     request: BulkCreateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Create tool instances in bulk."""
+    """Create tool instances in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, instance_data in enumerate(request.items):
         try:
+            # Validate tags if using API key with tags
+            if is_api_key_auth and api_key_tags and instance_data.tags:
+                # Check if all tags in the request are allowed by the API key
+                invalid_tags = [t for t in instance_data.tags if t not in api_key_tags]
+                if invalid_tags:
+                    errors.append(ErrorDetail(
+                        index=index,
+                        message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                    ))
+                    continue
+            
             # Validate required fields
             if not instance_data.assembly_id:
                 raise ValueError("Field 'assembly_id' is required")
@@ -132,6 +157,7 @@ def create_tool_instances(
                 location=instance_data.location,
                 measured_geometry=instance_data.measured_geometry,
                 lifecycle=instance_data.lifecycle,
+                tags=instance_data.tags or [],
                 user_id=current_user.id,
                 created_by=current_user.id,
                 updated_by=current_user.id
@@ -163,20 +189,56 @@ def create_tool_instances(
 
 @router.get("", response_model=QueryResponse)
 def list_tool_instances(
-    current_user: User = Depends(require_auth),
+    req: Request,
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
     status: Optional[str] = Query(None, description="Filter by status"),
+    tags: Optional[List[str]] = Query(None, description="Filter by tags (logical AND)"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    """List tool instances with filters and pagination."""
-    query = db.query(ToolInstance).filter(ToolInstance.user_id == current_user.id)
+    """List tool instances with filters and pagination.
+    
+    Notes:
+    - For API key authentication, only returns tool instances with tags that match the API key's tags
+    - For session authentication, returns all tool instances owned by the user
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
+    # Base query - filter by user for session auth or all accessible instances for API key
+    if is_api_key_auth:
+        # For API keys, we need to check tag access
+        query = db.query(ToolInstance)
+        
+        # If API key has tags, filter by matching tags
+        if api_key_tags:
+            # Get all instances and filter in Python for SQLite compatibility
+            all_instances = query.all()
+            matching_ids = [
+                i.id for i in all_instances 
+                if i.tags and any(tag in i.tags for tag in api_key_tags)
+            ]
+            if matching_ids:
+                query = query.filter(ToolInstance.id.in_(matching_ids))
+            else:
+                # No matching instances, return empty result
+                query = query.filter(ToolInstance.id == None)
+    else:
+        # For session auth, only show user's own instances
+        query = db.query(ToolInstance).filter(ToolInstance.user_id == current_user.id)
     
     if status:
         query = query.filter(ToolInstance.status == status)
     
+    # Apply additional tag filters from query params
+    if tags:
+        for tag in tags:
+            query = query.filter(ToolInstance.tags.contains([tag]))
+    
     total = query.count()
-    instances = query.limit(limit).offset(offset).all()
+    instances = query.offset(offset).limit(limit).all()
     
     return QueryResponse(
         items=[_to_response(instance) for instance in instances],
@@ -189,35 +251,63 @@ def list_tool_instances(
 @router.get("/{instance_id}", response_model=ToolInstanceResponse)
 def get_tool_instance(
     instance_id: str,
-    current_user: User = Depends(require_auth),
+    req: Request,
+    _: None = Depends(get_tool_instance_access),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Retrieve a single ToolInstance by ID if owned by the current user."""
+    """Retrieve a single ToolInstance by ID if user has access.
+    
+    Access is granted if:
+    - User is the owner of the tool instance, or
+    - User has an API key with matching tags for the tool instance
+    """
     instance = db.query(ToolInstance).filter(
-        ToolInstance.id == instance_id,
-        ToolInstance.user_id == current_user.id
+        ToolInstance.id == instance_id
     ).first()
+    
     if not instance:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Tool instance not found")
+    
+    # Check ownership (bypasses tag checks)
+    if instance.user_id == current_user.id:
+        return _to_response(instance)
+    
+    # If we get here, the user is not the owner but has a valid API key with matching tags
     return _to_response(instance)
 
 
 @router.put("", response_model=BulkOperationResponse)
 def update_tool_instances(
+    req: Request,
     request: BulkUpdateRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Update tool instances in bulk."""
+    """Update tool instances in bulk.
+    
+    Notes:
+    - For API key authentication, validates that all tags in the request are allowed by the API key
+    - For session authentication, allows any tags
+    - Only the owner of a tool instance can update it
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, update_data in enumerate(request.items):
         try:
-            instance = db.query(ToolInstance).filter(
-                ToolInstance.id == update_data.id,
-                ToolInstance.user_id == current_user.id
-            ).first()
+            # Get existing instance
+            query = db.query(ToolInstance).filter(ToolInstance.id == update_data.id)
+            
+            # For session auth, only allow updating own instances
+            if not is_api_key_auth:
+                query = query.filter(ToolInstance.user_id == current_user.id)
+            
+            instance = query.first()
             
             if not instance:
                 errors.append(ErrorDetail(
@@ -226,6 +316,28 @@ def update_tool_instances(
                     message="Instance not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags:
+                # Check if API key has access to the existing instance's tags
+                if instance.tags and not any(tag in api_key_tags for tag in instance.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=update_data.id,
+                        message="API key not authorized to update this instance"
+                    ))
+                    continue
+                
+                # Check if new tags are allowed
+                if update_data.tags is not None:
+                    invalid_tags = [t for t in update_data.tags if t not in api_key_tags]
+                    if invalid_tags:
+                        errors.append(ErrorDetail(
+                            index=index,
+                            id=update_data.id,
+                            message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
+                        ))
+                        continue
             
             if instance.version != update_data.version:
                 errors.append(ErrorDetail(
@@ -248,6 +360,8 @@ def update_tool_instances(
                 instance.measured_geometry = update_data.measured_geometry
             if update_data.lifecycle is not None:
                 instance.lifecycle = update_data.lifecycle
+            if update_data.tags is not None:
+                instance.tags = update_data.tags
             
             instance.updated_by = current_user.id
             instance.updated_at = datetime.now(UTC)
@@ -278,20 +392,34 @@ def update_tool_instances(
 
 @router.delete("", response_model=BulkOperationResponse)
 def delete_tool_instances(
+    req: Request,
     request: BulkDeleteRequest,
-    current_user: User = Depends(require_auth),
+    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db)
 ):
-    """Delete tool instances in bulk."""
+    """Delete tool instances in bulk.
+    
+    Notes:
+    - For API key authentication, validates that the API key has access to all instances
+    - For session authentication, only allows deleting own instances
+    """
+    # Get API key tags if using API key auth
+    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
+    api_key_tags = getattr(req.state, 'api_key_tags', [])
+    
     results = []
     errors = []
     
     for index, instance_id in enumerate(request.ids):
         try:
-            instance = db.query(ToolInstance).filter(
-                ToolInstance.id == instance_id,
-                ToolInstance.user_id == current_user.id
-            ).first()
+            # Get existing instance
+            query = db.query(ToolInstance).filter(ToolInstance.id == instance_id)
+            
+            # For session auth, only allow deleting own instances
+            if not is_api_key_auth:
+                query = query.filter(ToolInstance.user_id == current_user.id)
+            
+            instance = query.first()
             
             if not instance:
                 errors.append(ErrorDetail(
@@ -300,6 +428,16 @@ def delete_tool_instances(
                     message="Instance not found or access denied"
                 ))
                 continue
+            
+            # For API key auth, check if tags are allowed
+            if is_api_key_auth and api_key_tags and instance.tags:
+                if not any(tag in api_key_tags for tag in instance.tags):
+                    errors.append(ErrorDetail(
+                        index=index,
+                        id=instance_id,
+                        message="API key not authorized to delete this instance"
+                    ))
+                    continue
             
             response = _to_response(instance)
             db.delete(instance)
@@ -337,6 +475,7 @@ def _to_response(instance: ToolInstance) -> ToolInstanceResponse:
         location=instance.location,
         measured_geometry=instance.measured_geometry,
         lifecycle=instance.lifecycle,
+        tags=instance.tags or [],
         user_id=instance.user_id,
         created_by=instance.created_by,
         updated_by=instance.updated_by,
