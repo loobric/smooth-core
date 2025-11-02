@@ -1,17 +1,52 @@
-# Quick Start For Users
+# Quick Start
 
-If you're here, you're probably looking for an easy way to manage your tools and keep them in sync between your CAM software and CNC machines.  If that's what you need, you've come to the right place.  
+Smooth Core is brand new and not yet ready for production use.  If you're looking for a production ready solution, you will have to wait a bit.  If you're a curious developer or risk tolerant user, you can try it out by running it yourself.
 
-But first a word of warning.  Smooth Core does not have a user interface.  It is a REST API and database tool which is meant to be the back-end for more user-facing tools (clients).
+1. Clone the repository
 
-For hobbyists and casual users, The quickest way to get started is to get a free account at [loobric.com](https://loobric.com).  
+```
+git clone https://github.com/loobric/smooth-core.git
+```
 
-Then use one of the clients to connect your software to your account.
+2. Activate the virtual environment and install dependencies
 
-## But I hate cloud hosted solutions!  
+```
+cd smooth-core
+uv venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+uv pip install -e ".[dev]"
+```
 
-If you don't want to use a cloud hosted solution, you can run Smooth Core yourself.  
-Check out the [deployment](DEPLOYMENT.md) guide for how to do that.
+3. Run the server
 
+```
+uvicorn smooth.main:app --reload
+```
 
+4. Create the admin user.
 
+The first user created will automatically be the admin user.
+You can create a user account with the command line utility.
+
+```
+  loobric.py --base-url http://127.0.0.1:8000 register admin@example.com
+```
+
+5. Login as the admin user
+
+```
+  loobric.py --base-url http://127.0.0.1:8000 login admin@example.com
+```
+
+Create an access token
+
+```
+  loobric.py create-key "Backup Script" \
+    --scopes "read" --tags "backup production" --expires-at "2025-12-31T23:59:59Z"
+```
+
+6. Record the token
+
+The previous command will echo the token back to the console in clear text. Only the token hash is stored in the database so the actual token can not be recovered.  Write it down or store it securely.
+
+7. Use the token in one of the cliens like [smooth-freecad](https://github.com/loobric/smooth-freecad)

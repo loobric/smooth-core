@@ -19,7 +19,7 @@ Smooth Core is the central REST API and database system that provides a unified 
 
 ## Quick Start Documentation
 
-- [For Users](docs/QUICK_START.md)
+- [For Users and the curious](docs/QUICK_START.md)
 - [For Developers](docs/DEVELOPMENT.md)
 
 ## Getting Help
