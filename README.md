@@ -39,9 +39,9 @@ This project was started out of a personal need to synchronize linuxcnc machine 
 
 [smooth-linuxcnc](https://github.com/loobric/smooth-linuxcnc)
 
-### **Smooth-CLI** - Command Line Interface
+### **loobric.py** - Command Line Interface
 
-[smooth-cli](https://github.com/loobric/smooth-cli)
+installed with smooth-core
 
 ## Contributing
 
