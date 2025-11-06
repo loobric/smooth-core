@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "pydantic[email]>=2.5.3",
     "sqlalchemy>=2.0.25",
+    "psycopg2-binary>=2.9.9",
     "httpx>=0.26.0",
     "python-multipart>=0.0.6",
     "structlog>=24.1.0",
