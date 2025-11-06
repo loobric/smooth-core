@@ -48,6 +48,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     is_active: bool
+    role: str
     created_at: datetime
 
 
@@ -283,13 +284,18 @@ def register(
         if is_first_user:
             user.is_admin = True
             user.role = "admin"
-            db.commit()
-            db.refresh(user)
+        else:
+            # Explicitly set role for subsequent users (should default to "user" but be explicit)
+            user.role = "user"
+        
+        db.commit()
+        db.refresh(user)
         
         return UserResponse(
             id=user.id,
             email=user.email,
             is_active=user.is_active,
+            role=user.role,
             created_at=user.created_at
         )
     except IntegrityError:
@@ -348,6 +354,7 @@ def login(
         id=user.id,
         email=user.email,
         is_active=user.is_active,
+        role=user.role,
         created_at=user.created_at
     )
 
@@ -404,6 +411,7 @@ def get_current_user(
         id=user.id,
         email=user.email,
         is_active=user.is_active,
+        role=user.role,
         created_at=user.created_at
     )
 
