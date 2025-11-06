@@ -244,39 +244,33 @@ def _get_current_user_if_not_first(
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(
     user_data: UserRegister,
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(_get_current_user_if_not_first)
+    db: Session = Depends(get_db)
 ):
     """Register a new user account.
     
     First user registration is open and creates an admin account.
-    Subsequent registrations require admin authentication.
+    All subsequent registrations are open and create standard user accounts.
     
     Args:
         user_data: User registration data
         db: Database session
-        current_user: Current authenticated user (None for first user)
         
     Returns:
         UserResponse: Created user object
         
     Raises:
         HTTPException: 400 if email already exists
-        HTTPException: 403 if not admin (for subsequent users)
+        
+    Assumptions:
+    - Public registration creates "user" role by default
+    - First user becomes admin automatically
+    - Admins can upgrade users to other roles via /api/v1/users/{id}/roles
     """
     from sqlalchemy.exc import IntegrityError
     
     # Check if this is the first user
     user_count = db.query(User).count()
     is_first_user = user_count == 0
-    
-    # If not first user, require admin authentication
-    if not is_first_user:
-        if not current_user or not current_user.is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Only administrators can create new users"
-            )
     
     try:
         user = create_user(
@@ -511,3 +505,45 @@ def revoke_key(key_id: str, db: Session = Depends(get_db), user: User = Depends(
         revoke_api_key(db, key_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+class PasswordChangeRequest(BaseModel):
+    """Request to change password."""
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+def change_password(
+    request: PasswordChangeRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user)
+):
+    """Change user password.
+    
+    Args:
+        request: Password change request
+        db: Database session
+        user: Authenticated user
+        
+    Returns:
+        dict: Success message
+        
+    Raises:
+        HTTPException: 400 if current password is incorrect
+    """
+    from smooth.auth.user import update_user_password, AuthenticationError
+    
+    try:
+        update_user_password(
+            session=db,
+            user_id=user.id,
+            old_password=request.current_password,
+            new_password=request.new_password
+        )
+        return {"message": "Password updated successfully"}
+    except AuthenticationError:
+        raise HTTPException(
+            status_code=400,
+            detail="Current password is incorrect"
+        )

@@ -416,6 +416,39 @@ def list_tool_sets(
             print(f"\n{remaining} more tool set(s) available. Use --offset {offset + limit} to see more.")
 
 
+def ping():
+    """Check server health/connectivity."""
+    conn = get_connection()
+    path = "/api/health"
+    headers = {
+        "Accept": "application/json",
+    }
+    
+    try:
+        conn.request("GET", path, headers=headers)
+        response = conn.getresponse()
+        status = response.status
+        content = response.read().decode("utf-8")
+        
+        if 200 <= status < 300:
+            data = json.loads(content) if content.strip() else {}
+            print("✓ Server is healthy")
+            print(f"  Status: {data.get('status', 'ok')}")
+            if data.get('version'):
+                print(f"  Version: {data.get('version')}")
+            print(f"  URL: {BASE_URL}")
+        else:
+            print(f"✗ Server returned HTTP {status}")
+            print(f"  URL: {BASE_URL}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"✗ Server unreachable at {BASE_URL}")
+        print(f"  Error: {e}")
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 def logout():
     """End session."""
     global SESSION_COOKIE
@@ -455,6 +488,9 @@ def main():
   
   # Revoke an API key
   loobric.py revoke-key <key_id>
+  
+  # Check server health
+  loobric.py ping
   
   # Logout
   loobric.py logout
@@ -579,6 +615,14 @@ Environment Variables:
         limit=args.limit,
         offset=args.offset
     ))
+
+    # === ping ===
+    ping_parser = subparsers.add_parser(
+        "ping",
+        help="Check server health",
+        description="Check if the server is reachable and healthy."
+    )
+    ping_parser.set_defaults(func=lambda _: ping())
 
     # === logout ===
     logout_parser = subparsers.add_parser(
