@@ -2,81 +2,71 @@
 
 ## Overview
 
-Smooth Core is built with a modular, extensible architecture designed for high performance and reliability in manufacturing environments. This document provides an overview of the system's architecture and key components.
+Smooth Core is a REST API and database for tool data synchronization. This document
+describes the system as it exists in the code. Planned capabilities live in
+[ROADMAP.md](../ROADMAP.md), not here.
 
 ## System Components
 
 ### 1. API Layer
-- **FastAPI-based REST API** - High-performance API framework with automatic OpenAPI documentation
-- **Authentication Middleware** - Handles user sessions and API key validation
-- **Request Validation** - Pydantic models for input validation and serialization
-- **Rate Limiting** - Protects against abuse and ensures fair usage
+- **FastAPI-based REST API** with automatic OpenAPI documentation
+- **Authentication middleware** — session cookies (web/CLI login) and user-created API keys
+- **Request validation** — Pydantic models for input validation and serialization
+- **Bulk-first endpoints** — create/update/delete many entities per request, with
+  partial-success semantics (per-item errors, the rest commit)
 
 ### 2. Business Logic
-- **Service Layer** - Implements core business logic and workflows
-- **Permission System** - Fine-grained access control with roles and scopes
-- **Change Detection** - Tracks and notifies about data changes
-- **Background Tasks** - Handles long-running operations asynchronously
+- **Authorization at the function level** — role checks (user/admin/manufacturer) plus
+  tag-scoped API keys (a key can be restricted to entities carrying specific tags)
+- **Optimistic locking** — every entity carries an integer `version`; writes with a stale
+  version are rejected per-item
+- **Change detection** — query changed entities since a version or timestamp
+  (`/api/v1/changes/...`), so clients sync deltas
+- **Audit log** — immutable record of who changed what, when (operation, entity, before/after)
+- **Backup/restore** — atomic JSON export/import, per-tenant; tool sets additionally keep
+  version history with restore and compare endpoints
 
 ### 3. Data Layer
-- **SQLAlchemy ORM** - Database abstraction layer
-- **Alembic Migrations** - Database schema versioning and migrations
-- **Connection Pooling** - Efficient database connection management
-- **Caching Layer** - Redis-based caching for improved performance
+- **SQLAlchemy ORM** with **SQLite** as the supported database
+- **Alembic migrations** for schema versioning
+- JSON columns for tool geometry, offsets, and metadata
 
-### 4. Integration Layer (planned)
-- **Webhook System** - Event-driven notifications for external systems
-- **Import/Export** - Supports standard formats (JSON, CSV, XML)
-- **Plugin System** - Extensible architecture for custom integrations
+### 4. Structured Logging
+- JSON-structured logs for operations and errors
+- Separate immutable audit trail (see above) queryable via the API
 
 ## Data Flow
 
 ```mermaid
 graph TD
-    A[Client] -->|HTTP/HTTPS| B[API Gateway]
-    B --> C[Authentication]
-    C -->|Valid| D[Request Router]
-    D --> E[Business Logic]
-    E --> F[Data Access]
-    F --> G[(Database)]
-    E --> H[Cache]
-    H -->|Cache Miss| G
-    E --> I[Background Tasks]
-    I --> J[External Systems]
+    A[Client: FreeCAD addon / LinuxCNC script / CLI] -->|HTTPS + API key| B[FastAPI]
+    B --> C[Auth: session or API key, tag scope]
+    C --> D[Bulk endpoint handlers]
+    D --> E[Authorization + version checks]
+    E --> F[(SQLite via SQLAlchemy)]
+    E --> G[Audit log]
 ```
 
 ## Security Model
 
-- **Authentication**: JWT-based authentication with refresh tokens
-- **Authorization**: Role-based access control (RBAC) with fine-grained permissions
-- **Data Protection**: Encryption at rest and in transit (TLS 1.2+)
-- **Audit Logging**: Comprehensive logging of all sensitive operations
-- **Rate Limiting**: Protection against brute force and DDoS attacks
+- **Authentication**: session cookies for interactive use; API keys for machines/scripts
+- **Authorization**: role-based access control plus tag-scoped API keys
+- **Tenant isolation**: all queries filtered by the owning user account
+- **Audit logging**: all data changes recorded immutably
+- **Transport security**: run behind TLS (reverse proxy) in any networked deployment —
+  the server itself does not terminate TLS
 
-## Performance Considerations
+Not yet implemented (see roadmap): rate limiting, webhook signing, encryption at rest.
 
-- **Caching**: Multi-level caching strategy
-- **Connection Pooling**: Efficient database connection management
-- **Bulk Operations**: Optimized for batch processing
-- **Asynchronous Processing**: Non-blocking I/O operations
+## Deployment
 
-## Deployment Options
-
-- **Docker** - Containerized deployment
-- **Kubernetes** - Orchestrated deployment for high availability
-- **Serverless** - Function-as-a-Service deployment options
-- **On-Premises** - Traditional server deployment
-
-## Monitoring and Observability
-
-- **Logging**: Structured logging with correlation IDs
-- **Metrics**: Prometheus metrics endpoint
-- **Tracing**: Distributed tracing with OpenTelemetry
-- **Health Checks**: Liveness and readiness probes
+- **uvicorn** ASGI server; a `Dockerfile` is provided
+- SQLite database file on local disk — back it up like any other file, or use the
+  backup API
+- Single-process; no external services (no Redis, no message broker) required
 
 ## Dependencies
 
 - Python 3.9+
-- SQLite (development) / PostgreSQL (production)
-- Redis (for caching and background tasks)
-- Optional: Prometheus, Grafana (for monitoring)
+- SQLite
+- FastAPI, SQLAlchemy, Alembic, Pydantic (see `requirements.txt`)
