@@ -2,7 +2,7 @@
 
 > Application-agnostic REST API and database for tool data synchronization across CAM systems, CNC machines, and tool rooms.
 
-[![License](https://img.shields.io/badge/License-Elastic%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 
 ## Overview

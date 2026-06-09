@@ -1,6 +1,6 @@
-# Elastic License 2.0
+# GNU Affero General Public License v3.0 only
 # Copyright (c) 2025 sliptonic
-# SPDX-License-Identifier: Elastic-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 
 """
 Setup configuration for Smooth Core.
@@ -67,7 +67,7 @@ setup(
         "Intended Audience :: Manufacturing",
         "Topic :: Software Development :: Libraries :: Application Frameworks",
         "Topic :: Database",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: GNU Affero General Public License v3",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.11",
