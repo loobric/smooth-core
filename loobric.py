@@ -429,7 +429,18 @@ def list_pending():
         print("Inbox is empty - nothing pending.")
         return
 
-    print(f"\n{len(items)} item(s) awaiting review:")
+    print(f"\n{len(items)} unrecognized machine tool(s) - best-guess matches below.")
+    print()
+    print("This is an identity question, NOT a conflict: the machine reported")
+    print("tools the server doesn't recognize yet. Confirming or rejecting")
+    print("overwrites NOTHING on either side.")
+    print()
+    print("  confirm = 'same tool': links the machine entry to the record so")
+    print("            future changes route between them. Both keep their data.")
+    print("  reject  = 'different tools': drops this suggestion permanently.")
+    print("            The entry stays unbound and keeps syncing fine.")
+    print("  unsure? = reject. A rejected pair can be linked manually later;")
+    print("            a wrong confirm is currently hard to undo.")
     print("=" * 78)
     for item in items:
         entry = item.get("entry", {})
@@ -455,11 +466,12 @@ def resolve_pending(item_id: str, action: str):
     entry = data.get("entry", {})
     record = data.get("proposed_record", {})
     if action == "confirm":
-        print(f"Confirmed: T{entry.get('tool_number')} is now bound to "
-              f"'{record.get('name')}'")
+        print(f"Linked: T{entry.get('tool_number')} and '{record.get('name')}' are "
+              f"now the same tool. No data was changed on either side; future "
+              f"changes will route between them.")
     else:
-        print(f"Rejected: T{entry.get('tool_number')} will not be matched to "
-              f"'{record.get('name')}' again")
+        print(f"Dismissed: T{entry.get('tool_number')} is not '{record.get('name')}'. "
+              f"This suggestion won't reappear; the entry stays unbound.")
 
 
 def ping():
