@@ -57,6 +57,7 @@ class ToolRecordCreate(BaseModel):
     description: Optional[str] = None
     geometry: Optional[dict] = None
     tags: List[str] = Field(default_factory=list)
+    extra: Optional[dict] = None
 
 
 class ToolRecordUpdate(BaseModel):
@@ -67,6 +68,7 @@ class ToolRecordUpdate(BaseModel):
     description: Optional[str] = None
     geometry: Optional[dict] = None
     tags: Optional[List[str]] = None
+    extra: Optional[dict] = None
 
 
 class ToolRecordResponse(BaseModel):
@@ -80,6 +82,7 @@ class ToolRecordResponse(BaseModel):
     description: Optional[str]
     tags: List[str]
     geometry: Optional[dict]
+    extra: Optional[dict] = None
     machines: List[ToolTableEntryResponse] = []
     version: int
     created_at: str
@@ -157,6 +160,7 @@ def _to_response(item: ToolItem, db: Session) -> ToolRecordResponse:
         description=item.description,
         tags=item.tags or [],
         geometry=item.geometry,
+        extra=item.extra,
         machines=[entry_to_response(e) for e in entries],
         version=item.version,
         created_at=_iso(item.created_at),
@@ -194,6 +198,7 @@ def create_tool_records(
             description=data.description,
             geometry=data.geometry,
             tags=data.tags,
+            extra=data.extra,
             user_id=user.id,
             created_by=user.id,
             updated_by=user.id,
@@ -283,6 +288,8 @@ def update_tool_records(
             item.geometry = data.geometry
         if data.tags is not None:
             item.tags = data.tags
+        if data.extra is not None:
+            item.extra = data.extra
         item.version += 1
         item.updated_by = user.id
         db.flush()

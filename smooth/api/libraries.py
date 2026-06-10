@@ -39,6 +39,7 @@ class LibraryCreate(BaseModel):
     description: Optional[str] = None
     tool_record_ids: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
+    extra: Optional[dict] = None
 
 
 class LibraryUpdate(BaseModel):
@@ -49,6 +50,7 @@ class LibraryUpdate(BaseModel):
     description: Optional[str] = None
     tool_record_ids: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    extra: Optional[dict] = None
 
 
 class LibraryResponse(BaseModel):
@@ -58,6 +60,7 @@ class LibraryResponse(BaseModel):
     description: Optional[str]
     tool_record_ids: List[str]
     tags: List[str]
+    extra: Optional[dict] = None
     version: int
     created_at: str
     updated_at: str
@@ -102,6 +105,7 @@ def _to_response(tool_set: ToolSet) -> LibraryResponse:
         description=tool_set.description,
         tool_record_ids=list(tool_set.members or []),
         tags=getattr(tool_set, "tags", None) or [],
+        extra=tool_set.extra,
         version=tool_set.version,
         created_at=_iso(tool_set.created_at),
         updated_at=_iso(tool_set.updated_at),
@@ -154,6 +158,7 @@ def create_libraries(
             description=data.description,
             type=LIBRARY_TYPE,
             members=data.tool_record_ids,
+            extra=data.extra,
             status="active",
             user_id=user.id,
             created_by=user.id,
@@ -234,6 +239,8 @@ def update_libraries(
             row.description = data.description
         if data.tags is not None and hasattr(row, "tags"):
             row.tags = data.tags
+        if data.extra is not None:
+            row.extra = data.extra
         row.version += 1
         row.updated_by = user.id
         db.flush()

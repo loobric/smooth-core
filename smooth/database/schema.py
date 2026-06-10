@@ -164,6 +164,9 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     iso_13399_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     parent_tool_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("tool_items.id"), nullable=True, index=True)
+    # Opaque client passthrough for the v2 facade (lossless round trips);
+    # e.g. the FreeCAD client stores the full .fctb document here.
+    extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class Machine(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
@@ -394,6 +397,8 @@ class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     job_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     members: Mapped[list] = mapped_column(JSON, nullable=False)
     capacity: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Opaque client passthrough for v2 facade Libraries (.fctl numbers etc.)
+    extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
     activation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default='[]')

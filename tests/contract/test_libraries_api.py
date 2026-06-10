@@ -117,3 +117,16 @@ def test_openapi_includes_libraries_and_hides_tool_sets(solo_client):
     paths = solo_client.get("/api/v1/openapi.json").json()["paths"]
     assert any(p.startswith("/api/v1/libraries") for p in paths)
     assert not [p for p in paths if "tool-sets" in p or "tool-usage" in p]
+
+
+@pytest.mark.contract
+def test_library_extra_passthrough_round_trips(solo_client):
+    """Library.extra holds client passthrough — for FreeCAD, the .fctl's
+    per-tool numbers (nr) and label, which have no facade equivalent."""
+    record = make_records(solo_client, ["6mm endmill"])[0]
+    doc = {"freecad": {"label": "default", "version": 1,
+                       "numbers": {record["id"]: 11}}}
+    lib = make_library(solo_client, "default", [record["id"]], extra=doc)
+    assert lib["extra"] == doc
+    fetched = solo_client.get(f"/api/v1/libraries/{lib['id']}").json()
+    assert fetched["extra"]["freecad"]["numbers"][record["id"]] == 11

@@ -277,3 +277,33 @@ def test_change_detection_sees_facade_writes(solo_client):
     assert changes.status_code == 200
     ids = [c["id"] for c in changes.json()["items"]]
     assert rec["id"] in ids
+
+
+@pytest.mark.contract
+def test_extra_passthrough_round_trips(solo_client):
+    """ToolRecord.extra is opaque client passthrough (plan principle 6).
+
+    The FreeCAD client stores the full .fctb document here — including the
+    additive 'presets' key from FreeCAD's F&S work — so a correct round
+    trip syncs data the server doesn't model yet. The server must never
+    interpret or normalize it.
+    """
+    doc = {"freecad": {"fctb": {
+        "id": "end_mill_6.0mm_2f", "shape": "endmill.fcstd",
+        "parameter": {"Diameter": "6.00 mm", "SpindleDirection": "Forward"},
+        "presets": [{"name": "alu", "surface_speed": 400}],
+        "attribute": {},
+    }}}
+    created = create_records(solo_client, [
+        {**QUARTER_INCH_DOWNCUT, "extra": doc}
+    ])["items"][0]
+    assert created["extra"] == doc
+
+    fetched = solo_client.get(f"/api/v1/tool-records/{created['id']}").json()
+    assert fetched["extra"]["freecad"]["fctb"]["presets"][0]["surface_speed"] == 400
+
+    upd = solo_client.patch("/api/v1/tool-records", json={"items": [
+        {"id": created["id"], "version": 1,
+         "extra": {"freecad": {"fctb": {"id": "renamed"}}}}
+    ]})
+    assert upd.json()["items"][0]["extra"]["freecad"]["fctb"]["id"] == "renamed"
