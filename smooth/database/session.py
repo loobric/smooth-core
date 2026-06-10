@@ -60,14 +60,19 @@ def init_db() -> None:
     """
     from smooth.database.schema import Base  # Import here to avoid circular imports
     from sqlalchemy import inspect
-    
-    # Check if tables already exist
+
+    # Always run create_all: with checkfirst (the default) it creates ONLY
+    # missing tables and never touches existing ones. The old "skip when any
+    # tables exist" guard meant new tables introduced by an update were never
+    # created on a populated database (bit production on the v2 cutover).
+    # NOTE: create_all does not ADD COLUMNS to existing tables - column
+    # changes still need a manual ALTER or a migration (see ROADMAP).
     inspector = inspect(engine)
-    existing_tables = inspector.get_table_names()
-    
-    if existing_tables:
-        print(f"Database has {len(existing_tables)} existing tables - skipping initialization")
+    before = set(inspector.get_table_names())
+    Base.metadata.create_all(bind=engine)
+    after = set(inspect(engine).get_table_names())
+    created = sorted(after - before)
+    if created:
+        print(f"Database schema: created missing tables: {', '.join(created)}")
     else:
-        print("Initializing fresh database schema...")
-        Base.metadata.create_all(bind=engine)
-        print("Database schema created")
+        print(f"Database schema: up to date ({len(after)} tables)")
