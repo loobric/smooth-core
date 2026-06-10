@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
-from smooth.database.schema import User, ToolItem, ToolTableEntry
+from smooth.database.schema import User, ToolItem, ToolTableEntry, BindingProposal
 from smooth.api.machines import ToolTableEntryResponse, entry_to_response
 from smooth.audit import create_audit_log
 from smooth.change_detection import get_changes_since_version, get_max_version
@@ -305,7 +305,15 @@ def delete_tool_records(
     db: Session = Depends(get_db),
     user: User = Depends(get_authenticated_user),
 ):
-    """Bulk delete by id (partial success)."""
+    """Bulk delete by id (partial success).
+
+    Cascade rules (no dangling references — Postgres enforces the FKs that
+    SQLite lets slide, and a dangling proposal 500'd production):
+    - BindingProposals referencing the record (any status, incl. the
+      rejection memory) are deleted with it
+    - ToolTableEntries bound to it are UNBOUND, not orphaned — the machine
+      keeps its entry and data; only the link dies with the record
+    """
     errors: List[ErrorDetail] = []
     success = 0
 
@@ -314,6 +322,20 @@ def delete_tool_records(
         if item is None:
             errors.append(ErrorDetail(index=index, id=record_id, message="ToolRecord not found"))
             continue
+        db.query(BindingProposal).filter(
+            BindingProposal.proposed_record_id == record_id
+        ).delete(synchronize_session=False)
+        for entry in db.query(ToolTableEntry).filter(
+            ToolTableEntry.tool_record_id == record_id
+        ).all():
+            entry.tool_record_id = None
+            entry.version += 1
+            entry.updated_by = user.id
+            create_audit_log(
+                session=db, user_id=user.id, operation="UNBIND",
+                entity_type="tool_table_entry", entity_id=entry.id,
+                changes={"reason": "bound record deleted", "tool_record_id": record_id},
+            )
         db.delete(item)
         create_audit_log(
             session=db,

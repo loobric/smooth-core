@@ -251,3 +251,35 @@ def test_binding_to_unknown_record_is_per_item_error(solo_client):
     assert body["success_count"] == 1
     assert len(body["errors"]) == 1
     assert body["errors"][0]["index"] == 0
+
+
+@pytest.mark.contract
+def test_deleting_record_cascades_proposals_and_unbinds_entries(solo_client):
+    """Deleting a ToolRecord must not leave dangling references (production
+    bug: Postgres FK on binding_proposals.proposed_record_id 500'd the bulk
+    delete; SQLite doesn't enforce FKs so only behavior can be tested here).
+
+    Assumptions:
+    - Proposals referencing the record (any status) are deleted with it
+    - Entries bound to it are unbound (tool_record_id -> null), not orphaned
+    - The delete succeeds as a normal per-item success
+    """
+    machine = make_machine(solo_client)
+    record = make_record(solo_client)
+
+    # one entry bound explicitly, one unbound entry with an open proposal
+    bound = {**T3_UNBOUND, "tool_record_id": record["id"]}
+    similar = {**T3_UNBOUND, "tool_number": 5, "description": '1/4" downcut'}
+    put_table(solo_client, machine["id"], [bound, similar])
+    assert len(solo_client.get("/api/v1/inbox").json()["items"]) == 1
+
+    resp = solo_client.request("DELETE", "/api/v1/tool-records",
+                               json={"ids": [record["id"]]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["success_count"] == 1
+
+    entries = solo_client.get(
+        f"/api/v1/machines/{machine['id']}/tool-table"
+    ).json()["items"]
+    assert all(e["tool_record_id"] is None for e in entries)
+    assert solo_client.get("/api/v1/inbox").json()["items"] == []
