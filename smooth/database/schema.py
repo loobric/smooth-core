@@ -153,6 +153,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     type: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     manufacturer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     product_code: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

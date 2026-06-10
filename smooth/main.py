@@ -28,6 +28,10 @@ from smooth.api.tool_usage import router as tool_usage_router
 from smooth.api.tool_sets import router as tool_sets_router
 from smooth.api.audit_log_api import router as audit_log_router
 from smooth.api.changes_api import router as changes_router
+from smooth.api.tool_records import (
+    router as tool_records_router,
+    changes_router as tool_records_changes_router,
+)
 
 
 def create_app() -> FastAPI:
@@ -83,15 +87,23 @@ def create_app() -> FastAPI:
             "status": "running"
         }
     
-    # Include routers
+    # Include routers.
+    # Public v2 facade (G3): tool-records is the published contract. The
+    # facade changes router is registered BEFORE the generic changes router
+    # so its literal path wins matching for /changes/tool-records/....
     app.include_router(auth_router)
     app.include_router(backup_router)
     app.include_router(users_router)
     app.include_router(catalogs_router)
-    app.include_router(tool_items_router)
-    app.include_router(tool_assemblies_router)
-    app.include_router(tool_instances_router)
-    app.include_router(tool_presets_router)
+    app.include_router(tool_records_router)
+    app.include_router(tool_records_changes_router)
+    # Deep-schema routers are private substrate: kept for internal use and
+    # the v1 clients during the v2 transition, but unpublished (hidden from
+    # the OpenAPI contract).
+    app.include_router(tool_items_router, include_in_schema=False)
+    app.include_router(tool_assemblies_router, include_in_schema=False)
+    app.include_router(tool_instances_router, include_in_schema=False)
+    app.include_router(tool_presets_router, include_in_schema=False)
     app.include_router(tool_usage_router)
     app.include_router(tool_sets_router)
     app.include_router(audit_log_router)

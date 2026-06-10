@@ -25,7 +25,29 @@ from smooth.auth.user import create_user, authenticate_user, get_user_by_id, get
 from smooth.config import settings
 from smooth.database.schema import Base, init_db, User
 from smooth.database.session import get_db
+import os
 import secrets
+
+SOLO_USER_EMAIL = "solo@localhost.smooth"
+
+
+def solo_mode_enabled() -> bool:
+    """Whether the server runs in solo mode (SMOOTH_SOLO=1).
+
+    Solo mode (v2 decision G1/D1): a single-user box — no registration,
+    login, or API-key ceremony. Unauthenticated requests act as the
+    built-in solo user. Checked at request time (not import time) so
+    tests and process managers can toggle it via the environment.
+    """
+    return os.getenv("SMOOTH_SOLO", "").strip().lower() in ("1", "true", "yes")
+
+
+def get_solo_user(db: Session) -> User:
+    """Return the built-in solo user, creating it on first use."""
+    user = get_user_by_email(db, SOLO_USER_EMAIL)
+    if user is None:
+        user = create_user(db, SOLO_USER_EMAIL, secrets.token_urlsafe(24))
+    return user
 
 
 # Request/Response models
@@ -154,9 +176,19 @@ def require_auth(
     - Supports both session-based (cookie) and API key (Bearer) auth
     - Tries session first, then API key
     - For API key auth, stores scopes and tags in request.state for authorization
+    - Solo mode (SMOOTH_SOLO=1) bypasses authentication entirely: every
+      request acts as the built-in solo user (v2 decision G1/D1)
     """
     from smooth.auth.apikey import validate_api_key
-    
+
+    # Solo mode: single-user box, no auth ceremony
+    if solo_mode_enabled():
+        user = get_solo_user(db)
+        if request:
+            request.state.scopes = []
+            request.state.is_api_key_auth = False
+        return user
+
     # Try session authentication first
     user = get_session_user(session, db)
     if user:
@@ -204,6 +236,10 @@ def get_authenticated_user(
         authorization: Authorization header (Bearer token)
         db: Database session
     """
+    # Solo mode: act as the built-in solo user (no auth ceremony)
+    if solo_mode_enabled():
+        return get_solo_user(db)
+
     # If auth is enabled, enforce normal authentication
     if settings.auth_enabled:
         return require_auth(

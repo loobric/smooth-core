@@ -192,11 +192,12 @@ def test_openapi_documents_facade_only(solo_client):
     """The OpenAPI schema is the published contract: facade paths only.
 
     Assumptions:
+    - The schema is served at /api/v1/openapi.json (existing app config)
     - /api/v1/tool-records present
     - No /api/v1/tool-items, tool-assemblies, tool-instances, or tool-presets
       paths appear in the schema (they are private or removed)
     """
-    paths = solo_client.get("/openapi.json").json()["paths"]
+    paths = solo_client.get("/api/v1/openapi.json").json()["paths"]
     assert any(p.startswith("/api/v1/tool-records") for p in paths)
     forbidden = ("tool-items", "tool-assemblies", "tool-instances", "tool-presets")
     exposed = [p for p in paths if any(f in p for f in forbidden)]
@@ -249,12 +250,12 @@ def test_writes_are_audited(solo_client):
     """Every facade write produces an audit log entry.
 
     Assumptions:
-    - GET /api/v1/audit-logs returns entries with entity_type, operation
+    - GET /api/v1/audit-logs returns {"logs": [...]} (existing envelope),
+      entries carrying entity_type and operation
     - Facade writes audit as entity_type 'tool_record'
     """
     create_records(solo_client, [FIVE_MM_DRILL])
-    logs = solo_client.get("/api/v1/audit-logs").json()
-    entries = logs["items"] if isinstance(logs, dict) else logs
+    entries = solo_client.get("/api/v1/audit-logs").json()["logs"]
     assert any(
         e["entity_type"] == "tool_record" and e["operation"] == "CREATE"
         for e in entries
