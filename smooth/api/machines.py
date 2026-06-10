@@ -407,6 +407,47 @@ def upsert_tool_table(
     return ToolTableBulkResponse(success_count=len(results), errors=errors, items=results)
 
 
+@router.post("/{machine_id}/tool-table/{tool_number}/unbind", response_model=ToolTableEntryResponse)
+def unbind_entry(
+    machine_id: str,
+    tool_number: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    """Clear an entry's binding (the undo for a wrong confirm).
+
+    Assumptions:
+    - Entry data (offsets, description, extra) is untouched; only the link
+      to the ToolRecord is cleared
+    - The entry becomes eligible for binding proposals again on next sync
+    - 409 if the entry isn't bound; 404 for unknown machine/tool number
+    """
+    machine = _owned_machine(db, user, machine_id)
+    if machine is None:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    entry = db.query(ToolTableEntry).filter(
+        ToolTableEntry.machine_id == machine.id,
+        ToolTableEntry.tool_number == tool_number,
+    ).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No entry for tool number {tool_number}")
+    if entry.tool_record_id is None:
+        raise HTTPException(status_code=409, detail="Entry is not bound")
+
+    previous = entry.tool_record_id
+    entry.tool_record_id = None
+    entry.version += 1
+    entry.updated_by = user.id
+    db.flush()
+    create_audit_log(
+        session=db, user_id=user.id, operation="UNBIND",
+        entity_type="tool_table_entry", entity_id=entry.id,
+        changes={"tool_record_id": previous},
+    )
+    db.commit()
+    return entry_to_response(entry)
+
+
 @router.get("/{machine_id}/tool-table", response_model=ToolTableListResponse)
 def list_tool_table(
     machine_id: str,

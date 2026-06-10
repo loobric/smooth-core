@@ -15,6 +15,8 @@ Assumptions:
 import os
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from smooth.config import settings
 from smooth.api.auth import router as auth_router
 from smooth.api.backup_api import router as backup_router
@@ -112,7 +114,16 @@ def create_app() -> FastAPI:
     app.include_router(tool_sets_router)
     app.include_router(audit_log_router)
     app.include_router(changes_router)
-    
+
+    # Web inbox (smooth-core#6): one static file, no build step. Auth is
+    # enforced by the API the page calls, not by the page itself.
+    static_dir = Path(__file__).parent / "web" / "static"
+    app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect():
+        return RedirectResponse(url="/ui/")
+
     return app
 
 

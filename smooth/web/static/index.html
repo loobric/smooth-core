@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<!--
+  Smooth web inbox (smooth-core#6).
+  Deliberately one static file: no build step, no dependencies, served by
+  the core container. Scope (decision G2 + field feedback): read views for
+  tools/machines/audit, write actions limited to confirm/reject/unbind.
+  Anything richer belongs to Smooth Web (commercial).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smooth</title>
+<style>
+  :root { --bg:#10151a; --card:#1a222b; --ink:#e8edf2; --dim:#8fa1b3;
+          --line:#2a3641; --ok:#3fb46a; --warn:#d9923b; --bad:#cf5b56; --link:#5ab3d6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.45 system-ui,-apple-system,sans-serif; }
+  header { display:flex; align-items:center; gap:.75rem; padding:.7rem 1rem;
+           background:var(--card); border-bottom:1px solid var(--line);
+           position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1 { font-size:1.1rem; margin:0 .5rem 0 0; }
+  nav { display:flex; gap:.25rem; flex-wrap:wrap; }
+  nav button { background:none; border:1px solid transparent; color:var(--dim);
+               padding:.5rem .8rem; border-radius:8px; font-size:.95rem; cursor:pointer; }
+  nav button.active { color:var(--ink); border-color:var(--line); background:var(--bg); }
+  nav button .n { background:var(--warn); color:#000; border-radius:9px;
+                  padding:0 .45em; font-size:.8em; margin-left:.3em; }
+  main { max-width:760px; margin:0 auto; padding:1rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:.9rem 1rem; margin-bottom:.8rem; }
+  .muted { color:var(--dim); font-size:.9rem; }
+  .row { display:flex; justify-content:space-between; gap:.6rem; align-items:baseline; flex-wrap:wrap; }
+  .id { font-family:ui-monospace,monospace; font-size:.8rem; color:var(--dim); }
+  .vs { text-align:center; color:var(--dim); margin:.4rem 0; font-size:.9rem; }
+  .conf { height:6px; background:var(--line); border-radius:3px; margin:.6rem 0 .3rem; }
+  .conf > div { height:100%; border-radius:3px; background:var(--warn); }
+  .actions { display:flex; gap:.6rem; margin-top:.7rem; }
+  .actions button { flex:1; min-height:46px; border:none; border-radius:10px;
+                    font-size:1rem; font-weight:600; cursor:pointer; }
+  .confirm { background:var(--ok); color:#06210f; }
+  .reject  { background:var(--bad); color:#2b0c0a; }
+  .unbind  { background:none; border:1px solid var(--bad) !important; color:var(--bad);
+             min-height:36px !important; font-weight:500 !important; flex:0 0 auto !important;
+             padding:0 .8rem; }
+  .explain { background:#15202b; border:1px solid var(--line); border-radius:12px;
+             padding:.8rem 1rem; margin-bottom:1rem; font-size:.92rem; color:var(--dim); }
+  .explain b { color:var(--ink); }
+  .empty { text-align:center; color:var(--dim); padding:3rem 1rem; }
+  .pill { font-size:.78rem; padding:.1em .55em; border-radius:9px; border:1px solid var(--line); }
+  .pill.bound { color:var(--ok); border-color:var(--ok); }
+  .pill.unbound { color:var(--dim); }
+  .pill.dupe { color:var(--warn); border-color:var(--warn); }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  td, th { text-align:left; padding:.35rem .4rem; border-top:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; border-top:none; }
+  #login { position:fixed; inset:0; background:var(--bg); display:none;
+           align-items:center; justify-content:center; z-index:10; }
+  #login form { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                padding:1.5rem; width:min(92vw,340px); display:flex; flex-direction:column; gap:.7rem; }
+  #login input { background:var(--bg); border:1px solid var(--line); color:var(--ink);
+                 border-radius:8px; padding:.7rem; font-size:1rem; }
+  #login button { min-height:46px; border:none; border-radius:10px; background:var(--link);
+                  color:#06212b; font-size:1rem; font-weight:600; cursor:pointer; }
+  #login .err { color:var(--bad); font-size:.9rem; min-height:1.2em; }
+  #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%);
+           background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:.6rem 1rem; opacity:0; transition:opacity .25s; max-width:92vw; }
+  .spacer { flex:1; }
+  #whoami { font-size:.8rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Smooth</h1>
+  <nav id="tabs"></nav>
+  <span class="spacer"></span>
+  <span id="whoami" class="muted"></span>
+</header>
+
+<main id="view"></main>
+
+<div id="login"><form onsubmit="return doLogin(event)">
+  <strong>Sign in to Smooth</strong>
+  <input id="email" type="email" placeholder="email" autocomplete="username" required>
+  <input id="password" type="password" placeholder="password" autocomplete="current-password" required>
+  <div class="err" id="loginerr"></div>
+  <button type="submit">Sign in</button>
+</form></div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const TABS = [["inbox","Inbox"],["tools","Tools"],["machines","Machines"],["audit","Audit"]];
+let state = { tab:"inbox", inbox:[], tools:[], machines:[], audit:[], machineNames:{} };
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.style.opacity = 1;
+  setTimeout(() => t.style.opacity = 0, 2600);
+}
+
+async function api(method, path, body) {
+  const r = await fetch("/api/v1" + path, {
+    method, credentials: "same-origin",
+    headers: body ? {"Content-Type": "application/json"} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) { $("#login").style.display = "flex"; throw new Error("auth"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  return data;
+}
+
+async function doLogin(ev) {
+  ev.preventDefault();
+  try {
+    await api("POST", "/auth/login", {email: $("#email").value, password: $("#password").value});
+    $("#login").style.display = "none";
+    refresh();
+  } catch (e) { $("#loginerr").textContent = "Sign-in failed - check credentials."; }
+  return false;
+}
+
+async function refresh() {
+  try {
+    const [inbox, tools, machines, audit] = await Promise.all([
+      api("GET", "/inbox"), api("GET", "/tool-records"),
+      api("GET", "/machines"), api("GET", "/audit-logs?limit=50"),
+    ]);
+    state.inbox = inbox.items; state.tools = tools.items;
+    state.machines = machines.items; state.audit = audit.logs || [];
+    state.machineNames = Object.fromEntries(state.machines.map(m => [m.id, m.name]));
+    $("#whoami").textContent = "";
+    render();
+  } catch (e) { if (e.message !== "auth") toast("Load failed: " + e.message); }
+}
+
+function geomSummary(g) {
+  if (!g) return "";
+  const bits = [];
+  if (g.shape) bits.push(g.shape);
+  if (g.diameter) bits.push("⌀" + g.diameter + (g.diameter_unit || ""));
+  if (g.flutes) bits.push(g.flutes + "fl");
+  return bits.join(" · ");
+}
+
+function render() {
+  $("#tabs").innerHTML = TABS.map(([id, label]) =>
+    `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}` +
+    (id==="inbox" && state.inbox.length ? `<span class="n">${state.inbox.length}</span>` : "") +
+    `</button>`).join("");
+  const v = {inbox: renderInbox, tools: renderTools, machines: renderMachines, audit: renderAudit}[state.tab];
+  $("#view").innerHTML = v();
+  if (state.tab === "machines") loadTables();
+}
+function setTab(t) { state.tab = t; render(); }
+
+// ---- Inbox -----------------------------------------------------------------
+
+function renderInbox() {
+  if (!state.inbox.length)
+    return `<div class="empty">Inbox is empty - nothing needs you.<br>
+            <span class="muted">Proposals appear here when a machine reports tools the server doesn't recognize.</span></div>`;
+  return `
+  <div class="explain">These are <b>identity questions, not conflicts</b>: a machine reported
+  tools the server doesn't recognize, and these are its best guesses. Confirming or rejecting
+  <b>overwrites nothing on either side</b>. Confirm = same tool (links them; future changes route
+  between them). Reject = different tools (suggestion is dropped forever). <b>Unsure? Reject</b> -
+  you can always link later; a wrong confirm needs an unbind.</div>` +
+  state.inbox.map(i => `
+  <div class="card">
+    <div class="row">
+      <strong>${esc(i.machine_name)} &middot; T${i.entry.tool_number}</strong>
+      <span class="id">${esc(i.id.slice(0,8))}</span>
+    </div>
+    <div class="muted">${esc(i.entry.description || "no description")}</div>
+    <div class="vs">is this the same tool as?</div>
+    <div class="row">
+      <strong>${esc(i.proposed_record.name)}</strong>
+      <span class="id">${esc(i.proposed_record.id.slice(0,8))}</span>
+    </div>
+    <div class="muted">${esc(geomSummary(i.proposed_record.geometry))}</div>
+    <div class="conf"><div style="width:${Math.round(i.confidence*100)}%"></div></div>
+    <div class="muted">${Math.round(i.confidence*100)}% &middot; ${esc(i.reason)}</div>
+    <div class="actions">
+      <button class="confirm" onclick="resolve('${i.id}','confirm')">Same tool</button>
+      <button class="reject" onclick="resolve('${i.id}','reject')">Different</button>
+    </div>
+  </div>`).join("");
+}
+
+async function resolve(id, action) {
+  try {
+    const item = await api("POST", `/inbox/${id}/${action}`);
+    toast(action === "confirm"
+      ? `Linked T${item.entry.tool_number} ↔ ${item.proposed_record.name}. Nothing was overwritten.`
+      : `Dismissed - won't be suggested again.`);
+    refresh();
+  } catch (e) { toast(e.message); }
+}
+
+// ---- Tools -------------------------------------------------------------------
+
+function renderTools() {
+  if (!state.tools.length)
+    return `<div class="empty">No tool records yet.<br><span class="muted">Create them via the API or CLI; importers arrive in M2.</span></div>`;
+  const counts = {};
+  state.tools.forEach(t => counts[t.name] = (counts[t.name] || 0) + 1);
+  return state.tools.map(t => `
+  <div class="card">
+    <div class="row">
+      <strong>${esc(t.name)}</strong>
+      <span>${counts[t.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
+            <span class="id">${esc(t.id.slice(0,8))}</span></span>
+    </div>
+    <div class="muted">${esc(geomSummary(t.geometry))}
+      ${t.tags?.length ? " &middot; " + t.tags.map(esc).join(", ") : ""}</div>
+    ${t.machines.map(m => `
+      <div class="row" style="margin-top:.5rem">
+        <span><span class="pill bound">bound</span>
+          T${m.tool_number} @ ${esc(state.machineNames[m.machine_id] || m.machine_id.slice(0,8))}</span>
+        <button class="unbind actions" onclick="unbind('${m.machine_id}',${m.tool_number})">Unbind</button>
+      </div>`).join("")}
+  </div>`).join("");
+}
+
+async function unbind(machineId, toolNumber) {
+  const name = state.machineNames[machineId] || "machine";
+  if (!window.confirm(`Unbind T${toolNumber} @ ${name}? The entry keeps its data and becomes eligible for new suggestions.`)) return;
+  try {
+    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/unbind`);
+    toast(`T${toolNumber} unbound - data untouched.`);
+    refresh();
+  } catch (e) { toast(e.message); }
+}
+
+// ---- Machines ------------------------------------------------------------------
+
+function renderMachines() {
+  if (!state.machines.length)
+    return `<div class="empty">No machines yet.<br><span class="muted">They register themselves on first push from a controller.</span></div>`;
+  return state.machines.map(m => `
+  <div class="card">
+    <div class="row"><strong>${esc(m.name)}</strong>
+      <span class="muted">${esc(m.controller_type || "")}</span></div>
+    <div id="mt-${m.id}" class="muted">loading table…</div>
+  </div>`).join("");
+}
+
+async function loadTables() {
+  for (const m of state.machines) {
+    const el = document.getElementById("mt-" + m.id);
+    if (!el) continue;
+    try {
+      const t = await api("GET", `/machines/${m.id}/tool-table`);
+      el.outerHTML = t.items.length ? `
+        <table><tr><th>T</th><th>description</th><th>&#x2300;</th><th>Z</th><th>status</th></tr>
+        ${t.items.map(e => `<tr>
+          <td>T${e.tool_number}</td><td>${esc(e.description || "")}</td>
+          <td>${e.offsets?.diameter ?? ""}</td><td>${e.offsets?.z ?? ""}</td>
+          <td>${e.tool_record_id
+              ? '<span class="pill bound">bound</span>'
+              : '<span class="pill unbound">unbound</span>'}</td>
+        </tr>`).join("")}</table>` : `<div class="muted">empty tool table</div>`;
+    } catch (err) { el.textContent = "failed to load: " + err.message; }
+  }
+}
+
+// ---- Audit -------------------------------------------------------------------
+
+function renderAudit() {
+  if (!state.audit.length) return `<div class="empty">No audit entries.</div>`;
+  return `<div class="card"><table>
+    <tr><th>when</th><th>op</th><th>what</th></tr>
+    ${state.audit.map(l => `<tr>
+      <td class="muted">${esc((l.timestamp || "").replace("T", " ").slice(0, 16))}</td>
+      <td>${esc(l.operation)}</td>
+      <td>${esc(l.entity_type)} <span class="id">${esc((l.entity_id || "").slice(0,8))}</span></td>
+    </tr>`).join("")}</table></div>`;
+}
+
+refresh();
+setInterval(() => { if (state.tab === "inbox") refresh(); }, 30000);
+</script>
+</body>
+</html>

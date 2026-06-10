@@ -283,3 +283,34 @@ def test_deleting_record_cascades_proposals_and_unbinds_entries(solo_client):
     ).json()["items"]
     assert all(e["tool_record_id"] is None for e in entries)
     assert solo_client.get("/api/v1/inbox").json()["items"] == []
+
+
+@pytest.mark.contract
+def test_unbind_entry(solo_client):
+    """Field feedback: a wrong confirm needs an undo. Unbind clears the
+    link (audited), leaves entry data untouched, and the entry becomes
+    eligible for proposals again.
+
+    Assumptions:
+    - POST /api/v1/machines/{id}/tool-table/{tool_number}/unbind
+    - 409 when the entry isn't bound; 404 for unknown machine/tool number
+    """
+    machine = make_machine(solo_client)
+    record = make_record(solo_client)
+    put_table(solo_client, machine["id"], [{**T3_UNBOUND, "tool_record_id": record["id"]}])
+
+    resp = solo_client.post(f"/api/v1/machines/{machine['id']}/tool-table/3/unbind")
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()
+    assert entry["tool_record_id"] is None
+    assert entry["offsets"]["z"] == T3_UNBOUND["offsets"]["z"]  # data untouched
+
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/unbind"
+    ).status_code == 409
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/99/unbind"
+    ).status_code == 404
+
+    logs = solo_client.get("/api/v1/audit-logs").json()["logs"]
+    assert any(e["operation"] == "UNBIND" for e in logs)

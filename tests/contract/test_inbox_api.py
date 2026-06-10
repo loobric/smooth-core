@@ -205,3 +205,28 @@ def test_propose_confirm_reject_are_audited(solo_client):
     ops = {(e["entity_type"], e["operation"]) for e in entries}
     assert ("binding_proposal", "PROPOSE") in ops
     assert ("binding_proposal", "CONFIRM") in ops
+
+
+@pytest.mark.contract
+def test_inbox_items_include_machine_name(solo_client):
+    """Field feedback: T-numbers are ambiguous across machines. Items carry
+    the machine's display name alongside the entry."""
+    machine, _ = setup_machine_and_record(solo_client)
+    push(solo_client, machine["id"], [T3_DOWNCUT])
+    item = inbox(solo_client)[0]
+    assert item["machine_name"] == "mill01"
+
+
+@pytest.mark.contract
+def test_web_inbox_is_served(solo_client):
+    """The web inbox ships with core: / redirects to /ui/, which serves the
+    single-file app. Auth is enforced by the APIs the page calls, so the
+    page itself is public."""
+    root = solo_client.get("/", follow_redirects=False)
+    assert root.status_code in (302, 307)
+    assert root.headers["location"] == "/ui/"
+
+    page = solo_client.get("/ui/")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert "identity questions, not conflicts" in page.text

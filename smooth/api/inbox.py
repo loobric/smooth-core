@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.api.machines import ToolTableEntryResponse, entry_to_response
-from smooth.database.schema import User, ToolItem, ToolTableEntry, BindingProposal
+from smooth.database.schema import User, ToolItem, ToolTableEntry, BindingProposal, Machine
 from smooth.audit import create_audit_log
 
 
@@ -47,6 +47,7 @@ class InboxItem(BaseModel):
     confidence: float
     reason: str
     created_at: str
+    machine_name: str
     entry: ToolTableEntryResponse
     proposed_record: ProposedRecordSummary
 
@@ -64,12 +65,14 @@ def _proposal_to_item(db: Session, proposal: BindingProposal) -> Optional[InboxI
     ).first()
     if entry is None or record is None:
         return None
+    machine = db.query(Machine).filter(Machine.id == entry.machine_id).first()
     return InboxItem(
         id=proposal.id,
         type="binding_proposal",
         confidence=proposal.confidence,
         reason=proposal.reason,
         created_at=proposal.created_at.isoformat(),
+        machine_name=machine.name if machine else "?",
         entry=entry_to_response(entry),
         proposed_record=ProposedRecordSummary(
             id=record.id,
