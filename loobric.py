@@ -445,7 +445,7 @@ def list_pending():
     for item in items:
         entry = item.get("entry", {})
         record = item.get("proposed_record", {})
-        print(f"  ID: {item.get('id')}")
+        print(f"  ID: {item.get('id')[:8]}")
         print(f"  Type: {item.get('type')}")
         print(f"  Machine entry: T{entry.get('tool_number')} "
               f"({entry.get('description') or 'no description'})")
@@ -458,10 +458,27 @@ def list_pending():
 def resolve_pending(item_id: str, action: str):
     """Confirm or reject an inbox item.
 
+    Accepts unique id prefixes (like git short SHAs): anything shorter than
+    a full UUID is matched against the open inbox items client-side.
+
     Args:
-        item_id: Inbox item id (from `pending`)
+        item_id: Inbox item id or unique prefix (from `pending`)
         action: "confirm" (bind entry to proposed record) or "reject"
     """
+    if len(item_id) < 36:
+        open_items = make_request("GET", "/inbox", require_auth=True).get("items", [])
+        matches = [i for i in open_items if i.get("id", "").startswith(item_id)]
+        if not matches:
+            print(f"Error: no open inbox item starts with '{item_id}'", file=sys.stderr)
+            sys.exit(1)
+        if len(matches) > 1:
+            print(f"Error: '{item_id}' is ambiguous ({len(matches)} matches):", file=sys.stderr)
+            for m in matches:
+                entry = m.get("entry", {})
+                print(f"  {m['id'][:8]}  T{entry.get('tool_number')} "
+                      f"-> {m.get('proposed_record', {}).get('name')}", file=sys.stderr)
+            sys.exit(1)
+        item_id = matches[0]["id"]
     data = make_request("POST", f"/inbox/{item_id}/{action}", require_auth=True)
     entry = data.get("entry", {})
     record = data.get("proposed_record", {})
@@ -683,7 +700,7 @@ Environment Variables:
     resolve_parser = subparsers.add_parser(
         "resolve", help="Confirm or reject an inbox item"
     )
-    resolve_parser.add_argument("item_id", help="Inbox item id (see 'pending')")
+    resolve_parser.add_argument("item_id", help="Inbox item id or unique prefix (see 'pending')")
     resolve_parser.add_argument("action", choices=["confirm", "reject"])
     resolve_parser.set_defaults(func=lambda args: resolve_pending(
         args.item_id, args.action
