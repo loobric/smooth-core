@@ -32,6 +32,7 @@ from smooth.api.tool_records import (
     router as tool_records_router,
     changes_router as tool_records_changes_router,
 )
+from smooth.api.machines import router as machines_router
 
 
 def create_app() -> FastAPI:
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(catalogs_router)
     app.include_router(tool_records_router)
     app.include_router(tool_records_changes_router)
+    app.include_router(machines_router)
     # Deep-schema routers are private substrate: kept for internal use and
     # the v1 clients during the v2 transition, but unpublished (hidden from
     # the OpenAPI contract).

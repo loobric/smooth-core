@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean, DateTime, Float, Integer, String, Text, JSON, ForeignKey,
-    create_engine
+    UniqueConstraint, create_engine
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -164,6 +164,62 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     iso_13399_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     parent_tool_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("tool_items.id"), nullable=True, index=True)
+
+
+class Machine(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Machine model - a CNC machine (v2 facade entity, decision D4).
+
+    Assumptions:
+    - name is the human identifier clients reference (e.g. "mill01");
+      unique per owning user
+    - controller_type is informational (e.g. "linuxcnc", "grbl")
+    - definition holds .fcm-shaped JSON (axes, spindle min/max, units, post
+      settings); stored opaquely and round-tripped losslessly
+    - tags is JSON array for access control and organization
+    """
+    __tablename__ = "machines"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_machine_user_name"),
+        {'extend_existing': True},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    controller_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    definition: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class ToolTableEntry(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """ToolTableEntry model - one machine's tool-table row (v2 facade entity).
+
+    Assumptions:
+    - (machine_id, tool_number) is unique; pushes upsert on that key
+    - tool_record_id is the binding to the facade ToolRecord's backing row;
+      NULL means the entry is unbound (raw material for the binding engine)
+    - offsets is JSON ({"z": -50.0, "z_unit": "mm", ...})
+    - provenance is JSON mapping field paths to source strings
+      (e.g. {"offsets.z": "machine"}); sync must never silently replace
+      user-provenance values (G5)
+    - extra is JSON for lossless client round-trips (raw .tbl params etc.)
+    """
+    __tablename__ = "tool_table_entries"
+    __table_args__ = (
+        UniqueConstraint("machine_id", "tool_number", name="uq_entry_machine_toolnum"),
+        {'extend_existing': True},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    machine_id: Mapped[str] = mapped_column(String(36), ForeignKey("machines.id"), nullable=False, index=True)
+    tool_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    pocket: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    offsets: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    tool_record_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("tool_items.id"), nullable=True, index=True
+    )
 
 
 class ManufacturerCatalog(Base, TimestampMixin, VersionMixin, UserAttributionMixin):

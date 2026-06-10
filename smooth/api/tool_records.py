@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
-from smooth.database.schema import User, ToolItem
+from smooth.database.schema import User, ToolItem, ToolTableEntry
+from smooth.api.machines import ToolTableEntryResponse, entry_to_response
 from smooth.audit import create_audit_log
 from smooth.change_detection import get_changes_since_version, get_max_version
 
@@ -69,12 +70,17 @@ class ToolRecordUpdate(BaseModel):
 
 
 class ToolRecordResponse(BaseModel):
-    """Public facade shape. No deep-entity keys, no attribution internals."""
+    """Public facade shape. No deep-entity keys, no attribution internals.
+
+    machines[] nests the ToolTableEntries bound to this record (one per
+    machine where the tool is mounted) — the UL's ToolRecord.machines[].
+    """
     id: str
     name: str
     description: Optional[str]
     tags: List[str]
     geometry: Optional[dict]
+    machines: List[ToolTableEntryResponse] = []
     version: int
     created_at: str
     updated_at: str
@@ -130,20 +136,28 @@ def _iso(value) -> str:
     return value.isoformat() if isinstance(value, datetime) else str(value)
 
 
-def _to_response(item: ToolItem) -> ToolRecordResponse:
+def _to_response(item: ToolItem, db: Session) -> ToolRecordResponse:
     """Serialize the backing ToolItem as a facade ToolRecord.
 
     Assumptions:
     - The facade shows exactly the public fields; everything else about the
       backing row (type, attribution, deep links) stays private
     - name falls back to description for rows predating the facade
+    - machines[] lists ToolTableEntries bound to this record
     """
+    entries = (
+        db.query(ToolTableEntry)
+        .filter(ToolTableEntry.tool_record_id == item.id)
+        .order_by(ToolTableEntry.machine_id, ToolTableEntry.tool_number)
+        .all()
+    )
     return ToolRecordResponse(
         id=item.id,
         name=item.name or item.description or "",
         description=item.description,
         tags=item.tags or [],
         geometry=item.geometry,
+        machines=[entry_to_response(e) for e in entries],
         version=item.version,
         created_at=_iso(item.created_at),
         updated_at=_iso(item.updated_at),
@@ -193,7 +207,7 @@ def create_tool_records(
             entity_type="tool_record",
             entity_id=item.id,
         )
-        created.append(_to_response(item))
+        created.append(_to_response(item, db))
 
     db.commit()
     return BulkResponse(success_count=len(created), errors=errors, items=created)
@@ -218,7 +232,7 @@ def list_tool_records(
     if tag is not None:
         rows = [r for r in rows if tag in (r.tags or [])]
     rows = rows[offset:offset + limit]
-    return ListResponse(items=[_to_response(r) for r in rows])
+    return ListResponse(items=[_to_response(r, db) for r in rows])
 
 
 @router.get("/{record_id}", response_model=ToolRecordResponse)
@@ -231,7 +245,7 @@ def get_tool_record(
     item = _owned(db, user, record_id)
     if item is None:
         raise HTTPException(status_code=404, detail="ToolRecord not found")
-    return _to_response(item)
+    return _to_response(item, db)
 
 
 @router.patch("", response_model=BulkResponse)
@@ -279,7 +293,7 @@ def update_tool_records(
             entity_type="tool_record",
             entity_id=item.id,
         )
-        updated.append(_to_response(item))
+        updated.append(_to_response(item, db))
 
     db.commit()
     return BulkResponse(success_count=len(updated), errors=errors, items=updated)
@@ -341,7 +355,7 @@ def tool_record_changes_since_version(
         user_id=user.id,
         is_admin=user.is_admin,
     )
-    items = [_to_response(c) for c in changes]
+    items = [_to_response(c, db) for c in changes]
     return ChangesResponse(
         entity_type="tool-records",
         items=items,
