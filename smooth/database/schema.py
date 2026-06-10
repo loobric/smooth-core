@@ -222,6 +222,35 @@ class ToolTableEntry(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     )
 
 
+class BindingProposal(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """BindingProposal model - a heuristic match awaiting human review (v2 #5).
+
+    Assumptions:
+    - Proposes binding ONE ToolTableEntry to ONE ToolRecord backing row
+    - status: open | confirmed | rejected; only open proposals appear in
+      the inbox, and an entry has at most one open proposal at a time
+    - Rejected proposals are kept: the same (entry, record) pair is never
+      proposed again (rejection is a remembered human decision)
+    - confidence in [0, 1]; reason is the human-readable explanation shown
+      in the inbox
+    """
+    __tablename__ = "binding_proposals"
+    __table_args__ = (
+        {'extend_existing': True},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tool_table_entries.id"), nullable=False, index=True
+    )
+    proposed_record_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tool_items.id"), nullable=False, index=True
+    )
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+
+
 class ManufacturerCatalog(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Manufacturer catalog model - collections of catalog tools.
     

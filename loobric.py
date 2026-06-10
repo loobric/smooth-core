@@ -145,14 +145,14 @@ def make_request(
         "Accept": "application/json",
     })
     
-    # Prefer API key authentication over session cookie
+    # Prefer API key authentication over session cookie. With neither,
+    # send the request anyway and let the server decide: a solo-mode
+    # server (SMOOTH_SOLO=1) accepts it; a multi-tenant server returns
+    # 401 with a clear message. The client must not pre-judge auth.
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
     elif SESSION_COOKIE:
         headers["Cookie"] = f"session={SESSION_COOKIE}"
-    elif require_auth:
-        print("Error: Not authenticated. Run 'login' first or set LOOBRIC_API_KEY.", file=sys.stderr)
-        sys.exit(1)
 
     body_str = json.dumps(body) if body else None
 
@@ -416,6 +416,52 @@ def list_tool_sets(
             print(f"\n{remaining} more tool set(s) available. Use --offset {offset + limit} to see more.")
 
 
+def list_pending():
+    """List inbox items awaiting review (binding proposals).
+
+    The inbox holds what sync could not decide on its own (G2): heuristic
+    binding proposals awaiting a human. Resolve with `resolve <id> confirm`
+    or `resolve <id> reject`.
+    """
+    data = make_request("GET", "/inbox", require_auth=True)
+    items = data.get("items", [])
+    if not items:
+        print("Inbox is empty - nothing pending.")
+        return
+
+    print(f"\n{len(items)} item(s) awaiting review:")
+    print("=" * 78)
+    for item in items:
+        entry = item.get("entry", {})
+        record = item.get("proposed_record", {})
+        print(f"  ID: {item.get('id')}")
+        print(f"  Type: {item.get('type')}")
+        print(f"  Machine entry: T{entry.get('tool_number')} "
+              f"({entry.get('description') or 'no description'})")
+        print(f"  Proposed match: {record.get('name')}")
+        print(f"  Confidence: {item.get('confidence'):.0%} - {item.get('reason')}")
+        print("-" * 78)
+    print("Resolve with: loobric.py resolve <id> confirm|reject")
+
+
+def resolve_pending(item_id: str, action: str):
+    """Confirm or reject an inbox item.
+
+    Args:
+        item_id: Inbox item id (from `pending`)
+        action: "confirm" (bind entry to proposed record) or "reject"
+    """
+    data = make_request("POST", f"/inbox/{item_id}/{action}", require_auth=True)
+    entry = data.get("entry", {})
+    record = data.get("proposed_record", {})
+    if action == "confirm":
+        print(f"Confirmed: T{entry.get('tool_number')} is now bound to "
+              f"'{record.get('name')}'")
+    else:
+        print(f"Rejected: T{entry.get('tool_number')} will not be matched to "
+              f"'{record.get('name')}' again")
+
+
 def ping():
     """Check server health/connectivity."""
     conn = get_connection()
@@ -614,6 +660,21 @@ Environment Variables:
         status_filter=args.status,
         limit=args.limit,
         offset=args.offset
+    ))
+
+    # === pending / resolve (v2 inbox) ===
+    pending_parser = subparsers.add_parser(
+        "pending", help="List inbox items awaiting review (binding proposals)"
+    )
+    pending_parser.set_defaults(func=lambda _: list_pending())
+
+    resolve_parser = subparsers.add_parser(
+        "resolve", help="Confirm or reject an inbox item"
+    )
+    resolve_parser.add_argument("item_id", help="Inbox item id (see 'pending')")
+    resolve_parser.add_argument("action", choices=["confirm", "reject"])
+    resolve_parser.set_defaults(func=lambda args: resolve_pending(
+        args.item_id, args.action
     ))
 
     # === ping ===

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.database.schema import User, Machine, ToolTableEntry, ToolItem
 from smooth.audit import create_audit_log
+from smooth.binding import propose_binding, delete_proposals_for_entries
 
 
 router = APIRouter(prefix="/api/v1/machines", tags=["machines"])
@@ -306,6 +307,12 @@ def delete_machines(
         if machine is None:
             errors.append(ErrorDetail(index=index, id=machine_id, message="Machine not found"))
             continue
+        entry_ids = [
+            e.id for e in db.query(ToolTableEntry).filter(
+                ToolTableEntry.machine_id == machine.id
+            ).all()
+        ]
+        delete_proposals_for_entries(db, entry_ids)
         db.query(ToolTableEntry).filter(ToolTableEntry.machine_id == machine.id).delete()
         db.delete(machine)
         create_audit_log(
@@ -391,6 +398,9 @@ def upsert_tool_table(
             session=db, user_id=user.id, operation=operation,
             entity_type="tool_table_entry", entity_id=entry.id,
         )
+        # Binding engine (#5): unbound entries get at most one open
+        # heuristic proposal for human review. Never auto-binds.
+        propose_binding(db, user, entry)
         results.append(entry_to_response(entry))
 
     db.commit()
@@ -443,6 +453,7 @@ def delete_tool_table_entries(
                 index=index, message=f"No entry for tool number {tool_number}"
             ))
             continue
+        delete_proposals_for_entries(db, [entry.id])
         db.delete(entry)
         create_audit_log(
             session=db, user_id=user.id, operation="DELETE",
