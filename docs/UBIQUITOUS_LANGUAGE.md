@@ -109,6 +109,7 @@ entities along the catalog → physical → machine axis. Always use the specifi
 | **Sync / Synchronization** | The core verb: making tool data consistent between Smooth Core and a client system (a CAM application's tool data, a controller's tool table, etc.). |
 | **Bidirectional sync** | Changes flow both ways: CAM → server → controller *and* controller → server → CAM (e.g. wear offsets entered at the machine propagate back). |
 | **Tool table** | A controller's native tool data store (e.g. a `.tbl` file with T/P/D/Z parameters). A client-side format, not a Smooth concept; Smooth models its rows as ToolTableEntries. |
+| **Tool number** | The ONLY tool identifier that travels in G-code (`T3 M6`): the single point of contact between CAM's assumption and the controller's reality. Both sides' number→tool mappings are recorded (CAM numbering with the ToolSet; the machine side via Binding on `(machine, tool_number)`), making their agreement a verifiable fact. Verifying this mapping is the system's most important job — see `CONCEPTS.md`. |
 | **Tool library** | ⚠️ Client-side term only — some CAM applications call their tool collections "libraries". Inside Smooth the word is **ToolSet**; "library" appears only when naming that application's own artifact. |
 | **Change detection** | Using `version` / `updated_at` to find what changed since last sync, so clients sync deltas instead of everything. |
 | **Version (optimistic locking)** | Integer incremented on every write to an entity. A write with a stale version is a **conflict**. |

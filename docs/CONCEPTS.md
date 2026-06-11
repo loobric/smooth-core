@@ -29,6 +29,59 @@ prompting, blocking, or overwriting anything silently**.
 
 ---
 
+## The tool number — the contract the G-code executes
+
+Before anything else, understand where the two worlds physically meet, because it
+is a single, terrifyingly thin point of contact: **the tool number**.
+
+When a CAM programmer assigns a tool to an operation, the post-processor emits
+`T3 M6`. That's it. The geometry, the name, the UUID, the careful feeds & speeds
+— none of it travels to the machine. The G-code carries *only the number*, and
+the controller dereferences that number through *its* tool table. Two independent
+systems each hold an assumption about what "T3" **is**:
+
+- **CAM's assumption:** "T3 is the 1/4″ downcut" — recorded when the programmer
+  numbered the tool in the CAM library and posted the job.
+- **The controller's reality:** "T3 is whatever is actually in pocket 3, with
+  these offsets."
+
+If those two assumptions ever disagree — the program was posted against last
+month's numbering, someone re-shuffled the carousel, a tool was replaced — the
+machine will faithfully load the wrong tool and cut with the wrong geometry and
+the wrong offsets. That is a scrapped part on a good day.
+
+**Verifying that this mapping is consistent is the single most important job of
+the system.** The wear-offset loop everyone notices is built on top of it: an
+offset is only worth syncing because the number it hangs on means the same thing
+on both ends. Smooth's contribution is to make both halves of the assumption
+*explicit, recorded, and comparable through a shared ToolRecord*:
+
+```
+CAM side:        nr 3  →  ToolRecord "1/4″ downcut"     (tool number in the CAM library)
+machine side:    T3 on millstone  →  ToolRecord "1/4″ downcut"   (the Binding)
+```
+
+When both arrows point at the **same ToolRecord**, the mapping is verified:
+CAM's "T3" and millstone's "T3" provably mean the same tool. When they point at
+different records — or one arrow is missing — the system can *see* that, which is
+something no part of the toolchain could do before, because half the mapping
+lived in someone's head. This is the real reason a Binding is human-confirmed and
+sticky: it isn't a tagging convenience, it's the machine-side half of a safety
+assertion.
+
+> **Honest status note:** both halves are recorded today (the CAM client stores
+> its per-tool numbers with the ToolSet; the Binding stores the machine side),
+> and a confirmed Binding plus the synced table makes mismatches visible.
+> An *automated* cross-check — "this CAM library's numbering disagrees with
+> millstone's bindings" surfaced as an Inbox item — is the designed direction
+> but not yet implemented. Note also that the CAM-side numbers currently ride in
+> client-namespaced passthrough (`extra`), which core treats as opaque; if
+> number-verification is the system's most important job, those numbers likely
+> deserve promotion to a first-class facade field so core can do the comparison
+> itself. Open design question, tracked in the decision register.
+
+---
+
 ## The four nouns
 
 | Noun | What it is | One-line test |
@@ -40,7 +93,8 @@ prompting, blocking, or overwriting anything silently**.
 
 Two of these are things *you curate* (ToolRecord, ToolSet). One is a thing the
 *machine reports* (the tool table). The last is the *join* between those two
-worlds — and the join is the product.
+worlds — and the join is the product, because the join is what makes the tool
+number's meaning verifiable (see "The tool number" above).
 
 ---
 
@@ -164,26 +218,58 @@ Three reasons, and the first is decisive:
 
 ## The loop, end to end (concrete)
 
-1. You design with a 1/4″ downcut in CAM. Export → ToolRecord exists; the
-   `.fctb` carries its id (identity-carrying client: bound by construction).
+1. You design with a 1/4″ downcut in CAM, numbered **3** in your CAM tool
+   library. Export → a ToolRecord exists; the `.fctb` carries its id
+   (identity-carrying client: bound by construction), and the library's
+   numbering — *CAM's half of the "what is T3" assumption* — is stored with the
+   ToolSet on the server.
 2. The sync script on **millstone** pushes its `.tbl`. Row `T3 P3 D+6.35 Z-48.25`
-   becomes an *unbound* ToolTableEntry. Nothing prompts, nothing guesses.
+   becomes an *unbound* ToolTableEntry — *the controller's half of the
+   assumption*, currently anonymous. Nothing prompts, nothing guesses. **At this
+   moment the system knows the machine has *a* T3 but cannot yet vouch that it's
+   *your* T3.** Posting `T3 M6` against this machine is still an act of faith,
+   exactly as it was before Smooth existed.
 3. The server notices T3's diameter matches the downcut's and **proposes** a
-   binding → Inbox.
+   binding → Inbox. A proposal is a question, never an answer: confirming it is
+   you, the human who can see the carousel, asserting "yes — what millstone
+   calls T3 *is* the 1/4″ downcut."
 4. From your phone, you confirm. `(millstone, T3)` ⇄ "1/4″ downcut" — forever.
+   **This is the moment the T3 contract closes:** CAM's `nr 3 → downcut` and
+   millstone's `T3 → downcut` now point at the same ToolRecord, on the record,
+   verifiable by anything that can read the API. The single most important fact
+   in the shop — "the program and the machine agree about what T3 is" — has
+   stopped living in your head.
 5. Weeks later you touch off and enter Z−48.007 at the machine. Sync pushes it;
-   because the entry is bound, CAM now shows the measured offset with machine
-   provenance.
+   because the entry is bound, CAM shows the measured offset with machine
+   provenance. Offsets are *trustworthy* only because step 4 established what
+   they're offsets *of*.
 6. You correct the offset on the server; the next controller sync rewrites
    exactly that line of `tool.tbl`, backup first, comments intact.
+7. Next month someone moves the downcut to pocket 8 and puts a chamfer in T3.
+   The pushed table now disagrees with the confirmed binding's record — the
+   change is visible against the recorded contract instead of silently invalid
+   G-code assumptions. (Surfacing this automatically as an Inbox alarm is the
+   designed direction — see the status note above.)
 
 Steps 3–4 are the *only* place a human is required, they happen exactly once per
 machine-tool pairing, and they're required precisely because step 2's file format
-cannot say which tool it means.
+cannot say which tool it means. Everything before them is bookkeeping; everything
+after them is leverage. **The confirmation is the product**: it converts "I'm
+pretty sure T3 is the downcut" into a recorded, sticky, cross-checkable fact.
 
 ---
 
 ## FAQ
+
+**What guarantees that `T3` in my G-code is the tool actually in the machine?**
+Nothing *guarantees* it — a human still has to put the right tool in the right
+pocket. What Smooth does is make the assumption on each side explicit and
+comparable: CAM's numbering is recorded with the ToolSet, the machine's reality
+is the synced tool table, and the confirmed Binding asserts they refer to the
+same ToolRecord. Agreement is then a checkable fact instead of tribal knowledge,
+and *disagreement is detectable* — which is the property no prior toolchain had.
+Verifying this mapping is the system's most important job; the offset loop is
+built on top of it.
 
 **Is the machine's tool list a ToolSet?**
 No. ToolSet members are ToolRecord ids (intent); tool-table rows are
