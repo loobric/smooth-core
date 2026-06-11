@@ -111,6 +111,9 @@ entities along the catalog → physical → machine axis. Always use the specifi
 | **API key** | User-created credential for programmatic/machine access (what a controller-side sync script uses). Distinct from email/password login. |
 | **Tag-based API access** | Scoping an API key's reach by entity tags (e.g. a key for machine `mill01` only sees tools tagged for it). |
 | **Audit log** | Immutable structured record of who changed what, when. Compliance/forensics, separate from operational logs. |
+| **Solo mode** | Opt-in single-user deployment mode (`SMOOTH_SOLO=1`, decision G1/D1): authentication is bypassed and every request acts as the built-in **solo user**. Exists so one person on a trusted LAN can go from `docker run` to a working sync loop with zero registration/login/API-key ceremony. Never the default; hosted and sandbox instances always run multi-user. The clients don't know or care which mode the server is in — an empty API key simply works against a solo server. |
+| **Solo user** | The built-in account (`solo@localhost.smooth`) auto-created on first request in solo mode; it owns all data created while solo. Its password is random and never disclosed, so this data is reachable *only through solo mode* — switching a server to multi-user strands it until an admin intervenes. ⚠️ The solo → multi-user migration story is undefined; define it before promoting solo mode in quickstart docs. |
+| **Multi-user mode** | The default when `SMOOTH_SOLO` is unset: registration, login, API keys, per-account isolation. Not usually named in prose — it's just how the server works; "multi-user" appears only when contrasting with solo mode. |
 
 ## Machines & Shop Concepts
 
