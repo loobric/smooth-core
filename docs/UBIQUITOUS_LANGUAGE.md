@@ -26,16 +26,28 @@ code, or user-facing prose.
 
 | Term | Definition |
 |------|------------|
-| **ToolRecord** | The facade resource: one user-meaningful tool — geometry + tags + Presets + per-machine ToolTableEntries. Maps internally to the deep chain; its public ID is stable for the record's life. In prose, "tool" stays informal; use **ToolRecord** whenever precision matters. |
+| **ToolRecord** | The facade resource: one user-meaningful tool — geometry + tags + Presets + per-machine ToolTableEntries. Maps internally to the deep chain; its public ID is stable for the record's life. In prose, "tool" stays informal and "record" is acceptable shorthand where the context is unambiguous (e.g. a client's sync journal); use **ToolRecord** whenever precision matters. |
 | **ToolTableEntry** | One machine's table row for a ToolRecord: tool number, pocket, offsets, provenance. Nested as `ToolRecord.machines[]`, scoped to a Machine. Mirrors a controller's tool-table / offset-table row. (Rejected names: `MachineToolInstance` — collides with ToolInstance; `ToolPocket` — names a field; old `ToolPreset` — collides with Preset.) |
 | **Machine** | First-class entity: a CNC machine — identity, controller type, limits (incl. spindle min/max). Clients sync their native machine definitions to it. |
 | **ToolSet** | A named collection of ToolRecords. The public resource and the internal entity share one name — there is no separate facade word. (Supersedes **Library**, purged 2026-06-11: "library" is a client-side term and now appears only when referring to a specific application's artifact.) |
 | **Preset** | A named feeds-and-speeds record on a ToolRecord (`preset_schema: 1`): surface speed (Vc), chipload (Fz), optional vertical-feed ratio, optional material reference, operation type. Engineering values only; raw feed/RPM are derived by the consuming application at use time and never persisted. |
-| **Binding** | The confirmed link between a Machine's ToolTableEntry and a ToolRecord. Server-proposed, user-confirmed once, sticky. What makes the sync loop close. |
+| **Binding** | The confirmed link between a Machine's ToolTableEntry and a ToolRecord. Server-proposed, user-confirmed once, sticky. What makes the sync loop close. Verb forms are part of the vocabulary: to **bind** / **unbind** an entry; an entry is **bound** or **unbound**. Unbound entries still sync — as unbound. |
 | **Pending review / Inbox** | First-class server state for items awaiting a human: proposed Bindings and frozen Conflicts. Sync never prompts, blocks, or guesses. |
 | **Conflict** | Both sides changed the same bound field between syncs. The field freezes (neither side overwritten) until resolved in the Inbox. |
+| **Sync Plan / Apply** | The preview-first sync pattern clients use for interactive sync: **plan** computes what a sync would do — every item classified (in sync, changed here, changed on server, new, deleted, conflict) — touching neither disk nor server; **apply** executes only the user's per-item direction choices. The classification is a suggested default, never a railroad; conflicts and deletions default to "leave unsynced". |
 
 ---
+
+## Architecture Terms (internal only)
+
+Words for talking about the system's structure — in design docs, code comments, and commit
+messages. They never appear in user-facing prose, client UI, or the published API: a user sees
+"the API" and "Smooth", not the layering behind them.
+
+| Term | Definition |
+|------|------------|
+| **Facade** | The public API layer (`/api/v1`): the small, stable vocabulary above (ToolRecord, ToolSet, Machine, …) presented over the deep schema. "Facade-only public API" (G3) means clients speak this layer exclusively; facade gaps get fixed, never bypassed. |
+| **Deep schema** | The private substrate (ToolItem/Assembly/Instance/…): no compat promise, free to change, invisible at the boundary. |
 
 ---
 
