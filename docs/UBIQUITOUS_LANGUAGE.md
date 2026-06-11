@@ -38,6 +38,20 @@ code, or user-facing prose.
 
 ---
 
+## Server Surfaces
+
+One Smooth Core server exposes three distinct surfaces. Don't say "the facade" when you mean
+one of these — name the surface.
+
+| Term | Definition |
+|------|------------|
+| **Public API** (`/api/v1`) | The product's actual contract: the REST endpoints speaking the public vocabulary above. The ONLY read/write path — every other surface, first-party or not, is a client of it. "Facade" is the internal architecture name for the layer that implements it; user- and developer-facing prose says **API** or **public API**. |
+| **Web UI** (`/ui`) | The management UI served by core: one static file, no build step, AGPL like the rest of core. Speaks only the Public API from the browser — it is a first-party *client* with no privileged access; auth is enforced by the API it calls, not by the page. Grew out of the milestone-1 "web inbox" (G2) into tabs for Inbox, Tools, Tool Sets, Machines, Audit. Distinct from **Smooth Web**, the commercial hosted application (M3 rebuild). |
+| **API reference** (`/api/v1/docs`, `/api/v1/redoc`) | Interactive, auto-generated documentation of the Public API for developers (Swagger UI / ReDoc). Never hand-maintained — it is a *projection* of the API, generated from `/api/v1/openapi.json`. Publishing exactly the facade vocabulary and nothing else is a tested contract (deep routes are excluded from the schema). |
+| **OpenAPI schema** (`/api/v1/openapi.json`) | The machine-readable contract artifact behind the API reference; what contract tests assert against. |
+
+---
+
 ## Architecture Terms (internal only)
 
 Words for talking about the system's structure — in design docs, code comments, and commit
@@ -46,7 +60,7 @@ messages. They never appear in user-facing prose, client UI, or the published AP
 
 | Term | Definition |
 |------|------------|
-| **Facade** | The public API layer (`/api/v1`): the small, stable vocabulary above (ToolRecord, ToolSet, Machine, …) presented over the deep schema. "Facade-only public API" (G3) means clients speak this layer exclusively; facade gaps get fixed, never bypassed. |
+| **Facade** | The layer implementing the Public API: the small, stable vocabulary above (ToolRecord, ToolSet, Machine, …) presented over the deep schema. "Facade-only public API" (G3) means clients speak this layer exclusively; facade gaps get fixed, never bypassed. The facade is the API layer ONLY — the Web UI and API reference are surfaces *on top of* it (see Server Surfaces), not parts of it. |
 | **Deep schema** | The private substrate (ToolItem/Assembly/Instance/…): no compat promise, free to change, invisible at the boundary. |
 
 ---
@@ -59,7 +73,7 @@ messages. They never appear in user-facing prose, client UI, or the published AP
 | **Smooth** | The product: an open-core tool data synchronization system. |
 | **Smooth Core** | The central REST API + database server (`smooth-core`). The thing clients talk to. Licensed Elastic 2.0. |
 | **Client** | Any program that synchronizes tool data with a Smooth Core server: `smooth-freecad`, `smooth-linuxcnc`, the `loobric.py` CLI, or third-party integrations. Clients are MIT-licensed reference implementations. |
-| **Smooth Web** | The hosted web application / management UI. The v1 app (`smooth-web`, app.loobric.com) is retired; a v2 rebuild on the facade is scoped in M3. Part of the commercial offering, not the open core. |
+| **Smooth Web** | The hosted web application. The v1 app (`smooth-web`, app.loobric.com) is retired; a v2 rebuild on the Public API is scoped in M3. Part of the commercial offering, not the open core. ⚠️ Boundary with the core **Web UI** (`/ui`, see Server Surfaces) is undecided: M3 scope (account/key management, audit browsing, backup/restore, admin) is currently slated for the core Web UI — decide which features are open `/ui` vs commercial Smooth Web before M3 starts. |
 
 ## Domain Concepts — Tools
 
