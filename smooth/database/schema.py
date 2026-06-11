@@ -140,7 +140,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     Assumptions:
     - type: cutting_tool, holder, insert, adapter
     - geometry and material are JSON fields for nested data
-    - shape_data stores tool shape file references (FreeCAD .FCStd, STEP, STL, etc.)
+    - shape_data stores tool shape file references (native CAD, STEP, STL, etc.)
     - iso_13399_reference is optional for standards compliance
     - parent_tool_id: References another ToolItem if copied from catalog (nullable)
     - tags is JSON array for access control and organization
@@ -165,7 +165,7 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     parent_tool_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("tool_items.id"), nullable=True, index=True)
     # Opaque client passthrough for the v2 facade (lossless round trips);
-    # e.g. the FreeCAD client stores the full .fctb document here.
+    # a client may stash its full native tool document here, namespaced.
     extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
@@ -176,8 +176,8 @@ class Machine(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     - name is the human identifier clients reference (e.g. "mill01");
       unique per owning user
     - controller_type is informational (e.g. "linuxcnc", "grbl")
-    - definition holds .fcm-shaped JSON (axes, spindle min/max, units, post
-      settings); stored opaquely and round-tripped losslessly
+    - definition holds the client's machine-definition JSON (axes, spindle
+      min/max, units, post settings); stored opaquely, round-tripped losslessly
     - tags is JSON array for access control and organization
     """
     __tablename__ = "machines"
@@ -397,7 +397,7 @@ class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     job_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     members: Mapped[list] = mapped_column(JSON, nullable=False)
     capacity: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    # Opaque client passthrough for v2 facade Libraries (.fctl numbers etc.)
+    # Opaque client passthrough for the v2 ToolSet facade (lossless round trips)
     extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
     activation: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

@@ -4,9 +4,18 @@ A shared vocabulary for the Smooth / Loobric project. Use these terms consistent
 docs, UI, marketing, and conversation. When code and this document disagree, fix one of them —
 don't let them drift.
 
-Status: **v2 vocabulary settled 2026-06-09** (grill-me session; see `RESEARCH_BRIEF.md` §6).
-The "v2 Public Vocabulary" section below is normative for the facade API. Deep-schema terms
-remain internal. Terms marked ⚠️ have known ambiguity.
+Status: **v2 vocabulary settled 2026-06-09** (grill-me session; see `RESEARCH_BRIEF.md` §6);
+**Library purged in favor of ToolSet 2026-06-11**. The "v2 Public Vocabulary" section below is
+normative for the facade API. Deep-schema terms remain internal. Terms marked ⚠️ have known
+ambiguity.
+
+**Language rule — client neutrality.** Smooth is client-application agnostic. The names of
+specific applications (FreeCAD, LinuxCNC, Fusion, …) never appear in the normative vocabulary,
+the facade API, core docs, or core UI text. They appear only (a) when referring to that
+application's own artifact or term (a `.fctl` file IS a "FreeCAD tool library"), and (b) in
+explicitly client-specific sections such as the reconciliation tables below or a client's own
+repository. Generic domain categories — "CAM application", "controller", "tool table" — are the
+neutral vocabulary.
 
 ---
 
@@ -18,10 +27,10 @@ code, or user-facing prose.
 | Term | Definition |
 |------|------------|
 | **ToolRecord** | The facade resource: one user-meaningful tool — geometry + tags + Presets + per-machine ToolTableEntries. Maps internally to the deep chain; its public ID is stable for the record's life. In prose, "tool" stays informal; use **ToolRecord** whenever precision matters. |
-| **ToolTableEntry** | One machine's table row for a ToolRecord: tool number, pocket, offsets, provenance. Nested as `ToolRecord.machines[]`, scoped to a Machine. Mirrors what LinuxCNC/Fanuc/Haas users call a tool-table or offset-table entry. (Rejected names: `MachineToolInstance` — collides with ToolInstance; `ToolPocket` — names a field, collides with the Pocket op; old `ToolPreset` — collides with FreeCAD Preset.) |
-| **Machine** | First-class entity: a CNC machine — identity, controller type, limits (incl. spindle min/max). Syncs FreeCAD `.fcm` definitions. |
-| **Library** | A named collection of ToolRecords (internal entity: ToolSet). Maps to FreeCAD Tool Library / `.fctl`. |
-| **Preset** | FreeCAD's meaning, schema-identical (`preset_schema: 1`): named F&S record — surface speed (Vc), chipload (Fz), optional vert-feed ratio, optional material UUID/name, op type. Engineering values only; raw feed/rpm never persisted. |
+| **ToolTableEntry** | One machine's table row for a ToolRecord: tool number, pocket, offsets, provenance. Nested as `ToolRecord.machines[]`, scoped to a Machine. Mirrors a controller's tool-table / offset-table row. (Rejected names: `MachineToolInstance` — collides with ToolInstance; `ToolPocket` — names a field; old `ToolPreset` — collides with Preset.) |
+| **Machine** | First-class entity: a CNC machine — identity, controller type, limits (incl. spindle min/max). Clients sync their native machine definitions to it. |
+| **ToolSet** | A named collection of ToolRecords. The public resource and the internal entity share one name — there is no separate facade word. (Supersedes **Library**, purged 2026-06-11: "library" is a client-side term and now appears only when referring to a specific application's artifact.) |
+| **Preset** | A named feeds-and-speeds record on a ToolRecord (`preset_schema: 1`): surface speed (Vc), chipload (Fz), optional vertical-feed ratio, optional material reference, operation type. Engineering values only; raw feed/RPM are derived by the consuming application at use time and never persisted. |
 | **Binding** | The confirmed link between a Machine's ToolTableEntry and a ToolRecord. Server-proposed, user-confirmed once, sticky. What makes the sync loop close. |
 | **Pending review / Inbox** | First-class server state for items awaiting a human: proposed Bindings and frozen Conflicts. Sync never prompts, blocks, or guesses. |
 | **Conflict** | Both sides changed the same bound field between syncs. The field freezes (neither side overwritten) until resolved in the Inbox. |
@@ -38,7 +47,7 @@ code, or user-facing prose.
 | **Smooth** | The product: an open-core tool data synchronization system. |
 | **Smooth Core** | The central REST API + database server (`smooth-core`). The thing clients talk to. Licensed Elastic 2.0. |
 | **Client** | Any program that synchronizes tool data with a Smooth Core server: `smooth-freecad`, `smooth-linuxcnc`, the `loobric.py` CLI, or third-party integrations. Clients are MIT-licensed reference implementations. |
-| **Smooth Web** | The hosted web application / management UI (`smooth-web`, app.loobric.com). Part of the commercial offering, not the open core. |
+| **Smooth Web** | The hosted web application / management UI. The v1 app (`smooth-web`, app.loobric.com) is retired; a v2 rebuild on the facade is scoped in M3. Part of the commercial offering, not the open core. |
 
 ## Domain Concepts — Tools
 
@@ -50,9 +59,9 @@ entities along the catalog → physical → machine axis. Always use the specifi
 | **ToolItem** | A *catalog-level* description of a tool type: manufacturer, part number, tool type (drill, end mill, …), and geometry. Describes *what kind of thing* a tool is, not a physical object. Both cutters and holders are ToolItems. |
 | **ToolAssembly** | A combination of a holder ToolItem and a cutter ToolItem, with assembly-specific data (e.g. stickout). What a CAM programmer typically thinks of as "a tool." |
 | **ToolInstance** | A *physical* tool with a unique serial number, lifecycle status (AVAILABLE, IN_USE, MAINTENANCE, RETIRED), and actual measured values. Two identical end mills are one ToolItem but two ToolInstances. |
-| **ToolPreset** | A machine-specific setup of a ToolInstance: the parameters a particular controller needs (tool number, pocket, offsets). One ToolInstance can have presets on multiple machines. This is what a LinuxCNC tool-table row maps to. |
+| **ToolPreset** | (Deep, historical) A machine-specific setup of a ToolInstance: the parameters a particular controller needs (tool number, pocket, offsets). This is what a controller tool-table row maps to. Publicly renamed **ToolTableEntry** in v2. |
 | **ToolUsage** | A record of a ToolInstance being used: machine, program, operator, runtime metrics, wear measurements. The basis for wear tracking and analytics. |
-| **ToolSet** | A user-defined collection of ToolInstances and/or ToolPresets for a purpose (a job, a machine's carousel, a kit). |
+| **ToolSet** | The collection entity (`tool_sets`). In v2 it directly backs the public **ToolSet** resource — internal and public nomenclature are identical. |
 | **Geometry** | The dimensional definition of a ToolItem (diameter, length, flutes, shape). Stored as structured JSON; the part CAM systems care most about. |
 | **Measurements** | *Actual* measured values on a ToolInstance (as opposed to nominal catalog geometry). E.g. presetter results. |
 | **Wear / Offset** | Adjustments discovered at the machine (tool wear, length/diameter offsets). The canonical example of data that today gets stranded in the controller and never flows back to CAM. |
@@ -71,10 +80,10 @@ entities along the catalog → physical → machine axis. Always use the specifi
 
 | Term | Definition |
 |------|------------|
-| **Sync / Synchronization** | The core verb: making tool data consistent between Smooth Core and a client system (CAM library, controller tool table, etc.). |
+| **Sync / Synchronization** | The core verb: making tool data consistent between Smooth Core and a client system (a CAM application's tool data, a controller's tool table, etc.). |
 | **Bidirectional sync** | Changes flow both ways: CAM → server → controller *and* controller → server → CAM (e.g. wear offsets entered at the machine propagate back). |
-| **Tool table** | LinuxCNC's native tool data file (`.tbl`), with parameters T, P, D, Z, X, Y, Q, etc. A client-side format, not a Smooth concept. |
-| **Tool library** | ⚠️ Loose, client-side term for a collection of tools (e.g. "FreeCAD tool library"). Inside Smooth, prefer the specific entity (ToolSet, catalog, or a user's ToolItems). |
+| **Tool table** | A controller's native tool data store (e.g. a `.tbl` file with T/P/D/Z parameters). A client-side format, not a Smooth concept; Smooth models its rows as ToolTableEntries. |
+| **Tool library** | ⚠️ Client-side term only — some CAM applications call their tool collections "libraries". Inside Smooth the word is **ToolSet**; "library" appears only when naming that application's own artifact. |
 | **Change detection** | Using `version` / `updated_at` to find what changed since last sync, so clients sync deltas instead of everything. |
 | **Version (optimistic locking)** | Integer incremented on every write to an entity. A write with a stale version is a **conflict**. |
 | **Conflict** | A write attempted against a stale version, typically because two systems changed the same entity between syncs. |
@@ -95,7 +104,7 @@ entities along the catalog → physical → machine axis. Always use the specifi
 
 | Term | Definition |
 |------|------------|
-| **Machine** | A CNC machine/controller, referenced by `machine_id` (currently a free string, e.g. `mill01`). ⚠️ Not yet a first-class entity. |
+| **Machine** | A CNC machine/controller. First-class entity since v2 (see Public Vocabulary); the old free-string `machine_id` is gone. |
 | **Controller** | The CNC control software/hardware (LinuxCNC, Fanuc, Haas, …) that consumes ToolPresets. |
 | **CAM system** | Software that generates toolpaths (FreeCAD CAM workbench, Fusion 360, Mastercam, …) and consumes ToolItems/Assemblies/geometry. |
 | **Tool room / Tool crib** | Where physical tools are stored, assembled, and measured in a shop. A target integration domain (presetters, inventory). |
@@ -131,7 +140,7 @@ resolved **in FreeCAD's favor** wherever FreeCAD's term is shipping. Proposed re
 | Term | FreeCAD meaning | Smooth PoC meaning | Proposed resolution |
 |------|-----------------|--------------------|---------------------|
 | **Preset** | Named F&S record on a Tool Bit: surface speed (Vc), chipload (Fz), optional vert-feed ratio, optional material UUID, op type. Engineering values only; raw feed/rpm derived at use-time. | `ToolPreset` = machine-specific tool-table entry (tool number, pocket, offsets) | **RESOLVED: adopt FreeCAD's meaning.** Smooth's cutting-parameter records are "Presets" with the identical schema. Smooth's old entity renamed → **ToolTableEntry**. |
-| **Tool Library** | Persisted collection of Tool Bits, independent of Jobs | (no entity; ToolSet ≈ collection) | FreeCAD Tool Library / `.fctl` ↔ Smooth **ToolSet**; consider renaming ToolSet → Library in facade vocabulary. |
+| **Tool Library** | Persisted collection of Tool Bits, independent of Jobs | ToolSet | **RESOLVED:** FreeCAD Tool Library / `.fctl` ↔ Smooth **ToolSet**. ("Library" was briefly the facade word; purged 2026-06-11 — it is FreeCAD's term, and the facade now uses the internal name.) |
 | **Machine** | `.fcm` definition: axes, limits, spindle min/max, post settings | free-string `machine_id` | Smooth **Machine entity** syncs `.fcm` content. Same word, compatible meaning. |
 | **Tool Bit** | The cutter: geometry, edges, parameters, F&S Presets; persisted as `.fctb` | ≈ ToolItem (type=cutting_tool) | Equivalence documented; `.fctb` round-trip **must preserve the additive `presets` key**. |
 | **Provenance** | Per-field source string (`"user"`, `"preset:…"`); resolver never overwrites `"user"` | (audit log, coarser grain) | Adopt term + semantics for synced F&S fields. **Sync must never replace a `"user"`-provenance value silently.** |
@@ -141,7 +150,7 @@ resolved **in FreeCAD's favor** wherever FreeCAD's term is shipping. Proposed re
 ## Naming Tensions — status after 2026-06-09 grill
 
 1. ~~Facade resource name~~ **RESOLVED:** the facade resource is **`ToolRecord`** — keeps an unambiguous term available without a prose register rule; bare "tool" remains harmlessly informal.
-2. ~~Library vs ToolSet vs Catalog~~ **RESOLVED:** **Library** = public/facade word (internal entity ToolSet); **Catalog** = manufacturer-published collections only.
+2. ~~Library vs ToolSet vs Catalog~~ **RE-RESOLVED 2026-06-11:** **ToolSet** = the one word, public and internal — "Library" purged from the facade as a client-side (FreeCAD) term; **Catalog** = manufacturer-published collections only.
 3. **ToolInstance may point at a ToolItem *or* a ToolAssembly** — now internal-only (facade-only public API), but the schema rule is still needed for phase 2. Open.
 4. ~~`machine_id` string~~ **RESOLVED:** Machine entity (D4); syncs `.fcm`. Pending implementation.
 5. ~~Open source vs source-available~~ **RESOLVED:** AGPL-3.0 core + commercial, MIT clients (G6). After relicense, "open source" is accurate.

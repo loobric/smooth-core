@@ -3,609 +3,278 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """
-ToolSet API endpoints.
+ToolSet facade API — named collections of ToolRecords (v2 public contract).
 
-Bulk-first design: all operations accept arrays.
+ToolSet is both the public resource and the internal entity — the facade
+rename of 2026-06-11 purged the client-flavored word "Library" so internal
+and public nomenclature match. Each ToolSet is a tool_sets row with
+type="set", its members array holding ToolRecord ids.
 
-Assumptions:
-- POST /api/v1/tool-sets - Create (bulk)
-- GET /api/v1/tool-sets - List/query with filters
-- PUT /api/v1/tool-sets - Update (bulk) with version checking
-- DELETE /api/v1/tool-sets - Delete (bulk)
-- type: machine_setup, job_specific, template, project
-- status: draft, active, archived
-- members is JSON array of tool references
+Assumptions (mirrors tests/contract/test_tool_sets_api.py):
+- Standard bulk envelope; optimistic locking on PATCH
+- Membership is replaced wholesale by tool_record_ids — matching
+  file-based clients, where the file IS the membership list
+- Member ids are validated against the user's records (per-item errors)
+- Deleting a tool set never touches its records
 """
-from typing import Annotated, Optional, List
-from uuid import uuid4
-from datetime import datetime, UTC
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from typing import Optional, List
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from smooth.api.auth import get_db, require_auth, get_authenticated_user
-from smooth.api.dependencies import get_tool_set_access
-from smooth.database.schema import User, ToolSet, ToolSetHistory
-from smooth.versioning import snapshot_tool_set, get_tool_set_history, restore_tool_set, compare_versions
+from smooth.api.auth import get_db, get_authenticated_user
+from smooth.database.schema import User, ToolItem, ToolSet
+from smooth.audit import create_audit_log
 
 
 router = APIRouter(prefix="/api/v1/tool-sets", tags=["tool-sets"])
 
+TOOL_SET_TYPE = "set"
 
-# Request/Response Models
+
 class ToolSetCreate(BaseModel):
-    """Schema for creating a tool set."""
+    """Schema for creating a tool set (name validated per-item)."""
     name: Optional[str] = None
     description: Optional[str] = None
-    type: Optional[str] = None
-    machine_id: Optional[str] = None
-    job_id: Optional[str] = None
-    members: Optional[list] = None
-    capacity: Optional[dict] = None
-    status: Optional[str] = "draft"
-    activation: Optional[dict] = None
-    tags: List[str] = Field(default_factory=list, description="Tags for filtering and access control")
+    tool_record_ids: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    extra: Optional[dict] = None
 
 
 class ToolSetUpdate(BaseModel):
-    """Schema for updating a tool set."""
+    """Schema for updating a tool set (optimistic locking required)."""
     id: str
     version: int
     name: Optional[str] = None
     description: Optional[str] = None
-    type: Optional[str] = None
-    machine_id: Optional[str] = None
-    job_id: Optional[str] = None
-    members: Optional[list] = None
-    capacity: Optional[dict] = None
-    status: Optional[str] = None
-    activation: Optional[dict] = None
+    tool_record_ids: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    extra: Optional[dict] = None
 
 
 class ToolSetResponse(BaseModel):
-    """Schema for tool set response."""
+    """Public facade shape for a tool set."""
     id: str
     name: str
     description: Optional[str]
-    type: str
-    machine_id: Optional[str]
-    job_id: Optional[str]
-    members: list
-    capacity: Optional[dict]
-    status: str
-    activation: Optional[dict]
+    tool_record_ids: List[str]
     tags: List[str]
-    user_id: str
-    created_by: str
-    updated_by: str
+    extra: Optional[dict] = None
+    version: int
     created_at: str
     updated_at: str
-    version: int
 
 
 class BulkCreateRequest(BaseModel):
-    """Bulk create request."""
     items: List[ToolSetCreate]
 
 
 class BulkUpdateRequest(BaseModel):
-    """Bulk update request."""
     items: List[ToolSetUpdate]
 
 
 class BulkDeleteRequest(BaseModel):
-    """Bulk delete request."""
     ids: List[str]
 
 
 class ErrorDetail(BaseModel):
-    """Error detail for a failed operation."""
     index: Optional[int] = None
     id: Optional[str] = None
     message: str
 
 
-class BulkOperationResponse(BaseModel):
-    """Response for bulk operations."""
+class BulkResponse(BaseModel):
     success_count: int
-    error_count: int
-    results: List[ToolSetResponse] = []
+    errors: List[ErrorDetail] = []
+    items: List[ToolSetResponse] = []
+
+
+class ListResponse(BaseModel):
+    items: List[ToolSetResponse]
+
+
+def _iso(value) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _to_response(tool_set: ToolSet) -> ToolSetResponse:
+    return ToolSetResponse(
+        id=tool_set.id,
+        name=tool_set.name,
+        description=tool_set.description,
+        tool_record_ids=list(tool_set.members or []),
+        tags=getattr(tool_set, "tags", None) or [],
+        extra=tool_set.extra,
+        version=tool_set.version,
+        created_at=_iso(tool_set.created_at),
+        updated_at=_iso(tool_set.updated_at),
+    )
+
+
+def _owned(db: Session, user: User, tool_set_id: str) -> Optional[ToolSet]:
+    row = db.query(ToolSet).filter(
+        ToolSet.id == tool_set_id, ToolSet.type == TOOL_SET_TYPE
+    ).first()
+    if row is None or (row.user_id != user.id and not user.is_admin):
+        return None
+    return row
+
+
+def _bad_member_ids(db: Session, user: User, record_ids: List[str]) -> List[str]:
+    """Return member ids that don't resolve to records the user owns."""
+    if not record_ids:
+        return []
+    found = {
+        r.id for r in db.query(ToolItem).filter(
+            ToolItem.id.in_(record_ids), ToolItem.user_id == user.id
+        ).all()
+    }
+    return [rid for rid in record_ids if rid not in found]
+
+
+@router.post("", response_model=BulkResponse)
+def create_tool_sets(
+    payload: BulkCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    """Bulk create tool sets (partial success; members validated)."""
+    created: List[ToolSetResponse] = []
     errors: List[ErrorDetail] = []
 
-
-class QueryResponse(BaseModel):
-    """Response for query operations."""
-    items: List[ToolSetResponse]
-    total: int
-    limit: int
-    offset: int
-
-
-@router.post("", response_model=BulkOperationResponse)
-def create_tool_sets(
-    req: Request,
-    request: BulkCreateRequest,
-    current_user: User = Depends(get_authenticated_user),
-    db: Session = Depends(get_db)
-):
-    """Create tool sets in bulk.
-    
-    Notes:
-    - For API key authentication, validates that all tags in the request are allowed by the API key
-    - For session authentication, allows any tags
-    """
-    # Get API key tags if using API key auth
-    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
-    api_key_tags = getattr(req.state, 'api_key_tags', [])
-    
-    results = []
-    errors = []
-    
-    for index, set_data in enumerate(request.items):
-        try:
-            # Validate tags if using API key with tags
-            if is_api_key_auth and api_key_tags and set_data.tags:
-                # Check if all tags in the request are allowed by the API key
-                invalid_tags = [t for t in set_data.tags if t not in api_key_tags]
-                if invalid_tags:
-                    errors.append(ErrorDetail(
-                        index=index,
-                        message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
-                    ))
-                    continue
-            
-            # Validate required fields
-            if not set_data.name:
-                raise ValueError("Field 'name' is required")
-            if not set_data.type:
-                raise ValueError("Field 'type' is required")
-            if not set_data.members:
-                raise ValueError("Field 'members' is required")
-            
-            # Create tool set
-            tool_set = ToolSet(
-                id=str(uuid4()),
-                name=set_data.name,
-                description=set_data.description,
-                type=set_data.type,
-                machine_id=set_data.machine_id,
-                job_id=set_data.job_id,
-                members=set_data.members,
-                capacity=set_data.capacity,
-                status=set_data.status or "draft",
-                activation=set_data.activation,
-                tags=set_data.tags or [],
-                user_id=current_user.id,
-                created_by=current_user.id,
-                updated_by=current_user.id
-            )
-            
-            db.add(tool_set)
-            db.flush()
-            
-            results.append(_to_response(tool_set))
-            
-        except Exception as e:
+    for index, data in enumerate(payload.items):
+        if not data.name:
+            errors.append(ErrorDetail(index=index, message="name is required"))
+            continue
+        bad = _bad_member_ids(db, user, data.tool_record_ids)
+        if bad:
             errors.append(ErrorDetail(
-                index=index,
-                message=str(e)
+                index=index, message=f"unknown tool_record_ids: {', '.join(bad)}"
             ))
-    
-    if results:
-        db.commit()
-    else:
-        db.rollback()
-    
-    return BulkOperationResponse(
-        success_count=len(results),
-        error_count=len(errors),
-        results=results,
-        errors=errors
-    )
+            continue
+        row = ToolSet(
+            name=data.name,
+            description=data.description,
+            type=TOOL_SET_TYPE,
+            members=data.tool_record_ids,
+            extra=data.extra,
+            status="active",
+            user_id=user.id,
+            created_by=user.id,
+            updated_by=user.id,
+        )
+        if hasattr(row, "tags"):
+            row.tags = data.tags
+        db.add(row)
+        db.flush()
+        create_audit_log(
+            session=db, user_id=user.id, operation="CREATE",
+            entity_type="tool_set", entity_id=row.id,
+        )
+        created.append(_to_response(row))
+
+    db.commit()
+    return BulkResponse(success_count=len(created), errors=errors, items=created)
 
 
-@router.get("", response_model=QueryResponse)
+@router.get("", response_model=ListResponse)
 def list_tool_sets(
-    req: Request,
-    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
-    type: Optional[str] = Query(None, description="Filter by type"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    tags: Optional[List[str]] = Query(None, description="Filter by tags (logical AND)"),
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0)
+    user: User = Depends(get_authenticated_user),
 ):
-    """List tool sets with filters and pagination.
-    
-    Notes:
-    - For API key authentication, only returns tool sets with tags that match the API key's tags
-    - For session authentication, returns all tool sets owned by the user
-    """
-    # Get API key tags if using API key auth
-    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
-    api_key_tags = getattr(req.state, 'api_key_tags', [])
-    
-    # Base query - filter by user for session auth or all accessible tool sets for API key
-    if is_api_key_auth:
-        # For API keys, we need to check tag access
-        query = db.query(ToolSet)
-        
-        # If API key has tags, filter by matching tags
-        if api_key_tags:
-            # Get all tool sets and filter in Python for SQLite compatibility
-            all_sets = query.all()
-            matching_ids = [
-                s.id for s in all_sets 
-                if s.tags and any(tag in s.tags for tag in api_key_tags)
-            ]
-            if matching_ids:
-                query = query.filter(ToolSet.id.in_(matching_ids))
-            else:
-                # No matching tool sets, return empty result
-                query = query.filter(ToolSet.id == None)
-    else:
-        # For session auth, only show user's own tool sets
-        query = db.query(ToolSet).filter(ToolSet.user_id == current_user.id)
-    
-    if type:
-        query = query.filter(ToolSet.type == type)
-    if status:
-        query = query.filter(ToolSet.status == status)
-    
-    # Apply additional tag filters from query params
-    if tags:
-        for tag in tags:
-            query = query.filter(ToolSet.tags.contains([tag]))
-    
-    total = query.count()
-    tool_sets = query.offset(offset).limit(limit).all()
-    
-    return QueryResponse(
-        items=[_to_response(tool_set) for tool_set in tool_sets],
-        total=total,
-        limit=limit,
-        offset=offset
-    )
+    """List the user's tool sets."""
+    rows = db.query(ToolSet).filter(
+        ToolSet.user_id == user.id, ToolSet.type == TOOL_SET_TYPE
+    ).order_by(ToolSet.name).all()
+    return ListResponse(items=[_to_response(r) for r in rows])
 
 
 @router.get("/{tool_set_id}", response_model=ToolSetResponse)
 def get_tool_set(
     tool_set_id: str,
-    req: Request,
-    current_user: User = Depends(get_authenticated_user),
     db: Session = Depends(get_db),
-    _: None = Depends(get_tool_set_access)
+    user: User = Depends(get_authenticated_user),
 ):
-    """Retrieve a single ToolSet by ID if user has access.
-    
-    Access is granted if:
-    - User is the owner of the tool set, or
-    - User has an API key with matching tags for the tool set
-    """
-    tool_set = db.query(ToolSet).filter(
-        ToolSet.id == tool_set_id
-    ).first()
-    
-    if not tool_set:
+    """Fetch one tool set."""
+    row = _owned(db, user, tool_set_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="Tool set not found")
-    
-    # For session auth, only allow access to own resources
-    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
-    if not is_api_key_auth and tool_set.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Tool set not found")
-    
-    return _to_response(tool_set)
+    return _to_response(row)
 
 
-@router.put("", response_model=BulkOperationResponse)
+@router.patch("", response_model=BulkResponse)
 def update_tool_sets(
-    req: Request,
-    request: BulkUpdateRequest,
-    current_user: User = Depends(get_authenticated_user),
-    db: Session = Depends(get_db)
+    payload: BulkUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
 ):
-    """Update tool sets in bulk.
-    
-    Notes:
-    - For API key authentication, validates that all tags in the request are allowed by the API key
-    - For session authentication, allows any tags
-    - Only the owner of a tool set can update it
-    """
-    # Get API key tags if using API key auth
-    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
-    api_key_tags = getattr(req.state, 'api_key_tags', [])
-    
-    results = []
-    errors = []
-    
-    for index, update_data in enumerate(request.items):
-        try:
-            # Get existing tool set
-            query = db.query(ToolSet).filter(ToolSet.id == update_data.id)
-            
-            # For session auth, only allow updating own tool sets
-            if not is_api_key_auth:
-                query = query.filter(ToolSet.user_id == current_user.id)
-            
-            tool_set = query.first()
-            
-            if not tool_set:
-                errors.append(ErrorDetail(
-                    index=index,
-                    id=update_data.id,
-                    message="Tool set not found or access denied"
-                ))
-                continue
-            
-            # For API key auth, check if tags are allowed
-            if is_api_key_auth and api_key_tags:
-                # Check if API key has access to the existing tool set's tags
-                if tool_set.tags and not any(tag in api_key_tags for tag in tool_set.tags):
-                    errors.append(ErrorDetail(
-                        index=index,
-                        id=update_data.id,
-                        message="API key not authorized to update this tool set"
-                    ))
-                    continue
-                
-                # Check if new tags are allowed
-                if update_data.tags is not None:
-                    invalid_tags = [t for t in update_data.tags if t not in api_key_tags]
-                    if invalid_tags:
-                        errors.append(ErrorDetail(
-                            index=index,
-                            id=update_data.id,
-                            message=f"API key not authorized for tags: {', '.join(invalid_tags)}"
-                        ))
-                        continue
-            
-            if tool_set.version != update_data.version:
-                errors.append(ErrorDetail(
-                    index=index,
-                    id=update_data.id,
-                    message=f"Version conflict: expected {tool_set.version}, got {update_data.version}"
-                ))
-                continue
-            
-            # Snapshot current state before update
-            snapshot_tool_set(db, tool_set, current_user.id)
-            
-            # Apply updates
-            if update_data.name is not None:
-                tool_set.name = update_data.name
-            if update_data.description is not None:
-                tool_set.description = update_data.description
-            if update_data.type is not None:
-                tool_set.type = update_data.type
-            if update_data.machine_id is not None:
-                tool_set.machine_id = update_data.machine_id
-            if update_data.job_id is not None:
-                tool_set.job_id = update_data.job_id
-            if update_data.members is not None:
-                tool_set.members = update_data.members
-            if update_data.capacity is not None:
-                tool_set.capacity = update_data.capacity
-            if update_data.status is not None:
-                tool_set.status = update_data.status
-            if update_data.activation is not None:
-                tool_set.activation = update_data.activation
-            if update_data.tags is not None:
-                tool_set.tags = update_data.tags
-            
-            tool_set.updated_by = current_user.id
-            tool_set.updated_at = datetime.now(UTC)
-            tool_set.version += 1
-            
-            db.flush()
-            results.append(_to_response(tool_set))
-            
-        except Exception as e:
+    """Bulk update with optimistic locking; membership replaces wholesale."""
+    updated: List[ToolSetResponse] = []
+    errors: List[ErrorDetail] = []
+
+    for index, data in enumerate(payload.items):
+        row = _owned(db, user, data.id)
+        if row is None:
+            errors.append(ErrorDetail(index=index, id=data.id, message="Tool set not found"))
+            continue
+        if row.version != data.version:
             errors.append(ErrorDetail(
-                index=index,
-                id=update_data.id,
-                message=str(e)
+                index=index, id=data.id,
+                message=f"Version conflict: expected {row.version}, got {data.version}",
             ))
-    
-    if results:
-        db.commit()
-    else:
-        db.rollback()
-    
-    return BulkOperationResponse(
-        success_count=len(results),
-        error_count=len(errors),
-        results=results,
-        errors=errors
-    )
+            continue
+        if data.tool_record_ids is not None:
+            bad = _bad_member_ids(db, user, data.tool_record_ids)
+            if bad:
+                errors.append(ErrorDetail(
+                    index=index, id=data.id,
+                    message=f"unknown tool_record_ids: {', '.join(bad)}",
+                ))
+                continue
+            row.members = data.tool_record_ids
+        if data.name is not None:
+            row.name = data.name
+        if data.description is not None:
+            row.description = data.description
+        if data.tags is not None and hasattr(row, "tags"):
+            row.tags = data.tags
+        if data.extra is not None:
+            row.extra = data.extra
+        row.version += 1
+        row.updated_by = user.id
+        db.flush()
+        create_audit_log(
+            session=db, user_id=user.id, operation="UPDATE",
+            entity_type="tool_set", entity_id=row.id,
+        )
+        updated.append(_to_response(row))
 
-
-@router.get("/{tool_set_id}/history")
-def list_tool_set_history(
-    tool_set_id: str,
-    current_user: User = Depends(require_auth),
-    db: Session = Depends(get_db)
-):
-    """Get version history for a ToolSet."""
-    history = get_tool_set_history(db, tool_set_id, current_user.id)
-    
-    return {
-        "tool_set_id": tool_set_id,
-        "versions": [
-            {
-                "version": h.version,
-                "changed_at": h.changed_at.isoformat(),
-                "changed_by": h.changed_by,
-                "change_summary": h.change_summary
-            }
-            for h in history
-        ]
-    }
-
-
-@router.get("/{tool_set_id}/versions/{version}")
-def get_tool_set_version(
-    tool_set_id: str,
-    version: int,
-    current_user: User = Depends(require_auth),
-    db: Session = Depends(get_db)
-):
-    """Get a specific version of a ToolSet."""
-    history = db.query(ToolSetHistory).filter(
-        ToolSetHistory.tool_set_id == tool_set_id,
-        ToolSetHistory.version == version
-    ).first()
-    
-    if not history:
-        return {"error": "Version not found"}
-    
-    # Verify ownership
-    tool_set = db.get(ToolSet, tool_set_id)
-    if not tool_set or tool_set.user_id != current_user.id:
-        return {"error": "Access denied"}
-    
-    return {
-        "version": history.version,
-        "changed_at": history.changed_at.isoformat(),
-        "changed_by": history.changed_by,
-        "change_summary": history.change_summary,
-        "snapshot": history.snapshot
-    }
-
-
-@router.post("/{tool_set_id}/restore/{version}")
-def restore_tool_set_version(
-    tool_set_id: str,
-    version: int,
-    current_user: User = Depends(require_auth),
-    db: Session = Depends(get_db)
-):
-    """Restore a ToolSet to a previous version."""
-    tool_set = restore_tool_set(db, tool_set_id, version, current_user.id)
-    
-    if not tool_set:
-        return {"error": "ToolSet or version not found"}
-    
     db.commit()
-    
-    return {
-        "success": True,
-        "message": f"Restored to version {version}",
-        "current_version": tool_set.version,
-        "tool_set": _to_response(tool_set)
-    }
+    return BulkResponse(success_count=len(updated), errors=errors, items=updated)
 
 
-@router.get("/{tool_set_id}/compare/{version_a}/{version_b}")
-def compare_tool_set_versions(
-    tool_set_id: str,
-    version_a: int,
-    version_b: int,
-    current_user: User = Depends(require_auth),
-    db: Session = Depends(get_db)
-):
-    """Compare two versions of a ToolSet."""
-    comparison = compare_versions(db, tool_set_id, version_a, version_b, current_user.id)
-    
-    if not comparison:
-        return {"error": "Versions not found"}
-    
-    return comparison
-
-
-@router.delete("", response_model=BulkOperationResponse)
+@router.delete("", response_model=BulkResponse)
 def delete_tool_sets(
-    req: Request,
-    request: BulkDeleteRequest,
-    current_user: User = Depends(get_authenticated_user),
-    db: Session = Depends(get_db)
+    payload: BulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
 ):
-    """Delete tool sets in bulk.
-    
-    Notes:
-    - For API key authentication, validates that the API key has access to all tool sets
-    - For session authentication, only allows deleting own tool sets
-    """
-    # Get API key tags if using API key auth
-    is_api_key_auth = getattr(req.state, 'is_api_key_auth', False)
-    api_key_tags = getattr(req.state, 'api_key_tags', [])
-    
-    results = []
-    errors = []
-    
-    for index, set_id in enumerate(request.ids):
-        try:
-            # Get existing tool set
-            query = db.query(ToolSet).filter(ToolSet.id == set_id)
-            
-            # For session auth, only allow deleting own tool sets
-            if not is_api_key_auth:
-                query = query.filter(ToolSet.user_id == current_user.id)
-            
-            tool_set = query.first()
-            
-            if not tool_set:
-                errors.append(ErrorDetail(
-                    index=index,
-                    id=set_id,
-                    message="Tool set not found or access denied"
-                ))
-                continue
-            
-            # For API key auth, check if tags are allowed
-            if is_api_key_auth and api_key_tags and tool_set.tags:
-                if not any(tag in api_key_tags for tag in tool_set.tags):
-                    errors.append(ErrorDetail(
-                        index=index,
-                        id=set_id,
-                        message="API key not authorized to delete this tool set"
-                    ))
-                    continue
-            
-            response = _to_response(tool_set)
-            db.delete(tool_set)
-            db.flush()
-            
-            results.append(response)
-            
-        except Exception as e:
-            errors.append(ErrorDetail(
-                index=index,
-                id=set_id,
-                message=str(e)
-            ))
-    
-    if results:
-        db.commit()
-    else:
-        db.rollback()
-    
-    return BulkOperationResponse(
-        success_count=len(results),
-        error_count=len(errors),
-        results=results,
-        errors=errors
-    )
+    """Bulk delete tool sets; member records are never touched."""
+    errors: List[ErrorDetail] = []
+    success = 0
 
+    for index, tool_set_id in enumerate(payload.ids):
+        row = _owned(db, user, tool_set_id)
+        if row is None:
+            errors.append(ErrorDetail(index=index, id=tool_set_id, message="Tool set not found"))
+            continue
+        db.delete(row)
+        create_audit_log(
+            session=db, user_id=user.id, operation="DELETE",
+            entity_type="tool_set", entity_id=tool_set_id,
+        )
+        success += 1
 
-def _to_response(tool_set: ToolSet) -> ToolSetResponse:
-    """Convert ToolSet entity to response model."""
-    return ToolSetResponse(
-        id=tool_set.id,
-        name=tool_set.name,
-        description=tool_set.description,
-        type=tool_set.type,
-        machine_id=tool_set.machine_id,
-        job_id=tool_set.job_id,
-        members=tool_set.members,
-        capacity=tool_set.capacity,
-        status=tool_set.status,
-        activation=tool_set.activation,
-        tags=tool_set.tags or [],
-        user_id=tool_set.user_id,
-        created_by=tool_set.created_by,
-        updated_by=tool_set.updated_by,
-        created_at=tool_set.created_at.isoformat() if tool_set.created_at else "",
-        updated_at=tool_set.updated_at.isoformat() if tool_set.updated_at else "",
-        version=tool_set.version
-    )
+    db.commit()
+    return BulkResponse(success_count=success, errors=errors, items=[])

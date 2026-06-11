@@ -76,3 +76,24 @@ def init_db() -> None:
         print(f"Database schema: created missing tables: {', '.join(created)}")
     else:
         print(f"Database schema: up to date ({len(after)} tables)")
+
+    # One-time data normalization (idempotent): rows created while the
+    # ToolSet facade was still named "Library" carry type='library'; the
+    # facade now reads only type='set' (2026-06-11 nomenclature purge).
+    if "tool_sets" in after:
+        normalized = normalize_legacy_data()
+        if normalized:
+            print(f"Database schema: normalized {normalized} tool_sets "
+                  f"rows from type='library' to type='set'")
+
+
+def normalize_legacy_data(target_engine=None) -> int:
+    """Rewrite tool_sets rows from the pre-purge type='library' to
+    type='set'. Idempotent; returns the number of rows touched."""
+    from sqlalchemy import text
+
+    with (target_engine or engine).begin() as conn:
+        result = conn.execute(
+            text("UPDATE tool_sets SET type = 'set' WHERE type = 'library'")
+        )
+        return result.rowcount or 0
