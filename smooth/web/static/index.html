@@ -94,8 +94,8 @@
 
 <script>
 "use strict";
-const TABS = [["inbox","Inbox"],["tools","Tools"],["machines","Machines"],["audit","Audit"]];
-let state = { tab:"inbox", inbox:[], tools:[], machines:[], audit:[], machineNames:{} };
+const TABS = [["inbox","Inbox"],["tools","Tools"],["libraries","Libraries"],["machines","Machines"],["audit","Audit"]];
+let state = { tab:"inbox", inbox:[], tools:[], libraries:[], machines:[], audit:[], machineNames:{} };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -130,11 +130,13 @@ async function doLogin(ev) {
 
 async function refresh() {
   try {
-    const [inbox, tools, machines, audit] = await Promise.all([
+    const [inbox, tools, libraries, machines, audit] = await Promise.all([
       api("GET", "/inbox"), api("GET", "/tool-records"),
+      api("GET", "/libraries"),
       api("GET", "/machines"), api("GET", "/audit-logs?limit=50"),
     ]);
     state.inbox = inbox.items; state.tools = tools.items;
+    state.libraries = libraries.items;
     state.machines = machines.items; state.audit = audit.logs || [];
     state.machineNames = Object.fromEntries(state.machines.map(m => [m.id, m.name]));
     $("#whoami").textContent = "";
@@ -156,7 +158,7 @@ function render() {
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}` +
     (id==="inbox" && state.inbox.length ? `<span class="n">${state.inbox.length}</span>` : "") +
     `</button>`).join("");
-  const v = {inbox: renderInbox, tools: renderTools, machines: renderMachines, audit: renderAudit}[state.tab];
+  const v = {inbox: renderInbox, tools: renderTools, libraries: renderLibraries, machines: renderMachines, audit: renderAudit}[state.tab];
   $("#view").innerHTML = v();
   if (state.tab === "machines") loadTables();
 }
@@ -237,6 +239,42 @@ async function unbind(machineId, toolNumber) {
   try {
     await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/unbind`);
     toast(`T${toolNumber} unbound - data untouched.`);
+    refresh();
+  } catch (e) { toast(e.message); }
+}
+
+// ---- Libraries -----------------------------------------------------------------
+
+function renderLibraries() {
+  if (!state.libraries.length)
+    return `<div class="empty">No libraries yet.<br><span class="muted">They arrive when a CAM client exports its tool libraries.</span></div>`;
+  const counts = {};
+  state.libraries.forEach(l => counts[l.name] = (counts[l.name] || 0) + 1);
+  const toolName = Object.fromEntries(state.tools.map(t => [t.id, t.name]));
+  return state.libraries.map(l => `
+  <div class="card">
+    <div class="row">
+      <strong>${esc(l.name)}</strong>
+      <span>${counts[l.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
+            <span class="id">${esc(l.id.slice(0,8))}</span></span>
+    </div>
+    <div class="muted">${l.tool_record_ids.length} tool(s)
+      ${l.extra?.freecad?.filename ? " &middot; from " + esc(l.extra.freecad.filename) : ""}</div>
+    <div class="muted" style="margin-top:.3rem">${
+      l.tool_record_ids.slice(0, 12).map(id => esc(toolName[id] || id.slice(0,8))).join(", ")
+    }${l.tool_record_ids.length > 12 ? " …" : ""}</div>
+    <div class="row" style="margin-top:.6rem">
+      <span class="muted">updated ${esc((l.updated_at || "").slice(0,16).replace("T"," "))}</span>
+      <button class="unbind actions" onclick="deleteLibrary('${l.id}', '${esc(l.name)}')">Delete</button>
+    </div>
+  </div>`).join("");
+}
+
+async function deleteLibrary(id, name) {
+  if (!window.confirm(`Delete library "${name}" (${id.slice(0,8)})? Its tool records are NOT deleted - only the collection.`)) return;
+  try {
+    const r = await api("DELETE", "/libraries", {ids: [id]});
+    toast(r.errors?.length ? r.errors[0].message : `Deleted "${name}". Tool records untouched.`);
     refresh();
   } catch (e) { toast(e.message); }
 }
