@@ -42,8 +42,8 @@ systems each hold an assumption about what "T3" **is**:
 
 - **CAM's assumption:** "T3 is the 1/4″ downcut" — recorded when the programmer
   numbered the tool in the CAM library and posted the job.
-- **The controller's reality:** "T3 is whatever is actually in pocket 3, with
-  these offsets."
+- **The controller's reality:** "T3 is whatever tool I will load when `T3 M6`
+  executes — wherever my magazine currently keeps it — with these offsets."
 
 If those two assumptions ever disagree — the program was posted against last
 month's numbering, someone re-shuffled the carousel, a tool was replaced — the
@@ -120,6 +120,29 @@ That's also why offsets live on the entry and not the record: a wear offset is
 not a property of the tool, it's a property of **the tool in that machine,
 measured there**. Provenance (`"offsets.z": "machine"`) records who said so, and
 the sync rules promise never to silently overwrite a value a human entered.
+
+### The pocket is not the tool number
+
+Many controllers happen to keep tool N in pocket N, but that 1:1 mapping is an
+implementation detail of the tool changer, not part of the contract. Random- or
+dynamic-pocket changers put a returned tool into whatever pocket is free and
+remember where it went; on those machines T3's pocket changes every few tool
+changes and *means nothing*. The model is built accordingly:
+
+- An entry's identity is `(machine, tool_number)` — the key the G-code
+  dereferences. `pocket` is an optional, mutable, observed attribute that simply
+  updates on the next sync.
+- A **Binding survives pocket shuffles untouched**, because it asserts what T3
+  *means*, not where it currently sits. Only a change to what the *number*
+  refers to (a different tool becomes T3) touches the contract.
+
+Everything else a controller knows about a row — magazine assignments, tool-life
+counters, a barcode or serial identifying the specific physical tool, the raw
+native line itself — rides in the entry's client-namespaced `extra` field
+(e.g. `extra.linuxcnc.{raw, params}`). Core preserves it losslessly and hands it
+back on writeback, so the client can reconstruct its native file exactly. The
+rule of thumb: core *understands* number, pocket, offsets, and provenance; core
+*preserves* everything else.
 
 ### Why exactly one tool table per machine
 
@@ -245,7 +268,7 @@ Three reasons, and the first is decisive:
    they're offsets *of*.
 6. You correct the offset on the server; the next controller sync rewrites
    exactly that line of `tool.tbl`, backup first, comments intact.
-7. Next month someone moves the downcut to pocket 8 and puts a chamfer in T3.
+7. Next month the carousel gets reorganized and a chamfer mill ends up as T3.
    The pushed table now disagrees with the confirmed binding's record — the
    change is visible against the recorded contract instead of silently invalid
    G-code assumptions. (Surfacing this automatically as an Inbox alarm is the
@@ -294,6 +317,20 @@ Yes — any future identity-less representation (another controller format, a
 spreadsheet import, a presetter feed) gets the same treatment: push facts
 unbound, let the server propose, let a human confirm in the Inbox. The concept is
 universal; the explicit mechanism is reserved for representations that need it.
+
+**My controller assigns pockets dynamically, or stores barcodes and tool-life
+data. Does the model cope?**
+Yes for storage, with one open design question for identity. Pocket is a
+mutable attribute, not part of the entry's key, so dynamic-pocket changers just
+update it on each sync (see "The pocket is not the tool number"). Anything else
+the controller stores rides losslessly in the entry's client-namespaced `extra`
+and is reconstructible on writeback. The open question is barcodes: a barcode
+names a *specific physical tool*, which makes such a controller
+identity-carrying in the sense above — binding could become deterministic
+(barcode → registered tool, no human confirmation) instead of human-confirmed.
+Core currently has no first-class notion of a physical tool instance at the
+facade level, so today a barcode is preserved-but-opaque. Tracked in the
+decision register.
 
 **Why is Machine first-class instead of a string?**
 Because offsets are meaningless without provenance. "Z−48.007" is not tool data;
