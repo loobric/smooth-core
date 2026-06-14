@@ -362,29 +362,69 @@ function sourceFile(extra) {
   return null;
 }
 
+// A set created from a machine carries its source under extra.smooth.
+function sourceMachine(extra) {
+  const s = extra && extra.smooth;
+  return s && s.source_machine_id ? s : null;
+}
+
 function renderToolSets() {
   if (!state.toolsets.length)
     return `<div class="empty">No tool sets yet.<br><span class="muted">They arrive when a client publishes a collection of tools.</span></div>`;
   const counts = {};
   state.toolsets.forEach(s => counts[s.name] = (counts[s.name] || 0) + 1);
   const toolName = Object.fromEntries(state.tools.map(t => [t.id, t.name]));
-  return state.toolsets.map(s => `
+  return state.toolsets.map(s => {
+    const src = sourceMachine(s.extra);
+    const srcName = src ? (state.machineNames[src.source_machine_id] || src.source_machine_name) : null;
+    const origin = sourceFile(s.extra) ? " &middot; from " + esc(sourceFile(s.extra))
+                 : src ? " &middot; from machine " + esc(srcName || "?") : "";
+    return `
   <div class="card">
     <div class="row">
       <strong>${esc(s.name)}</strong>
       <span>${counts[s.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
             <span class="id">${esc(s.id.slice(0,8))}</span></span>
     </div>
-    <div class="muted">${s.tool_record_ids.length} tool(s)
-      ${sourceFile(s.extra) ? " &middot; from " + esc(sourceFile(s.extra)) : ""}</div>
+    <div class="muted">${s.tool_record_ids.length} tool(s)${origin}</div>
     <div class="muted" style="margin-top:.3rem">${
       s.tool_record_ids.slice(0, 12).map(id => esc(toolName[id] || id.slice(0,8))).join(", ")
     }${s.tool_record_ids.length > 12 ? " …" : ""}</div>
     <div class="row" style="margin-top:.6rem">
       <span class="muted">updated ${esc((s.updated_at || "").slice(0,16).replace("T"," "))}</span>
-      <button class="unbind actions" onclick="deleteToolSet('${s.id}', '${esc(s.name)}')">Delete</button>
+      <span class="rowact">
+        ${src ? `<button class="mini link" onclick="refreshToolSetFromMachine('${s.id}')">Refresh from machine</button>` : ""}
+        <button class="unbind actions" onclick="deleteToolSet('${s.id}', '${esc(s.name)}')">Delete</button>
+      </span>
     </div>
-  </div>`).join("");
+  </div>`;
+  }).join("");
+}
+
+async function refreshToolSetFromMachine(setId) {
+  const set = state.toolsets.find(s => s.id === setId);
+  const src = set && sourceMachine(set.extra);
+  if (!src) { toast("This set has no source machine."); return; }
+  const mid = src.source_machine_id;
+  const mname = state.machineNames[mid] || src.source_machine_name || "machine";
+  let entries;
+  try {
+    entries = (await api("GET", `/machines/${mid}/tool-table`)).items;  // current truth
+  } catch (e) {
+    toast(`Source machine "${mname}" is gone — can't refresh.`);
+    return;
+  }
+  const ids = [...new Set(entries.filter(e => e.tool_record_id).map(e => e.tool_record_id))];
+  const before = set.tool_record_ids.length;
+  if (!ids.length &&
+      !window.confirm(`${mname} has no linked tools now. Empty "${set.name}" (was ${before})?`)) return;
+  try {
+    const r = await api("PATCH", "/tool-sets",
+      {items: [{id: setId, version: set.version, tool_record_ids: ids}]});
+    if (r.errors?.length) { toast(r.errors[0].message); refresh(); return; }
+    toast(`Refreshed "${set.name}" from ${mname}: ${before} → ${ids.length} tool(s).`);
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 async function deleteToolSet(id, name) {
@@ -464,7 +504,11 @@ async function createToolSetFromMachine(machineId) {
   if (name === null) return;            // cancelled
   if (!name.trim()) { toast("A name is required."); return; }
   try {
-    const r = await api("POST", "/tool-sets", {items: [{name: name.trim(), tool_record_ids: ids}]});
+    const r = await api("POST", "/tool-sets", {items: [{
+      name: name.trim(), tool_record_ids: ids,
+      // Remember the source so the set can be refreshed from the machine later.
+      extra: {smooth: {source_machine_id: machineId, source_machine_name: mname}},
+    }]});
     if (r.errors?.length) { toast(r.errors[0].message); return; }
     toast(`Created tool set "${name.trim()}" with ${ids.length} tool(s).`);
     state.tab = "toolsets";             // show the result
