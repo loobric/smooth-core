@@ -440,11 +440,36 @@ function renderMachines() {
     <div class="row">
       <strong>${esc(m.name)}</strong>
       <span class="rowact"><span class="muted">${esc(m.controller_type || "")}</span>
+        <button class="mini create" onclick="createToolSetFromMachine('${m.id}')">Create tool set</button>
         <button class="mini del" onclick="deleteMachine('${m.id}')">Delete machine</button></span>
     </div>
     ${body}
   </div>`;
   }).join("");
+}
+
+async function createToolSetFromMachine(machineId) {
+  const mname = state.machineNames[machineId] || "machine";
+  const entries = state.entriesByMachine[machineId] || [];
+  // A tool set holds ToolRecords, so only BOUND entries can be members.
+  // Dedupe: a record bound to more than one slot should appear once.
+  const ids = [...new Set(entries.filter(e => e.tool_record_id).map(e => e.tool_record_id))];
+  if (!ids.length) {
+    toast("No linked tools on this machine — link some to records first.");
+    return;
+  }
+  const name = window.prompt(
+    `New tool set from ${mname}.\n${ids.length} of ${entries.length} tools are linked to records ` +
+    `and will be included (unlinked entries can't be in a set).\n\nName:`, mname);
+  if (name === null) return;            // cancelled
+  if (!name.trim()) { toast("A name is required."); return; }
+  try {
+    const r = await api("POST", "/tool-sets", {items: [{name: name.trim(), tool_record_ids: ids}]});
+    if (r.errors?.length) { toast(r.errors[0].message); return; }
+    toast(`Created tool set "${name.trim()}" with ${ids.length} tool(s).`);
+    state.tab = "toolsets";             // show the result
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 async function deleteMachine(id) {
