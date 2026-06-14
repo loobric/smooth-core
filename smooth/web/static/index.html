@@ -3,7 +3,8 @@
   Smooth web inbox (smooth-core#6).
   Deliberately one static file: no build step, no dependencies, served by
   the core container. Scope (decision G2 + field feedback): read views for
-  tools/machines/audit, write actions limited to confirm/reject/unbind.
+  tools/machines/audit, plus housekeeping write actions — confirm/reject,
+  bind/unbind, create-record, and delete of records/machines/entries.
   Anything richer belongs to Smooth Web (commercial).
 -->
 <html lang="en">
@@ -56,6 +57,7 @@
   button.mini.reject  { background:var(--bad); color:#2b0c0a; }
   button.mini.link    { background:none; border:1px solid var(--link); color:var(--link); }
   button.mini.create  { background:none; border:1px solid var(--ok); color:var(--ok); }
+  button.mini.del     { background:none; border:1px solid var(--bad); color:var(--bad); }
   .suggest { font-size:.82rem; margin-right:.2rem; }
   .picker { background:var(--bg); border:1px solid var(--line); color:var(--ink);
             border-radius:8px; padding:.4rem; font-size:.85rem; max-width:50vw; }
@@ -318,7 +320,26 @@ function renderTools() {
           T${m.tool_number} @ ${esc(state.machineNames[m.machine_id] || m.machine_id.slice(0,8))}</span>
         <button class="unbind actions" onclick="unbind('${m.machine_id}',${m.tool_number})">Unbind</button>
       </div>`).join("")}
+    <div class="row" style="margin-top:.6rem">
+      <span class="muted">${t.machines.length} machine link(s)</span>
+      <button class="unbind actions" onclick="deleteRecord('${t.id}')">Delete record</button>
+    </div>
   </div>`).join("");
+}
+
+async function deleteRecord(id) {
+  const t = state.tools.find(x => x.id === id);
+  const name = t ? t.name : id.slice(0, 8);
+  const links = t ? t.machines.length : 0;
+  const warn = links
+    ? `Delete record "${name}"? ${links} machine entr${links > 1 ? "ies" : "y"} will be unbound — their data stays on the machine, only the link dies.`
+    : `Delete record "${name}"?`;
+  if (!window.confirm(warn)) return;
+  try {
+    const r = await api("DELETE", "/tool-records", {ids: [id]});
+    toast(r.errors?.length ? r.errors[0].message : `Deleted "${name}".`);
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 async function unbind(machineId, toolNumber) {
@@ -390,8 +411,20 @@ function entryRow(machineId, e) {
         ? `<span class="pill bound">${esc(recName)}</span>`
         : `<span class="pill unbound">unbound</span>`}
     </div>
-    <div class="rowact">${actionControls(machineId, e)}</div>
+    <div class="rowact">${actionControls(machineId, e)}
+      <button class="mini del" title="Remove this reported entry" onclick="deleteEntry('${machineId}',${e.tool_number})">Remove</button>
+    </div>
   </div>`;
+}
+
+async function deleteEntry(machineId, toolNumber) {
+  const mname = state.machineNames[machineId] || "machine";
+  if (!window.confirm(`Remove T${toolNumber} from ${mname}? This deletes what the machine reported for that slot. If the controller pushes again, it comes back.`)) return;
+  try {
+    const r = await api("DELETE", `/machines/${machineId}/tool-table`, {tool_numbers: [toolNumber]});
+    toast(r.errors?.length ? r.errors[0].message : `Removed T${toolNumber} from ${mname}.`);
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 function renderMachines() {
@@ -404,11 +437,25 @@ function renderMachines() {
       : `<div class="muted">empty tool table</div>`;
     return `
   <div class="card">
-    <div class="row"><strong>${esc(m.name)}</strong>
-      <span class="muted">${esc(m.controller_type || "")}</span></div>
+    <div class="row">
+      <strong>${esc(m.name)}</strong>
+      <span class="rowact"><span class="muted">${esc(m.controller_type || "")}</span>
+        <button class="mini del" onclick="deleteMachine('${m.id}')">Delete machine</button></span>
+    </div>
     ${body}
   </div>`;
   }).join("");
+}
+
+async function deleteMachine(id) {
+  const name = state.machineNames[id] || "machine";
+  const n = (state.entriesByMachine[id] || []).length;
+  if (!window.confirm(`Delete machine "${name}" and its ${n} tool-table entr${n === 1 ? "y" : "ies"}? Tool records stay; only this machine and what it reported are removed.`)) return;
+  try {
+    const r = await api("DELETE", "/machines", {ids: [id]});
+    toast(r.errors?.length ? r.errors[0].message : `Deleted machine "${name}".`);
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 // ---- Audit -------------------------------------------------------------------
