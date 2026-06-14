@@ -19,7 +19,7 @@ Assumptions (mirrors tests/contract/test_machines_api.py):
 - provenance and extra JSON round-trip untouched (lossless principle)
 - Every write is audited
 """
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel, Field
@@ -111,6 +111,15 @@ class MachineBulkDeleteRequest(BaseModel):
 
 class ToolTableUpsertRequest(BaseModel):
     items: List[ToolTableEntryUpsert]
+    # "merge" (default) touches only the tool_numbers present — the safe shape
+    # for partial/delta callers. "snapshot" declares the items ARE the machine's
+    # complete current table, so entries absent from the payload are reconciled
+    # away (the controller is authoritative over what its table contains).
+    mode: Literal["merge", "snapshot"] = "merge"
+    # Snapshot reconciliation refuses a suspicious mass-wipe (empty payload, or
+    # removing more than half the table) unless force is set — a guard against a
+    # partial/garbled client read masquerading as deliberate deletions.
+    force: bool = False
 
 
 class ToolTableDeleteRequest(BaseModel):
@@ -147,6 +156,8 @@ class ToolTableBulkResponse(BaseModel):
     success_count: int
     errors: List[ErrorDetail] = []
     items: List[ToolTableEntryResponse] = []
+    # Tool numbers reconciled away in snapshot mode (empty for merge).
+    removed_tool_numbers: List[int] = []
 
 
 class ToolTableListResponse(BaseModel):
@@ -341,6 +352,68 @@ def delete_machines(
 
 # Tool-table endpoints
 
+def _guard_snapshot(db: Session, machine: Machine, payload: "ToolTableUpsertRequest") -> None:
+    """Refuse a suspicious snapshot before it deletes anything.
+
+    A full-table snapshot that is empty, or that would remove more than half
+    the existing entries, looks far more like a partial/garbled client read
+    than a deliberate bulk deletion. Refuse with 409 unless force is set.
+    """
+    if payload.force:
+        return
+    present = {item.tool_number for item in payload.items}
+    existing = db.query(ToolTableEntry).filter(
+        ToolTableEntry.machine_id == machine.id
+    ).all()
+    if not existing:
+        return
+    to_remove = [e for e in existing if e.tool_number not in present]
+    if not to_remove:
+        return
+    if not present or len(to_remove) * 2 > len(existing):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Snapshot would remove {len(to_remove)} of {len(existing)} "
+                f"tool-table entries — refusing as a likely partial read. "
+                f"Re-send with force=true if the deletions are intended."
+            ),
+        )
+
+
+def _reconcile_snapshot(
+    db: Session, user: User, machine: Machine, payload: "ToolTableUpsertRequest"
+) -> List[int]:
+    """Remove server entries absent from a full-table snapshot.
+
+    The controller is authoritative over what its table contains, so a tool
+    the operator deleted locally must not linger as a phantom. We delete only
+    the ENTRY; any bound ToolRecord survives (the link dies with the slot).
+    Open proposals for removed entries are withdrawn. Returns the removed
+    tool numbers. Caller commits.
+    """
+    present = {item.tool_number for item in payload.items}
+    existing = db.query(ToolTableEntry).filter(
+        ToolTableEntry.machine_id == machine.id
+    ).all()
+    orphaned = [e for e in existing if e.tool_number not in present]
+    removed: List[int] = []
+    delete_proposals_for_entries(db, [e.id for e in orphaned])
+    for entry in orphaned:
+        create_audit_log(
+            session=db, user_id=user.id, operation="DELETE",
+            entity_type="tool_table_entry", entity_id=entry.id,
+            changes={
+                "reason": "absent from snapshot",
+                "tool_number": entry.tool_number,
+                "was_bound": entry.tool_record_id is not None,
+            },
+        )
+        db.delete(entry)
+        removed.append(entry.tool_number)
+    return removed
+
+
 @router.put("/{machine_id}/tool-table", response_model=ToolTableBulkResponse)
 def upsert_tool_table(
     machine_id: str,
@@ -356,10 +429,19 @@ def upsert_tool_table(
       owns (explicit binding); otherwise that item errors
     - Entries without tool_record_id stay/become whatever binding they had:
       an upsert that omits tool_record_id does NOT unbind an existing entry
+    - mode="snapshot" additionally reconciles: entries on the server but
+      absent from this (complete) payload are removed, because the controller
+      is authoritative over what its table holds. Only the ENTRY (the
+      observation) is removed — a bound ToolRecord (the tool's identity) is
+      never touched; the link simply dies with the slot. A mass-wipe is
+      refused unless force=True.
     """
     machine = _owned_machine(db, user, machine_id)
     if machine is None:
         raise HTTPException(status_code=404, detail="Machine not found")
+
+    if payload.mode == "snapshot":
+        _guard_snapshot(db, machine, payload)
 
     results: List[ToolTableEntryResponse] = []
     errors: List[ErrorDetail] = []
@@ -417,8 +499,15 @@ def upsert_tool_table(
         propose_binding(db, user, entry)
         results.append(entry_to_response(entry))
 
+    removed: List[int] = []
+    if payload.mode == "snapshot":
+        removed = _reconcile_snapshot(db, user, machine, payload)
+
     db.commit()
-    return ToolTableBulkResponse(success_count=len(results), errors=errors, items=results)
+    return ToolTableBulkResponse(
+        success_count=len(results), errors=errors, items=results,
+        removed_tool_numbers=removed,
+    )
 
 
 @router.post("/{machine_id}/tool-table/{tool_number}/bind", response_model=ToolTableEntryResponse)

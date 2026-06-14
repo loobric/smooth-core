@@ -488,3 +488,139 @@ def test_create_record_error_cases(solo_client):
     assert solo_client.post(
         f"/api/v1/machines/no-such-machine/tool-table/9/create-record"
     ).status_code == 404
+
+
+# -- Snapshot reconciliation (the operator deleted a tool locally) -------------
+#
+# A full-table push is an OBSERVATION: the controller is authoritative over
+# what its table contains. mode="snapshot" declares "these items are my
+# complete table", so an entry the operator deleted from tool.tbl must be
+# reconciled away on the next sync — never left as a phantom. The tool's
+# RECORD identity survives; only the machine's observation of the slot dies.
+
+
+def put_snapshot(client, machine_id, entries, force=False):
+    resp = client.put(
+        f"/api/v1/machines/{machine_id}/tool-table",
+        json={"items": entries, "mode": "snapshot", "force": force},
+    )
+    return resp
+
+
+@pytest.mark.contract
+def test_merge_mode_is_the_default_and_never_deletes(solo_client):
+    """The default push touches only the tool_numbers it carries — a partial
+    caller must never lose unmentioned entries."""
+    machine = make_machine(solo_client)
+    put_table(solo_client, machine["id"], [
+        {**T3_UNBOUND, "tool_number": 1},
+        {**T3_UNBOUND, "tool_number": 2},
+    ])
+    # A merge push of only T1 leaves T2 untouched.
+    body = put_table(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 1}])
+    assert body.get("removed_tool_numbers", []) == []
+    nums = {e["tool_number"] for e in
+            solo_client.get(f"/api/v1/machines/{machine['id']}/tool-table").json()["items"]}
+    assert nums == {1, 2}
+
+
+@pytest.mark.contract
+def test_snapshot_reconciles_away_a_locally_deleted_tool(solo_client):
+    """18 reported, operator deletes one, client re-pushes the remaining 17 as
+    a snapshot: the missing entry is removed; the rest are intact."""
+    machine = make_machine(solo_client)
+    full = [{**T3_UNBOUND, "tool_number": n} for n in range(1, 19)]
+    put_snapshot(solo_client, machine["id"], full)
+    assert len(solo_client.get(
+        f"/api/v1/machines/{machine['id']}/tool-table").json()["items"]) == 18
+
+    remaining = [e for e in full if e["tool_number"] != 7]  # operator deleted T7
+    resp = put_snapshot(solo_client, machine["id"], remaining)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["removed_tool_numbers"] == [7]
+    nums = {e["tool_number"] for e in
+            solo_client.get(f"/api/v1/machines/{machine['id']}/tool-table").json()["items"]}
+    assert 7 not in nums and len(nums) == 17
+
+
+@pytest.mark.contract
+def test_snapshot_removal_keeps_the_bound_record_alive(solo_client):
+    """Deleting a slot is not scrapping the tool: a bound entry's ToolRecord
+    survives the reconciliation; only the entry (the observation) is gone."""
+    machine = make_machine(solo_client)
+    record = make_record(solo_client)
+    put_snapshot(solo_client, machine["id"], [
+        {**T3_UNBOUND, "tool_number": 1},
+        {**T3_UNBOUND, "tool_number": 2, "tool_record_id": record["id"]},
+    ])
+    # Snapshot now omits T2 (its bound slot was deleted locally).
+    resp = put_snapshot(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 1}])
+    assert resp.json()["removed_tool_numbers"] == [2]
+    # The record still exists and simply lost its machine location.
+    rec = solo_client.get(f"/api/v1/tool-records/{record['id']}")
+    assert rec.status_code == 200
+    assert all(m["tool_number"] != 2 for m in rec.json().get("machines", []))
+
+
+@pytest.mark.contract
+def test_snapshot_withdraws_open_proposal_for_removed_entry(solo_client):
+    """An unbound entry pending in the inbox that vanishes from the snapshot
+    is no longer a question to answer — its proposal is withdrawn."""
+    machine = make_machine(solo_client)
+    make_record(solo_client)  # gives the binding engine a match to propose
+    put_snapshot(solo_client, machine["id"], [
+        {**T3_UNBOUND, "tool_number": 1},
+        {**T3_UNBOUND, "tool_number": 2},
+    ])
+    assert len(solo_client.get("/api/v1/inbox").json()["items"]) >= 1
+    # Drop every reported tool except T1; the inbox question for T2 is moot.
+    put_snapshot(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 1}])
+    open_entries = {i["entry"]["tool_number"]
+                    for i in solo_client.get("/api/v1/inbox").json()["items"]}
+    assert 2 not in open_entries
+
+
+@pytest.mark.contract
+def test_snapshot_refuses_mass_wipe_without_force(solo_client):
+    """A snapshot that would remove more than half the table — or an empty one
+    — is treated as a likely partial read and refused with 409."""
+    machine = make_machine(solo_client)
+    put_snapshot(solo_client, machine["id"],
+                 [{**T3_UNBOUND, "tool_number": n} for n in range(1, 5)])  # 4 entries
+
+    # Empty snapshot: refused.
+    assert put_snapshot(solo_client, machine["id"], []).status_code == 409
+    # Removing 3 of 4 (>half): refused, and nothing was deleted.
+    assert put_snapshot(solo_client, machine["id"],
+                        [{**T3_UNBOUND, "tool_number": 1}]).status_code == 409
+    assert len(solo_client.get(
+        f"/api/v1/machines/{machine['id']}/tool-table").json()["items"]) == 4
+
+
+@pytest.mark.contract
+def test_force_overrides_the_mass_wipe_guard(solo_client):
+    """force=true is the operator vouching the deletions are real."""
+    machine = make_machine(solo_client)
+    put_snapshot(solo_client, machine["id"],
+                 [{**T3_UNBOUND, "tool_number": n} for n in range(1, 5)])
+    resp = put_snapshot(solo_client, machine["id"],
+                        [{**T3_UNBOUND, "tool_number": 1}], force=True)
+    assert resp.status_code == 200
+    assert sorted(resp.json()["removed_tool_numbers"]) == [2, 3, 4]
+    assert len(solo_client.get(
+        f"/api/v1/machines/{machine['id']}/tool-table").json()["items"]) == 1
+
+
+@pytest.mark.contract
+def test_snapshot_reconcile_is_audited(solo_client):
+    """A reconciled deletion leaves an audit trail distinct from a human one."""
+    machine = make_machine(solo_client)
+    put_snapshot(solo_client, machine["id"], [
+        {**T3_UNBOUND, "tool_number": 1},
+        {**T3_UNBOUND, "tool_number": 2},
+    ])
+    put_snapshot(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 1}])
+    logs = solo_client.get("/api/v1/audit-logs").json()["logs"]
+    reconciled = [l for l in logs
+                  if l["entity_type"] == "tool_table_entry" and l["operation"] == "DELETE"]
+    assert reconciled, "expected a DELETE audit entry for the reconciled slot"
