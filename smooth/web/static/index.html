@@ -44,6 +44,21 @@
   .unbind  { background:none; border:1px solid var(--bad) !important; color:var(--bad);
              min-height:36px !important; font-weight:500 !important; flex:0 0 auto !important;
              padding:0 .8rem; }
+  .trow { display:flex; justify-content:space-between; gap:.6rem; align-items:center;
+          flex-wrap:wrap; padding:.5rem 0; border-top:1px solid var(--line); }
+  .trow:first-of-type { border-top:none; }
+  .tinfo { display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap; min-width:0; }
+  .tnum { font-weight:600; }
+  .rowact { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+  .rowact button { min-height:34px; border:none; border-radius:8px; padding:0 .7rem;
+                   font-size:.85rem; font-weight:600; cursor:pointer; }
+  button.mini.confirm { background:var(--ok); color:#06210f; }
+  button.mini.reject  { background:var(--bad); color:#2b0c0a; }
+  button.mini.link    { background:none; border:1px solid var(--link); color:var(--link); }
+  button.mini.create  { background:none; border:1px solid var(--ok); color:var(--ok); }
+  .suggest { font-size:.82rem; margin-right:.2rem; }
+  .picker { background:var(--bg); border:1px solid var(--line); color:var(--ink);
+            border-radius:8px; padding:.4rem; font-size:.85rem; max-width:50vw; }
   .explain { background:#15202b; border:1px solid var(--line); border-radius:12px;
              padding:.8rem 1rem; margin-bottom:1rem; font-size:.92rem; color:var(--dim); }
   .explain b { color:var(--ink); }
@@ -95,7 +110,9 @@
 <script>
 "use strict";
 const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
-let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[], machineNames:{} };
+let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[],
+              machineNames:{}, toolNames:{}, entriesByMachine:{}, proposalByEntry:{},
+              linkTarget:null };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -139,9 +156,82 @@ async function refresh() {
     state.toolsets = toolsets.items;
     state.machines = machines.items; state.audit = audit.logs || [];
     state.machineNames = Object.fromEntries(state.machines.map(m => [m.id, m.name]));
+    state.toolNames = Object.fromEntries(state.tools.map(t => [t.id, t.name]));
+    state.proposalByEntry = Object.fromEntries(inbox.items.map(i => [i.entry.id, i]));
+    // Tool tables feed both the Machines tab and the derived Inbox, so load
+    // them all here rather than lazily per-tab.
+    const tables = await Promise.all(state.machines.map(m =>
+      api("GET", `/machines/${m.id}/tool-table`)
+        .then(t => [m.id, t.items]).catch(() => [m.id, []])));
+    state.entriesByMachine = Object.fromEntries(tables);
     $("#whoami").textContent = "";
     render();
   } catch (e) { if (e.message !== "auth") toast("Load failed: " + e.message); }
+}
+
+// Every unbound entry across all machines — the work the inbox surfaces.
+function unboundEntries() {
+  const out = [];
+  for (const m of state.machines)
+    for (const e of (state.entriesByMachine[m.id] || []))
+      if (!e.tool_record_id) out.push({entry: e, machine: m});
+  return out;
+}
+
+// The action that fits one entry's state: unbind when bound; confirm/reject
+// when a heuristic suggestion is open; link/create when it's an orphan.
+function actionControls(machineId, entry) {
+  if (entry.tool_record_id)
+    return `<button class="unbind" onclick="unbind('${machineId}',${entry.tool_number})">Unbind</button>`;
+  const linking = state.linkTarget &&
+    state.linkTarget.machineId === machineId &&
+    state.linkTarget.toolNumber === entry.tool_number;
+  if (linking) {
+    const opts = state.tools.map(t =>
+      `<option value="${t.id}">${esc(t.name)} (${esc(t.id.slice(0,8))})</option>`).join("");
+    return `<select id="recpick" class="picker">${opts}</select>
+      <button class="mini confirm" onclick="confirmLink('${machineId}',${entry.tool_number})">Link</button>
+      <button class="mini reject" onclick="cancelLink()">Cancel</button>`;
+  }
+  const prop = state.proposalByEntry[entry.id];
+  if (prop)
+    return `<span class="suggest muted">suggests <b>${esc(prop.proposed_record.name)}</b>` +
+      ` &middot; ${Math.round(prop.confidence*100)}%</span>` +
+      `<button class="mini confirm" onclick="resolve('${prop.id}','confirm')">Same tool</button>
+       <button class="mini reject" onclick="resolve('${prop.id}','reject')">Different</button>
+       <button class="mini link" onclick="startLink('${machineId}',${entry.tool_number})">Link&hellip;</button>`;
+  return `<button class="mini link" onclick="startLink('${machineId}',${entry.tool_number})">Link to record&hellip;</button>
+    <button class="mini create" onclick="createRecord('${machineId}',${entry.tool_number})">Create record</button>`;
+}
+
+function startLink(machineId, toolNumber) {
+  if (!state.tools.length) { toast("No tool records yet - use Create record."); return; }
+  state.linkTarget = {machineId, toolNumber}; render();
+}
+function cancelLink() { state.linkTarget = null; render(); }
+
+async function confirmLink(machineId, toolNumber) {
+  const sel = document.getElementById("recpick");
+  if (!sel || !sel.value) return;
+  try {
+    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/bind`,
+      {tool_record_id: sel.value});
+    state.linkTarget = null;
+    toast(`Linked T${toolNumber}. Nothing was overwritten.`);
+    refresh();
+  } catch (e) { toast(e.message); }
+}
+
+async function createRecord(machineId, toolNumber) {
+  const e = (state.entriesByMachine[machineId] || []).find(x => x.tool_number === toolNumber);
+  const name = window.prompt("Name for the new record:", (e && e.description) || "");
+  if (name === null) return;  // cancelled
+  try {
+    const body = name.trim() ? {name: name.trim()} : undefined;
+    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/create-record`, body);
+    toast(`Created record and linked T${toolNumber}.`);
+    refresh();
+  } catch (e) { toast(e.message); }
 }
 
 function geomSummary(g) {
@@ -154,48 +244,46 @@ function geomSummary(g) {
 }
 
 function render() {
+  const needs = unboundEntries().length;
   $("#tabs").innerHTML = TABS.map(([id, label]) =>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}` +
-    (id==="inbox" && state.inbox.length ? `<span class="n">${state.inbox.length}</span>` : "") +
+    (id==="inbox" && needs ? `<span class="n">${needs}</span>` : "") +
     `</button>`).join("");
   const v = {inbox: renderInbox, tools: renderTools, toolsets: renderToolSets, machines: renderMachines, audit: renderAudit}[state.tab];
   $("#view").innerHTML = v();
-  if (state.tab === "machines") loadTables();
 }
 function setTab(t) { state.tab = t; render(); }
 
 // ---- Inbox -----------------------------------------------------------------
 
 function renderInbox() {
-  if (!state.inbox.length)
-    return `<div class="empty">Inbox is empty - nothing needs you.<br>
-            <span class="muted">Proposals appear here when a machine reports tools the server doesn't recognize.</span></div>`;
+  const items = unboundEntries();
+  if (!items.length)
+    return `<div class="empty">Nothing needs you.<br>
+            <span class="muted">Every tool your machines reported is linked to a record.</span></div>`;
   return `
-  <div class="explain">These are <b>identity questions, not conflicts</b>: a machine reported
-  tools the server doesn't recognize, and these are its best guesses. Confirming or rejecting
-  <b>overwrites nothing on either side</b>. Confirm = same tool (links them; future changes route
-  between them). Reject = different tools (suggestion is dropped forever). <b>Unsure? Reject</b> -
-  you can always link later; a wrong confirm needs an unbind.</div>` +
-  state.inbox.map(i => `
+  <div class="explain">These are <b>tools your machines reported that aren't yet linked to a
+  record</b> &mdash; the same rows you'll find on each machine, gathered here. Linking
+  <b>overwrites nothing on either side</b>. Where the server has a guess, <b>Same tool</b> links them
+  and <b>Different</b> drops that guess. Otherwise <b>Link</b> to an existing record or <b>Create</b>
+  a new one. Nothing here is a one-way door: a link can be undone with Unbind, and a dropped guess
+  can always be linked by hand later.</div>` +
+  items.map(({entry, machine}) => {
+    const prop = state.proposalByEntry[entry.id];
+    return `
   <div class="card">
     <div class="row">
-      <strong>${esc(i.machine_name)} &middot; T${i.entry.tool_number}</strong>
-      <span class="id">${esc(i.id.slice(0,8))}</span>
+      <strong>${esc(machine.name)} &middot; T${entry.tool_number}</strong>
+      <span class="id">${esc(entry.id.slice(0,8))}</span>
     </div>
-    <div class="muted">${esc(i.entry.description || "no description")}</div>
-    <div class="vs">is this the same tool as?</div>
-    <div class="row">
-      <strong>${esc(i.proposed_record.name)}</strong>
-      <span class="id">${esc(i.proposed_record.id.slice(0,8))}</span>
-    </div>
-    <div class="muted">${esc(geomSummary(i.proposed_record.geometry))}</div>
-    <div class="conf"><div style="width:${Math.round(i.confidence*100)}%"></div></div>
-    <div class="muted">${Math.round(i.confidence*100)}% &middot; ${esc(i.reason)}</div>
-    <div class="actions">
-      <button class="confirm" onclick="resolve('${i.id}','confirm')">Same tool</button>
-      <button class="reject" onclick="resolve('${i.id}','reject')">Different</button>
-    </div>
-  </div>`).join("");
+    <div class="muted">${esc(entry.description || "no description")}` +
+      `${entry.offsets && entry.offsets.diameter ? " &middot; &#x2300;" + entry.offsets.diameter : ""}</div>` +
+    (prop ? `<div class="vs">is this the same tool as <b>${esc(prop.proposed_record.name)}</b>?</div>
+    <div class="conf"><div style="width:${Math.round(prop.confidence*100)}%"></div></div>
+    <div class="muted">${Math.round(prop.confidence*100)}% &middot; ${esc(prop.reason)}</div>` : "") +
+    `<div class="rowact" style="margin-top:.7rem">${actionControls(machine.id, entry)}</div>
+  </div>`;
+  }).join("");
 }
 
 async function resolve(id, action) {
@@ -289,34 +377,38 @@ async function deleteToolSet(id, name) {
 
 // ---- Machines ------------------------------------------------------------------
 
+function entryRow(machineId, e) {
+  const bound = !!e.tool_record_id;
+  const recName = bound ? (state.toolNames[e.tool_record_id] || e.tool_record_id.slice(0,8)) : "";
+  const dia = e.offsets && e.offsets.diameter ? "&#x2300;" + e.offsets.diameter : "";
+  return `<div class="trow">
+    <div class="tinfo">
+      <span class="tnum">T${e.tool_number}</span>
+      <span>${esc(e.description || "—")}</span>
+      <span class="muted">${dia}</span>
+      ${bound
+        ? `<span class="pill bound">${esc(recName)}</span>`
+        : `<span class="pill unbound">unbound</span>`}
+    </div>
+    <div class="rowact">${actionControls(machineId, e)}</div>
+  </div>`;
+}
+
 function renderMachines() {
   if (!state.machines.length)
     return `<div class="empty">No machines yet.<br><span class="muted">They register themselves on first push from a controller.</span></div>`;
-  return state.machines.map(m => `
+  return state.machines.map(m => {
+    const entries = state.entriesByMachine[m.id] || [];
+    const body = entries.length
+      ? entries.map(e => entryRow(m.id, e)).join("")
+      : `<div class="muted">empty tool table</div>`;
+    return `
   <div class="card">
     <div class="row"><strong>${esc(m.name)}</strong>
       <span class="muted">${esc(m.controller_type || "")}</span></div>
-    <div id="mt-${m.id}" class="muted">loading table…</div>
-  </div>`).join("");
-}
-
-async function loadTables() {
-  for (const m of state.machines) {
-    const el = document.getElementById("mt-" + m.id);
-    if (!el) continue;
-    try {
-      const t = await api("GET", `/machines/${m.id}/tool-table`);
-      el.outerHTML = t.items.length ? `
-        <table><tr><th>T</th><th>description</th><th>&#x2300;</th><th>Z</th><th>status</th></tr>
-        ${t.items.map(e => `<tr>
-          <td>T${e.tool_number}</td><td>${esc(e.description || "")}</td>
-          <td>${e.offsets?.diameter ?? ""}</td><td>${e.offsets?.z ?? ""}</td>
-          <td>${e.tool_record_id
-              ? '<span class="pill bound">bound</span>'
-              : '<span class="pill unbound">unbound</span>'}</td>
-        </tr>`).join("")}</table>` : `<div class="muted">empty tool table</div>`;
-    } catch (err) { el.textContent = "failed to load: " + err.message; }
-  }
+    ${body}
+  </div>`;
+  }).join("");
 }
 
 // ---- Audit -------------------------------------------------------------------

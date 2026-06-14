@@ -123,6 +123,32 @@ def propose_binding(db: Session, user: User, entry: ToolTableEntry) -> Optional[
     return proposal
 
 
+def close_open_proposal_on_bind(
+    db: Session, user: User, entry_id: str, bound_record_id: str
+) -> None:
+    """Resolve an entry's open proposal when the entry is explicitly bound.
+
+    Explicit binding (UI or client intent) overrides the heuristic
+    suggestion, so the open proposal must not linger in the inbox:
+    - confirmed when the user bound to the very record proposed
+    - rejected otherwise — the user chose a different identity, and that
+      (entry, record) pair should not be proposed again (mirrors the inbox
+      reject rule)
+    Caller commits.
+    """
+    proposal = db.query(BindingProposal).filter(
+        BindingProposal.entry_id == entry_id,
+        BindingProposal.status == "open",
+    ).first()
+    if proposal is None:
+        return
+    proposal.status = (
+        "confirmed" if proposal.proposed_record_id == bound_record_id else "rejected"
+    )
+    proposal.version += 1
+    proposal.updated_by = user.id
+
+
 def delete_proposals_for_entries(db: Session, entry_ids: List[str]) -> None:
     """Remove proposals referencing entries that are being deleted."""
     if not entry_ids:

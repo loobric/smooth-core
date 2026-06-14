@@ -229,4 +229,6 @@ def test_web_inbox_is_served(solo_client):
     page = solo_client.get("/ui/")
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
-    assert "identity questions, not conflicts" in page.text
+    # Assert on durable app identifiers, not user-facing copy (which evolves).
+    assert "Smooth web inbox" in page.text   # file header comment
+    assert "<title>Smooth</title>" in page.text

@@ -28,7 +28,11 @@ from sqlalchemy.orm import Session
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.database.schema import User, Machine, ToolTableEntry, ToolItem
 from smooth.audit import create_audit_log
-from smooth.binding import propose_binding, delete_proposals_for_entries
+from smooth.binding import (
+    propose_binding,
+    delete_proposals_for_entries,
+    close_open_proposal_on_bind,
+)
 
 
 router = APIRouter(prefix="/api/v1/machines", tags=["machines"])
@@ -111,6 +115,16 @@ class ToolTableUpsertRequest(BaseModel):
 
 class ToolTableDeleteRequest(BaseModel):
     tool_numbers: List[int]
+
+
+class BindRequest(BaseModel):
+    """Explicit, user-driven binding of one entry to one owned ToolRecord."""
+    tool_record_id: str
+
+
+class CreateRecordRequest(BaseModel):
+    """Promote an entry into a record; name defaults to the entry description."""
+    name: Optional[str] = None
 
 
 class ErrorDetail(BaseModel):
@@ -405,6 +419,141 @@ def upsert_tool_table(
 
     db.commit()
     return ToolTableBulkResponse(success_count=len(results), errors=errors, items=results)
+
+
+@router.post("/{machine_id}/tool-table/{tool_number}/bind", response_model=ToolTableEntryResponse)
+def bind_entry(
+    machine_id: str,
+    tool_number: int,
+    payload: BindRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    """Explicitly link an unbound entry to a record the user owns.
+
+    The UI-facing counterpart to /unbind, and what makes "link later" real:
+    a rejected heuristic suggestion can always be resolved by hand here.
+
+    Assumptions:
+    - Entry data (offsets, description, extra) is untouched; only the link
+      is set; version increments
+    - 409 if the entry is already bound (rebind = unbind first)
+    - 404 for unknown machine, tool number, or a record the user can't see
+    - Any open proposal for the entry is resolved (it no longer needs review)
+    """
+    machine = _owned_machine(db, user, machine_id)
+    if machine is None:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    entry = db.query(ToolTableEntry).filter(
+        ToolTableEntry.machine_id == machine.id,
+        ToolTableEntry.tool_number == tool_number,
+    ).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No entry for tool number {tool_number}")
+    if entry.tool_record_id is not None:
+        raise HTTPException(status_code=409, detail="Entry is already bound")
+
+    record = db.query(ToolItem).filter(ToolItem.id == payload.tool_record_id).first()
+    if record is None or record.user_id != user.id:
+        raise HTTPException(
+            status_code=404, detail=f"ToolRecord not found: {payload.tool_record_id}"
+        )
+
+    entry.tool_record_id = record.id
+    entry.version += 1
+    entry.updated_by = user.id
+    close_open_proposal_on_bind(db, user, entry.id, record.id)
+    db.flush()
+    create_audit_log(
+        session=db, user_id=user.id, operation="BIND",
+        entity_type="tool_table_entry", entity_id=entry.id,
+        changes={"tool_record_id": record.id},
+    )
+    db.commit()
+    return entry_to_response(entry)
+
+
+@router.post("/{machine_id}/tool-table/{tool_number}/create-record", response_model=ToolTableEntryResponse)
+def create_record_from_entry(
+    machine_id: str,
+    tool_number: int,
+    payload: Optional[CreateRecordRequest] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    """Materialize a ToolRecord from an entry and bind it, in one step.
+
+    Closes the new-tool dead-end: a controller can push a tool the server
+    has never seen, which matches nothing and so gets no proposal. Rather
+    than leave the row unbound forever, the user promotes it here.
+
+    Mapping (lossless principle): the entry's description becomes the record
+    name; its diameter becomes record geometry. The diameter is the only
+    offset that is tool geometry — z and friends are machine offsets, so the
+    full original offsets ride along in `extra` rather than being guessed
+    into geometry.
+
+    Assumptions:
+    - 409 if the entry is already bound; 404 for unknown machine/tool number
+    - CREATE (tool_record) and BIND (tool_table_entry) are both audited
+    """
+    machine = _owned_machine(db, user, machine_id)
+    if machine is None:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    entry = db.query(ToolTableEntry).filter(
+        ToolTableEntry.machine_id == machine.id,
+        ToolTableEntry.tool_number == tool_number,
+    ).first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No entry for tool number {tool_number}")
+    if entry.tool_record_id is not None:
+        raise HTTPException(status_code=409, detail="Entry is already bound")
+
+    offsets = entry.offsets or {}
+    geometry = {}
+    if offsets.get("diameter") is not None:
+        geometry["diameter"] = offsets["diameter"]
+        if offsets.get("diameter_unit"):
+            geometry["diameter_unit"] = offsets["diameter_unit"]
+
+    name = (payload.name if payload else None) or entry.description or f"T{tool_number}"
+    extra = dict(entry.extra or {})
+    extra["smooth"] = {
+        "created_from": {
+            "machine_id": machine.id,
+            "tool_number": tool_number,
+            "offsets": offsets,
+        }
+    }
+    record = ToolItem(
+        type="cutting_tool",
+        name=name,
+        description=entry.description,
+        geometry=geometry or None,
+        tags=[],
+        extra=extra,
+        user_id=user.id,
+        created_by=user.id,
+        updated_by=user.id,
+    )
+    db.add(record)
+    db.flush()
+    create_audit_log(
+        session=db, user_id=user.id, operation="CREATE",
+        entity_type="tool_record", entity_id=record.id,
+    )
+
+    entry.tool_record_id = record.id
+    entry.version += 1
+    entry.updated_by = user.id
+    db.flush()
+    create_audit_log(
+        session=db, user_id=user.id, operation="BIND",
+        entity_type="tool_table_entry", entity_id=entry.id,
+        changes={"tool_record_id": record.id},
+    )
+    db.commit()
+    return entry_to_response(entry)
 
 
 @router.post("/{machine_id}/tool-table/{tool_number}/unbind", response_model=ToolTableEntryResponse)

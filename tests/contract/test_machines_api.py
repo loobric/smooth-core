@@ -314,3 +314,177 @@ def test_unbind_entry(solo_client):
 
     logs = solo_client.get("/api/v1/audit-logs").json()["logs"]
     assert any(e["operation"] == "UNBIND" for e in logs)
+
+
+# -- Explicit bind from the UI (smooth-core#14) --------------------------------
+
+@pytest.mark.contract
+def test_bind_unbound_entry_to_record(solo_client):
+    """The UI-facing explicit bind: link an unbound entry to a record the
+    user owns. Symmetric sibling of /unbind.
+
+    Assumptions:
+    - POST /api/v1/machines/{id}/tool-table/{tool_number}/bind {tool_record_id}
+    - Entry data untouched; only the link is set; version increments; audited
+    - Binding to the record an open proposal suggested closes it as confirmed
+    """
+    machine = make_machine(solo_client)
+    record = make_record(solo_client)
+    # unbound push whose diameter+name match the record -> open proposal
+    put_table(solo_client, machine["id"], [T3_UNBOUND])
+    assert len(solo_client.get("/api/v1/inbox").json()["items"]) == 1
+
+    resp = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/bind",
+        json={"tool_record_id": record["id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()
+    assert entry["tool_record_id"] == record["id"]
+    assert entry["offsets"]["z"] == T3_UNBOUND["offsets"]["z"]  # data untouched
+
+    # bound entry surfaces on the record; the open proposal is resolved
+    assert solo_client.get("/api/v1/inbox").json()["items"] == []
+    fetched = solo_client.get(f"/api/v1/tool-records/{record['id']}").json()
+    assert fetched["machines"][0]["tool_number"] == 3
+
+    logs = solo_client.get("/api/v1/audit-logs").json()["logs"]
+    assert any(e["operation"] == "BIND" for e in logs)
+
+
+@pytest.mark.contract
+def test_bind_to_different_record_rejects_open_proposal(solo_client):
+    """Binding to a record other than the one proposed is an implicit reject
+    of that suggestion: the open proposal is closed and won't reappear."""
+    machine = make_machine(solo_client)
+    proposed = make_record(solo_client, name='1/4" downcut')   # the heuristic match
+    other = make_record(solo_client, name="some other tool")
+    put_table(solo_client, machine["id"], [T3_UNBOUND])
+    assert len(solo_client.get("/api/v1/inbox").json()["items"]) == 1
+
+    resp = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/bind",
+        json={"tool_record_id": other["id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tool_record_id"] == other["id"]
+    # the suggestion for `proposed` is gone and not re-proposed on re-sync
+    assert solo_client.get("/api/v1/inbox").json()["items"] == []
+    put_table(solo_client, machine["id"], [T3_UNBOUND])
+    assert solo_client.get("/api/v1/inbox").json()["items"] == []
+
+
+@pytest.mark.contract
+def test_bind_error_cases(solo_client):
+    """409 when already bound; 404 for unknown machine/tool number/record."""
+    machine = make_machine(solo_client)
+    record = make_record(solo_client)
+    put_table(solo_client, machine["id"], [T3_UNBOUND])
+
+    ok = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/bind",
+        json={"tool_record_id": record["id"]},
+    )
+    assert ok.status_code == 200
+    # already bound
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/bind",
+        json={"tool_record_id": record["id"]},
+    ).status_code == 409
+    # unknown tool number
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/99/bind",
+        json={"tool_record_id": record["id"]},
+    ).status_code == 404
+    # unknown machine
+    assert solo_client.post(
+        f"/api/v1/machines/no-such-machine/tool-table/3/bind",
+        json={"tool_record_id": record["id"]},
+    ).status_code == 404
+    # unknown record (unbind first so the entry is bindable)
+    solo_client.post(f"/api/v1/machines/{machine['id']}/tool-table/3/unbind")
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/3/bind",
+        json={"tool_record_id": "no-such-record"},
+    ).status_code == 404
+
+
+# -- Create a record from an entry (smooth-core#15) ----------------------------
+
+@pytest.mark.contract
+def test_create_record_from_entry_closes_the_dead_end(solo_client):
+    """A never-before-seen tool synced from a controller has no matching
+    record and so no proposal; this promotes the entry into a ToolRecord and
+    binds it in one step, so the unbound row is never a dead-end.
+
+    Assumptions:
+    - POST /api/v1/machines/{id}/tool-table/{tool_number}/create-record
+    - The new record is owned by the caller and visible on the Tools tab
+    - The entry becomes bound to it; CREATE (tool_record) + BIND are audited
+    """
+    machine = make_machine(solo_client)
+    novel = {
+        "tool_number": 7,
+        "description": "7mm spot drill",
+        "offsets": {"diameter": 7.0, "diameter_unit": "mm", "z": -41.0},
+        "extra": {"linuxcnc": {"raw": "T7 ..."}},
+    }
+    put_table(solo_client, machine["id"], [novel])
+    # nothing to match -> no proposal, the dead-end this endpoint fixes
+    assert solo_client.get("/api/v1/inbox").json()["items"] == []
+    before = len(solo_client.get("/api/v1/tool-records").json()["items"])
+
+    resp = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/7/create-record"
+    )
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()
+    assert entry["tool_record_id"] is not None
+
+    records = solo_client.get("/api/v1/tool-records").json()["items"]
+    assert len(records) == before + 1
+    new_record = next(r for r in records if r["id"] == entry["tool_record_id"])
+    assert new_record["name"] == "7mm spot drill"
+    assert new_record["geometry"]["diameter"] == 7.0      # diameter mapped through
+    assert new_record["machines"][0]["tool_number"] == 7  # bound round-trips
+
+    logs = solo_client.get("/api/v1/audit-logs").json()["logs"]
+    ops = {(e["operation"], e["entity_type"]) for e in logs}
+    assert ("CREATE", "tool_record") in ops
+    assert ("BIND", "tool_table_entry") in ops
+
+
+@pytest.mark.contract
+def test_create_record_with_custom_name(solo_client):
+    """The user may name the record instead of inheriting the description."""
+    machine = make_machine(solo_client)
+    put_table(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 8}])
+    resp = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/8/create-record",
+        json={"name": "Chamfer 90deg"},
+    )
+    assert resp.status_code == 200, resp.text
+    rec_id = resp.json()["tool_record_id"]
+    record = solo_client.get(f"/api/v1/tool-records/{rec_id}").json()
+    assert record["name"] == "Chamfer 90deg"
+
+
+@pytest.mark.contract
+def test_create_record_error_cases(solo_client):
+    """409 if the entry is already bound; 404 unknown machine/tool number."""
+    machine = make_machine(solo_client)
+    put_table(solo_client, machine["id"], [{**T3_UNBOUND, "tool_number": 9}])
+    first = solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/9/create-record"
+    )
+    assert first.status_code == 200
+    # entry now bound -> can't create another record from it
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/9/create-record"
+    ).status_code == 409
+    assert solo_client.post(
+        f"/api/v1/machines/{machine['id']}/tool-table/99/create-record"
+    ).status_code == 404
+    assert solo_client.post(
+        f"/api/v1/machines/no-such-machine/tool-table/9/create-record"
+    ).status_code == 404
