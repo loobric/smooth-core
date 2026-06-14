@@ -455,6 +455,199 @@ def resolve_pending(item_id: str, action: str):
               f"This suggestion won't reappear; the entry stays unbound.")
 
 
+def _match_id(items: List[Dict[str, Any]], prefix: str, label: str) -> Dict[str, Any]:
+    """Resolve a possibly-abbreviated id against a list (git short-SHA style).
+
+    An exact match wins outright; otherwise a unique prefix match is used.
+    Exits with a helpful message on no/ambiguous match.
+    """
+    exact = [i for i in items if i.get("id") == prefix]
+    if exact:
+        return exact[0]
+    matches = [i for i in items if str(i.get("id", "")).startswith(prefix)]
+    if not matches:
+        print(f"Error: no {label} matches '{prefix}'", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"Error: '{prefix}' is ambiguous ({len(matches)} {label}s):", file=sys.stderr)
+        for m in matches:
+            print(f"  {str(m.get('id'))[:8]}  {m.get('name', '')}", file=sys.stderr)
+        sys.exit(1)
+    return matches[0]
+
+
+def _resolve_machine(prefix: str) -> Dict[str, Any]:
+    items = make_request("GET", "/machines", require_auth=True).get("items", [])
+    return _match_id(items, prefix, "machine")
+
+
+def _resolve_record(prefix: str) -> Dict[str, Any]:
+    items = make_request("GET", "/tool-records", require_auth=True).get("items", [])
+    return _match_id(items, prefix, "tool record")
+
+
+def _confirm(message: str, assume_yes: bool) -> bool:
+    """Guard a destructive action. --yes skips; non-interactive requires it."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{message}\nRefusing to proceed without confirmation; re-run with --yes.",
+              file=sys.stderr)
+        sys.exit(1)
+    return input(f"{message} [y/N]: ").strip().lower() in ("y", "yes")
+
+
+def list_machines():
+    """List the user's machines (id, name, controller)."""
+    items = make_request("GET", "/machines", require_auth=True).get("items", [])
+    if not items:
+        print("No machines found.")
+        return
+    print(f"\nMachines ({len(items)}):")
+    print("=" * 78)
+    for m in items:
+        print(f"  ID: {m.get('id')}")
+        print(f"  Name: {m.get('name')}")
+        if m.get("controller_type"):
+            print(f"  Controller: {m.get('controller_type')}")
+        print("=" * 78)
+
+
+def list_tools():
+    """List the user's tool records (the public facade)."""
+    items = make_request("GET", "/tool-records", require_auth=True).get("items", [])
+    if not items:
+        print("No tool records found.")
+        return
+    print(f"\nTool Records ({len(items)}):")
+    print("=" * 78)
+    for t in items:
+        print(f"  ID: {t.get('id')}")
+        print(f"  Name: {t.get('name')}")
+        g = t.get("geometry") or {}
+        bits = []
+        if g.get("shape"):
+            bits.append(str(g["shape"]))
+        if g.get("diameter"):
+            bits.append(f"⌀{g['diameter']}{g.get('diameter_unit', '')}")
+        if bits:
+            print(f"  Geometry: {' · '.join(bits)}")
+        bound = t.get("machines", [])
+        if bound:
+            plural = "entries" if len(bound) != 1 else "entry"
+            print(f"  Bound: {len(bound)} machine {plural}")
+        print("=" * 78)
+
+
+def show_tool_table(machine_id: str):
+    """List a machine's tool-table entries and their bind state."""
+    machine = _resolve_machine(machine_id)
+    items = make_request(
+        "GET", f"/machines/{machine['id']}/tool-table", require_auth=True
+    ).get("items", [])
+    if not items:
+        print(f"{machine['name']}: empty tool table.")
+        return
+    plural = "entries" if len(items) != 1 else "entry"
+    print(f"\n{machine['name']} tool table ({len(items)} {plural}):")
+    print("=" * 78)
+    for e in items:
+        rec_id = e.get("tool_record_id")
+        state = f"bound -> {str(rec_id)[:8]}" if rec_id else "unbound"
+        dia = (e.get("offsets") or {}).get("diameter")
+        line = f"  T{e.get('tool_number')}: {e.get('description') or '—'}"
+        if dia:
+            line += f"  ⌀{dia}"
+        print(f"{line}  [{state}]")
+    print("=" * 78)
+
+
+def delete_machine(machine_id: str, assume_yes: bool = False):
+    """Delete a machine and its tool-table entries (tool records untouched)."""
+    machine = _resolve_machine(machine_id)
+    if not _confirm(
+        f"Delete machine '{machine['name']}' and its tool-table entries?", assume_yes
+    ):
+        print("Aborted.")
+        return
+    r = make_request("DELETE", "/machines", body={"ids": [machine["id"]]}, require_auth=True)
+    if r.get("errors"):
+        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Deleted machine '{machine['name']}'. Tool records were not affected.")
+
+
+def delete_tool(record_id: str, assume_yes: bool = False):
+    """Delete a tool record; entries bound to it are unbound, not orphaned."""
+    rec = _resolve_record(record_id)
+    if not _confirm(
+        f"Delete tool record '{rec['name']}'? Bound machine entries will be unbound "
+        f"(their data stays on the machine).", assume_yes
+    ):
+        print("Aborted.")
+        return
+    r = make_request("DELETE", "/tool-records", body={"ids": [rec["id"]]}, require_auth=True)
+    if r.get("errors"):
+        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Deleted tool record '{rec['name']}'. Any bound entries were unbound; "
+          f"their data stays on the machine.")
+
+
+def delete_entry(machine_id: str, tool_number: int, assume_yes: bool = False):
+    """Remove a machine-reported tool-table entry by tool number."""
+    machine = _resolve_machine(machine_id)
+    if not _confirm(
+        f"Remove T{tool_number} from '{machine['name']}'?", assume_yes
+    ):
+        print("Aborted.")
+        return
+    r = make_request(
+        "DELETE", f"/machines/{machine['id']}/tool-table",
+        body={"tool_numbers": [tool_number]}, require_auth=True,
+    )
+    if r.get("errors"):
+        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✓ Removed T{tool_number} from '{machine['name']}'. "
+          f"If the controller pushes it again, it returns.")
+
+
+def bind_entry(machine_id: str, tool_number: int, record_id: str):
+    """Link an unbound entry to an owned tool record (overwrites nothing)."""
+    machine = _resolve_machine(machine_id)
+    rec = _resolve_record(record_id)
+    make_request(
+        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/bind",
+        body={"tool_record_id": rec["id"]}, require_auth=True,
+    )
+    print(f"✓ Linked T{tool_number} @ {machine['name']} -> '{rec['name']}'. "
+          f"Nothing was overwritten on either side.")
+
+
+def unbind_entry(machine_id: str, tool_number: int):
+    """Unbind an entry; it keeps its data and becomes eligible for suggestions."""
+    machine = _resolve_machine(machine_id)
+    make_request(
+        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/unbind",
+        require_auth=True,
+    )
+    print(f"✓ Unbound T{tool_number} @ {machine['name']}. The entry keeps its data.")
+
+
+def create_record_from_entry(machine_id: str, tool_number: int, name: str = None):
+    """Create a tool record from an entry and bind it in one step."""
+    machine = _resolve_machine(machine_id)
+    body = {"name": name} if name else None
+    entry = make_request(
+        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/create-record",
+        body=body, require_auth=True,
+    )
+    rec_id = str(entry.get("tool_record_id") or "")[:8]
+    print(f"✓ Created a record from T{tool_number} @ {machine['name']} and linked it "
+          f"(record {rec_id}).")
+
+
 def ping():
     """Check server health/connectivity."""
     conn = get_connection()
@@ -527,7 +720,18 @@ def main():
   
   # Revoke an API key
   loobric.py revoke-key <key_id>
-  
+
+  # Inspect and manage machines, tool records, and reported entries
+  loobric.py list-machines
+  loobric.py list-tools
+  loobric.py tool-table <machine>          # ids accept unique prefixes
+  loobric.py bind <machine> 3 <record>     # link entry T3 to a record
+  loobric.py create-record <machine> 3 --name "1/4 downcut"
+  loobric.py unbind <machine> 3
+  loobric.py delete-entry <machine> 3 --yes
+  loobric.py delete-tool <record> --yes
+  loobric.py delete-machine <machine> --yes
+
   # Check server health
   loobric.py ping
   
@@ -644,6 +848,87 @@ Environment Variables:
     resolve_parser.set_defaults(func=lambda args: resolve_pending(
         args.item_id, args.action
     ))
+
+    # === machines / tool records / entries (v2 management) ===
+    list_machines_parser = subparsers.add_parser(
+        "list-machines", help="List machines (id, name, controller)"
+    )
+    list_machines_parser.set_defaults(func=lambda _: list_machines())
+
+    list_tools_parser = subparsers.add_parser(
+        "list-tools", help="List tool records (the public facade)"
+    )
+    list_tools_parser.set_defaults(func=lambda _: list_tools())
+
+    tool_table_parser = subparsers.add_parser(
+        "tool-table", help="Show a machine's tool-table entries and bind state"
+    )
+    tool_table_parser.add_argument("machine", help="Machine id or unique prefix")
+    tool_table_parser.set_defaults(func=lambda args: show_tool_table(args.machine))
+
+    delete_machine_parser = subparsers.add_parser(
+        "delete-machine",
+        help="Delete a machine and its tool-table entries (records untouched)",
+    )
+    delete_machine_parser.add_argument("machine", help="Machine id or unique prefix")
+    delete_machine_parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the confirmation prompt"
+    )
+    delete_machine_parser.set_defaults(func=lambda args: delete_machine(args.machine, args.yes))
+
+    delete_tool_parser = subparsers.add_parser(
+        "delete-tool",
+        help="Delete a tool record (bound entries are unbound, not orphaned)",
+    )
+    delete_tool_parser.add_argument("record", help="Tool record id or unique prefix")
+    delete_tool_parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the confirmation prompt"
+    )
+    delete_tool_parser.set_defaults(func=lambda args: delete_tool(args.record, args.yes))
+
+    delete_entry_parser = subparsers.add_parser(
+        "delete-entry", help="Remove a machine-reported tool-table entry"
+    )
+    delete_entry_parser.add_argument("machine", help="Machine id or unique prefix")
+    delete_entry_parser.add_argument("tool_number", type=int, help="Tool number (e.g. 3)")
+    delete_entry_parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the confirmation prompt"
+    )
+    delete_entry_parser.set_defaults(
+        func=lambda args: delete_entry(args.machine, args.tool_number, args.yes)
+    )
+
+    bind_parser = subparsers.add_parser(
+        "bind", help="Link an unbound entry to a tool record"
+    )
+    bind_parser.add_argument("machine", help="Machine id or unique prefix")
+    bind_parser.add_argument("tool_number", type=int, help="Tool number (e.g. 3)")
+    bind_parser.add_argument("record", help="Tool record id or unique prefix")
+    bind_parser.set_defaults(
+        func=lambda args: bind_entry(args.machine, args.tool_number, args.record)
+    )
+
+    unbind_parser = subparsers.add_parser(
+        "unbind", help="Unbind an entry (it keeps its data)"
+    )
+    unbind_parser.add_argument("machine", help="Machine id or unique prefix")
+    unbind_parser.add_argument("tool_number", type=int, help="Tool number (e.g. 3)")
+    unbind_parser.set_defaults(
+        func=lambda args: unbind_entry(args.machine, args.tool_number)
+    )
+
+    create_record_parser = subparsers.add_parser(
+        "create-record",
+        help="Create a tool record from an entry and bind it in one step",
+    )
+    create_record_parser.add_argument("machine", help="Machine id or unique prefix")
+    create_record_parser.add_argument("tool_number", type=int, help="Tool number (e.g. 3)")
+    create_record_parser.add_argument(
+        "--name", help="Name for the new record (defaults to the entry description)"
+    )
+    create_record_parser.set_defaults(
+        func=lambda args: create_record_from_entry(args.machine, args.tool_number, args.name)
+    )
 
     # === ping ===
     ping_parser = subparsers.add_parser(
