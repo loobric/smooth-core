@@ -86,6 +86,14 @@
            padding:.6rem 1rem; opacity:0; transition:opacity .25s; max-width:92vw; }
   .spacer { flex:1; }
   #whoami { font-size:.8rem; }
+  .link-ish { cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
+  #detail { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+            align-items:center; justify-content:center; z-index:9; padding:1rem; }
+  #detail .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                   padding:1rem; width:min(96vw,720px); max-height:86vh; display:flex; flex-direction:column; }
+  #detail pre { overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px;
+                padding:.7rem; font-size:.78rem; line-height:1.4; margin:.6rem 0 0;
+                white-space:pre-wrap; word-break:break-word; }
 </style>
 </head>
 <body>
@@ -108,6 +116,14 @@
 </form></div>
 
 <div id="toast"></div>
+
+<div id="detail" onclick="if(event.target.id==='detail')closeDetail()">
+  <div class="sheet">
+    <div class="row"><strong id="detailtitle"></strong>
+      <button class="mini reject" onclick="closeDetail()">Close</button></div>
+    <pre id="detailbody"></pre>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -254,7 +270,23 @@ function render() {
   const v = {inbox: renderInbox, tools: renderTools, toolsets: renderToolSets, machines: renderMachines, audit: renderAudit}[state.tab];
   $("#view").innerHTML = v();
 }
-function setTab(t) { state.tab = t; render(); }
+function setTab(t) { state.tab = t; render(); refresh(); }   // re-render now, pull fresh data
+
+// ---- Schema inspector (debugging) -----------------------------------------
+function showSchema(title, obj) {
+  document.getElementById("detailtitle").textContent = title;
+  document.getElementById("detailbody").textContent = JSON.stringify(obj, null, 2);
+  document.getElementById("detail").style.display = "flex";
+}
+function closeDetail() { document.getElementById("detail").style.display = "none"; }
+function showRecord(id) {
+  const t = state.tools.find(x => x.id === id);
+  if (t) showSchema("Tool record · " + t.name, t);
+}
+function showEntry(machineId, toolNumber) {
+  const e = (state.entriesByMachine[machineId] || []).find(x => x.tool_number === toolNumber);
+  if (e) showSchema(`${state.machineNames[machineId] || "machine"} · T${toolNumber}`, e);
+}
 
 // ---- Inbox -----------------------------------------------------------------
 
@@ -308,9 +340,10 @@ function renderTools() {
   return state.tools.map(t => `
   <div class="card">
     <div class="row">
-      <strong>${esc(t.name)}</strong>
+      <strong class="link-ish" onclick="showRecord('${t.id}')" title="View full schema">${esc(t.name)}</strong>
       <span>${counts[t.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
-            <span class="id">${esc(t.id.slice(0,8))}</span></span>
+            <span class="id">${esc(t.id.slice(0,8))}</span>
+            <button class="mini link" onclick="showRecord('${t.id}')">schema</button></span>
     </div>
     <div class="muted">${esc(geomSummary(t.geometry))}
       ${t.tags?.length ? " &middot; " + t.tags.map(esc).join(", ") : ""}</div>
@@ -444,7 +477,7 @@ function entryRow(machineId, e) {
   const dia = e.offsets && e.offsets.diameter ? "&#x2300;" + e.offsets.diameter : "";
   return `<div class="trow">
     <div class="tinfo">
-      <span class="tnum">T${e.tool_number}</span>
+      <span class="tnum link-ish" onclick="showEntry('${machineId}',${e.tool_number})" title="View full schema">T${e.tool_number}</span>
       <span>${esc(e.description || "—")}</span>
       <span class="muted">${dia}</span>
       ${bound
@@ -541,7 +574,9 @@ function renderAudit() {
 }
 
 refresh();
-setInterval(() => { if (state.tab === "inbox") refresh(); }, 30000);
+// Keep whatever tab you're on live; the schema modal is a separate overlay,
+// so a background refresh never interrupts inspecting a record.
+setInterval(refresh, 15000);
 </script>
 </body>
 </html>
