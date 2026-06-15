@@ -1,0 +1,281 @@
+# GNU Affero General Public License v3.0 only
+# Copyright (c) 2025 sliptonic
+# SPDX-License-Identifier: AGPL-3.0-only
+
+"""
+Tool-schema contract models. See docs/TOOL_SCHEMA.md.
+
+Design notes for contributors:
+- A canonical leaf is always a `Field` ({value, unit?, source}); `source`
+  encodes provenance and a `null` value is only legal when source is "unknown".
+- A client *write* is a `ClientWrite`: the envelope it asserts (client,
+  client_version, client_item_id) plus opaque `data`. `extra="forbid"` is what
+  makes lane discipline real — a write carrying `internal`/`canonical` fails
+  validation, which the API turns into a 400.
+- `internal` timestamps and the section `created_at`/`updated_at` are
+  server-stamped; clients never send them.
+"""
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+
+UNKNOWN = "unknown"
+
+
+class Provenance:
+    """Helpers for building/parsing the `source` string of a canonical field."""
+
+    OBSERVED = "observed"
+    ASSERTED = "asserted"
+    UNKNOWN = UNKNOWN
+
+    @staticmethod
+    def observed(client: str, machine: str) -> str:
+        """A machine measured it — the only provenance a machine may write."""
+        return "observed:%s@%s" % (client, machine)
+
+    @staticmethod
+    def asserted(actor: str) -> str:
+        """A software client or a human declared it, e.g. 'freecad' or
+        'human@inbox'."""
+        return "asserted:%s" % actor
+
+    @staticmethod
+    def kind(source: str) -> str:
+        """The leading token: 'observed' | 'asserted' | 'unknown'."""
+        return source.split(":", 1)[0]
+
+
+class Field(BaseModel):
+    """A canonical leaf: a value with its provenance.
+
+    The whole point of the schema: you cannot read a value without seeing where
+    it came from, and an unstated value is honestly null, never a guess.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any = None
+    unit: Optional[str] = None
+    source: str
+
+    @model_validator(mode="after")
+    def _check(self) -> "Field":
+        k = Provenance.kind(self.source)
+        if k not in (Provenance.OBSERVED, Provenance.ASSERTED, UNKNOWN):
+            raise ValueError("invalid provenance kind in source %r" % self.source)
+        if k == UNKNOWN:
+            if self.source != UNKNOWN:
+                raise ValueError("unknown source must be exactly 'unknown'")
+            if self.value is not None:
+                raise ValueError("a field with source 'unknown' must have value null")
+        if k == Provenance.OBSERVED and "@" not in self.source:
+            raise ValueError(
+                "observed source must be 'observed:<client>@<machine>', got %r"
+                % self.source
+            )
+        if k == Provenance.ASSERTED and ":" not in self.source:
+            raise ValueError("asserted source must be 'asserted:<actor>'")
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+class Internal(BaseModel):
+    """Server-owned plumbing. Read-only to clients."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    version: int
+    created_at: str
+    updated_at: str
+
+
+class EntryInternal(Internal):
+    """A tool-table entry additionally carries its owning machine."""
+
+    machine_id: str
+
+
+class ClientSection(BaseModel):
+    """One client's section as it appears in a server *response*: the envelope
+    (timestamps server-stamped) plus opaque data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client: str
+    client_version: str
+    client_item_id: Optional[str] = None
+    created_at: Optional[str] = None   # server-stamped
+    updated_at: Optional[str] = None   # server-stamped
+    data: Dict[str, Any] = {}
+
+
+class ClientWrite(BaseModel):
+    """What a client *sends* to write its own section.
+
+    `extra="forbid"` is load-bearing: a write that includes `internal` or
+    `canonical` (or any stray key) fails validation. That is lane discipline —
+    routine sync physically cannot mutate canonical.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    client: str
+    client_version: str
+    client_item_id: Optional[str] = None
+    data: Dict[str, Any] = {}
+
+
+class LaneViolation(ValueError):
+    """A client write crossed into the internal/canonical lane."""
+
+
+def reject_out_of_lane(payload: Dict[str, Any]) -> ClientWrite:
+    """Validate a raw client-section write, rejecting any internal/canonical
+    keys. Raises LaneViolation (→ HTTP 400) on a violation."""
+    for forbidden in ("internal", "canonical"):
+        if forbidden in payload:
+            raise LaneViolation(
+                "a client sync may not write the %r section; canonical changes "
+                "go through the observe/assert endpoints" % forbidden
+            )
+    try:
+        return ClientWrite.model_validate(payload)
+    except Exception as exc:  # pydantic ValidationError → lane violation
+        raise LaneViolation(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Canonical shapes (entity-specific content; uniform Field leaves)
+# ---------------------------------------------------------------------------
+
+class Geometry(BaseModel):
+    """Canonical geometry; every present key is a provenance-tagged Field.
+    Extra geometry keys are allowed but must also be Fields."""
+
+    model_config = ConfigDict(extra="allow")
+
+    diameter: Optional[Field] = None
+    shape: Optional[Field] = None
+    length: Optional[Field] = None
+    flutes: Optional[Field] = None
+    cutting_edge_height: Optional[Field] = None
+    shank_diameter: Optional[Field] = None
+
+
+class InstanceCanonical(BaseModel):
+    """A physical tool's agreed truth: measured geometry, optional catalog
+    link (unknown until asserted), install status."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Field
+    catalog_type_id: Field            # provenance-tagged; unknown until asserted
+    status: Optional[Field] = None
+    geometry: Geometry = Geometry()
+
+
+class CatalogCanonical(BaseModel):
+    """A catalog type's agreed truth: nominal (asserted) geometry + identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Field
+    manufacturer: Optional[Field] = None
+    product_code: Optional[Field] = None
+    geometry: Geometry = Geometry()
+
+
+class EntryOffsets(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    diameter: Optional[Field] = None
+    z: Optional[Field] = None
+    x: Optional[Field] = None
+    y: Optional[Field] = None
+
+
+class EntryCanonical(BaseModel):
+    """A machine slot's agreed truth."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_number: Field                 # the CAM<->CNC contract; observed
+    bound_instance_id: Field           # the physical tool in the slot
+    offsets: EntryOffsets = EntryOffsets()
+
+
+class SetMember(BaseModel):
+    """A tool set member: which tool, at which canonical position."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_record_id: str
+    number: Field                      # observed when machine-bound; else asserted
+
+
+class ToolSetCanonical(BaseModel):
+    """An agnostic named collection. `machine_id` (optional) links it to a
+    machine whose slots its member numbers then inherit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Field
+    machine_id: Field                  # provenance-tagged; unknown for a general set
+    members: List[SetMember] = []
+
+
+class MachineCanonical(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Field
+    controller_type: Optional[Field] = None
+    definition: Optional[Field] = None
+
+
+# ---------------------------------------------------------------------------
+# Entities (identical three-section shape)
+# ---------------------------------------------------------------------------
+
+class ToolInstanceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: Internal
+    canonical: InstanceCanonical
+    clients: Dict[str, ClientSection] = {}
+
+
+class ToolCatalogRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: Internal
+    canonical: CatalogCanonical
+    clients: Dict[str, ClientSection] = {}
+
+
+class ToolTableEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: EntryInternal
+    canonical: EntryCanonical
+    clients: Dict[str, ClientSection] = {}
+
+
+class ToolSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: Internal
+    canonical: ToolSetCanonical
+    clients: Dict[str, ClientSection] = {}
+
+
+class Machine(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    internal: Internal
+    canonical: MachineCanonical
+    clients: Dict[str, ClientSection] = {}
