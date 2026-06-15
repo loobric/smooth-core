@@ -94,6 +94,14 @@
   #detail pre { overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px;
                 padding:.7rem; font-size:.78rem; line-height:1.4; margin:.6rem 0 0;
                 white-space:pre-wrap; word-break:break-word; }
+  #ask { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+         align-items:center; justify-content:center; z-index:11; padding:1rem; }
+  #ask .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                padding:1.1rem; width:min(94vw,420px); }
+  #ask #askmsg { font-size:.95rem; }
+  #ask input { width:100%; margin-top:.7rem; background:var(--bg); border:1px solid var(--line);
+               color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
+  #ask .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.9rem; }
 </style>
 </head>
 <body>
@@ -125,6 +133,19 @@
   </div>
 </div>
 
+<!-- In-page confirm/prompt: native window.confirm/prompt can be permanently
+     suppressed by the browser's "prevent additional dialogs" checkbox. -->
+<div id="ask" onclick="if(event.target.id==='ask')askCancel()">
+  <div class="sheet">
+    <div id="askmsg"></div>
+    <input id="askinput" onkeydown="if(event.key==='Enter')askOk(); else if(event.key==='Escape')askCancel();">
+    <div class="arow">
+      <button class="mini reject" onclick="askCancel()">Cancel</button>
+      <button class="mini confirm" onclick="askOk()">OK</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
@@ -135,6 +156,21 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.style.opacity=1; setTimeout(()=>t.style.opacity=0,2600); }
+
+// In-page confirm/prompt (native dialogs can be permanently suppressed).
+let _askResolve=null, _askInput=false;
+function _openAsk(message, withInput, def){
+  return new Promise(res=>{ _askResolve=res; _askInput=withInput;
+    $("#askmsg").textContent=message;
+    const inp=$("#askinput"); inp.style.display=withInput?"block":"none";
+    if(withInput){ inp.value=def||""; setTimeout(()=>{ inp.focus(); inp.select(); },30); }
+    $("#ask").style.display="flex"; });
+}
+function _askDone(v){ $("#ask").style.display="none"; const r=_askResolve; _askResolve=null; if(r) r(v); }
+function askOk(){ _askDone(_askInput ? $("#askinput").value : true); }
+function askCancel(){ _askDone(_askInput ? null : false); }
+function confirmDialog(message){ return _openAsk(message,false).then(v=>v===true); }
+function promptDialog(message, def){ return _openAsk(message,true,def); }
 
 async function api(method, path, body){
   const r = await fetch("/api/v1"+path, {method, credentials:"same-origin",
@@ -230,21 +266,21 @@ async function rejectProp(id){ try{ await api("POST","/instance-inbox/"+id+"/rej
 async function adopt(slotId){ const s=state.slotsById[slotId], name=s?slotName(s):null;
   try{ await api("POST","/tool-table-entry-records/"+slotId+"/adopt",{actor:"human@web",name:name||undefined});
        toast(name?`Adopted as "${name}".`:"Adopted a new instance from the slot."); refresh(); }catch(e){ toast(e.message); } }
-async function unbindSlot(slotId){ if(!window.confirm("Unbind this slot? The instance stays; only the install link clears.")) return;
+async function unbindSlot(slotId){ if(!(await confirmDialog("Unbind this slot? The instance stays; only the install link clears."))) return;
   try{ await api("POST","/tool-table-entry-records/"+slotId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- delete (human admin actions; provenance human@web) --------------------
 async function deleteRecord(id){ const t=state.tools.find(x=>rid(x)===id);
-  if(!window.confirm(`Delete tool "${cf(t,"name")||id.slice(0,8)}"? Any slot holding it is unbound (its data stays).`)) return;
+  if(!(await confirmDialog(`Delete tool "${cf(t,"name")||id.slice(0,8)}"? Any slot holding it is unbound (its data stays).`))) return;
   try{ await api("DELETE","/tool-instance-records/"+id); toast("Deleted tool."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteMachine(id){
-  if(!window.confirm(`Delete machine "${state.machineNames[id]}" and its tool table? Tool instances stay.`)) return;
+  if(!(await confirmDialog(`Delete machine "${state.machineNames[id]}" and its tool table? Tool instances stay.`))) return;
   try{ const r=await api("DELETE","/machine-records/"+id); toast(`Deleted machine (${r.slots_removed} slot(s)).`); refresh(); }catch(e){ toast(e.message); } }
 async function deleteSlot(id){
-  if(!window.confirm("Remove this reported slot? If the controller pushes it again, it returns.")) return;
+  if(!(await confirmDialog("Remove this reported slot? If the controller pushes it again, it returns."))) return;
   try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed slot."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteSet(id){ const s=state.toolsets.find(x=>rid(x)===id);
-  if(!window.confirm(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`)) return;
+  if(!(await confirmDialog(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`))) return;
   try{ await api("DELETE","/tool-set-records/"+id); toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- tool set from a machine (orchestrates existing canonical doors) --------
@@ -254,7 +290,7 @@ function _installedInstances(machineId){
 async function createSetFromMachine(machineId){
   const mname=state.machineNames[machineId], ids=_installedInstances(machineId);
   if(!ids.length){ toast("No installed tools on this machine yet - adopt/confirm some first."); return; }
-  const name=window.prompt(`New tool set from ${mname} (${ids.length} installed tool(s)):`, mname);
+  const name=await promptDialog(`New tool set from ${mname} (${ids.length} installed tool(s)):`, mname);
   if(name===null) return; if(!name.trim()){ toast("A name is required."); return; }
   try{
     const sid=(await api("POST","/tool-set-records",{})).internal.id;   // no client section: the web UI isn't a data client
@@ -284,7 +320,7 @@ function instanceNameHint(id){
 }
 // Name a tool instance (a human assertion); pre-fills a suggestion.
 async function setName(id){
-  const name=window.prompt("Tool name:", instanceNameHint(id));
+  const name=await promptDialog("Tool name:", instanceNameHint(id));
   if(name===null) return; if(!name.trim()){ toast("Name can't be empty."); return; }
   try{ await api("POST","/tool-instance-records/"+id+"/assert",{path:"name",value:name.trim(),actor:"human@web"}); toast("Named."); refresh(); }catch(e){ toast(e.message); } }
 
