@@ -395,6 +395,53 @@ class ToolInstanceRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixi
     catalog_type_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
 
 
+class ToolCatalogRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Sectioned tool-schema entity: a catalog TYPE (docs/TOOL_SCHEMA.md). May
+    exist with zero instances. Nominal, asserted geometry."""
+    __tablename__ = "tool_catalog_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ToolTableEntryRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Sectioned tool-schema entity: a machine slot. `bound_instance_id` is
+    extracted from canonical with a UNIQUE index — the install-once guarantee
+    (a physical instance is in at most one slot, globally; NULLs are exempt so
+    unbound slots are unconstrained)."""
+    __tablename__ = "tool_table_entry_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    machine_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    bound_instance_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, unique=True, index=True)
+    canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class ToolSetRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Sectioned tool-schema entity: an agnostic named collection. Optional
+    `machine_id` link (extracted) — when set, member numbers are reconciled
+    from that machine's slots (machine wins)."""
+    __tablename__ = "tool_set_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    machine_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class MachineRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Sectioned tool-schema entity: a controller (name, controller_type,
+    definition — mostly asserted)."""
+    __tablename__ = "machine_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
 class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Tool set model - collections of tools used as a group.
     
