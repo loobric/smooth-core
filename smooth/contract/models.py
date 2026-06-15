@@ -288,6 +288,7 @@ class EntryCanonical(BaseModel):
 
     tool_number: Field                 # the CAM<->CNC contract; observed
     bound_instance_id: Field           # the physical tool in the slot
+    description: Optional[Field] = None  # the table comment (observed label), e.g. "Probe"
     offsets: EntryOffsets = EntryOffsets()
 
 

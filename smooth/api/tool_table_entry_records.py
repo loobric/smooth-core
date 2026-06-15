@@ -33,7 +33,9 @@ from smooth.contract import (
 router = APIRouter(prefix="/api/v1/tool-table-entry-records", tags=["tool-table-entries"])
 
 # A machine may only OBSERVE these slot facts; the binding is set via /bind.
-OBSERVABLE_PATHS = {"tool_number", "offsets.diameter", "offsets.z", "offsets.x", "offsets.y"}
+# `description` is the table comment the machine reports (observed table state).
+OBSERVABLE_PATHS = {"tool_number", "description",
+                    "offsets.diameter", "offsets.z", "offsets.x", "offsets.y"}
 
 
 def _now() -> str:
@@ -140,6 +142,7 @@ def create_entry(payload: CreateRequest, db: Session = Depends(get_db),
 
 class SlotIn(BaseModel):
     tool_number: int
+    description: Optional[str] = None  # the tool-table comment (the machine's label)
     offsets: dict = {}          # plain values + optional <key>_unit, e.g. {"diameter": 6.35, "diameter_unit": "mm"}
     data: dict = {}             # the client section's opaque payload
     client_item_id: Optional[str] = None
@@ -194,6 +197,8 @@ def sync_slots(req: SlotSyncRequest, db: Session = Depends(get_db),
             db.flush()
         canonical = copy.deepcopy(row.canonical)
         canonical["tool_number"] = {"value": s.tool_number, "source": src}
+        if s.description is not None:
+            canonical["description"] = {"value": s.description, "source": src}
         offsets = canonical.setdefault("offsets", {})
         for key, value in s.offsets.items():
             if key.endswith("_unit"):
@@ -381,6 +386,12 @@ def adopt_new_instance(record_id: str, req: AdoptRequest, db: Session = Depends(
         "catalog_type_id": {"value": None, "source": UNKNOWN},
         "geometry": {},
     }
+    # Seed the name from the slot's reported label (the table comment) — the
+    # only human-readable identity the machine has. Adopting it is the human
+    # endorsing that label, so it is asserted (human@web), not observed.
+    slot_desc = (row.canonical.get("description") or {}).get("value")
+    if slot_desc:
+        canonical["name"] = {"value": slot_desc, "source": Provenance.asserted(req.actor)}
     slot_dia = (row.canonical.get("offsets") or {}).get("diameter")
     if slot_dia and slot_dia.get("value") is not None:
         canonical["geometry"]["diameter"] = dict(slot_dia)   # measured, with provenance

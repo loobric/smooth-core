@@ -154,6 +154,14 @@ async function doLogin(ev){ ev.preventDefault();
 // Read a provenance-tagged canonical field's value / source by dotted path.
 function cf(obj, path){ let n=(obj&&obj.canonical)||{}; for(const p of path.split(".")) n=(n||{})[p]; return n?n.value:null; }
 const rid = (o)=>o.internal.id;
+// A slot's human label: its observed description, else the ";comment" parsed
+// from a linuxcnc raw line (so slots synced before description flowed still show it).
+function slotName(s){
+  const d=cf(s,"description"); if(d) return d;
+  const data=((s.clients||{}).linuxcnc||{}).data; const raw=data&&data.raw;
+  if(raw){ const i=raw.indexOf(";"); if(i>=0) return raw.slice(i+1).trim()||null; }
+  return null;
+}
 
 async function refresh(){
   try {
@@ -204,7 +212,7 @@ function renderInbox(){
   items.map(({slot,machine})=>{
     const p=state.proposalBySlot[rid(slot)]; const dia=cf(slot,"offsets.diameter");
     return `<div class="card">
-      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(slot,"tool_number")}</strong>
+      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(slot,"tool_number")}${slotName(slot)?" · "+esc(slotName(slot)):""}</strong>
         <span class="id link-ish" onclick="showSlot('${rid(slot)}')">${esc(rid(slot).slice(0,8))}</span></div>
       <div class="muted">${dia!=null?"&#x2300;"+dia:"no diameter reported"}</div>`+
       (p?`<div class="vs">is this the same tool as <b>${esc(p.proposed_instance.name||p.proposed_instance.id.slice(0,8))}</b>? (&#x2300;${p.proposed_instance.diameter} · ${Math.round(p.confidence*100)}%)</div>
@@ -266,6 +274,11 @@ async function refreshSet(setId){
     toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${ids.length} tool(s).`); refresh();
   }catch(e){ toast(e.message); }
 }
+// Name a tool instance (a human assertion).
+async function setName(id){ const t=state.tools.find(x=>rid(x)===id);
+  const name=window.prompt("Tool name:", cf(t,"name")||"");
+  if(name===null) return; if(!name.trim()){ toast("Name can't be empty."); return; }
+  try{ await api("POST","/tool-instance-records/"+id+"/assert",{path:"name",value:name.trim(),actor:"human@web"}); toast("Named."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- Tools (instances) -----------------------------------------------------
 function renderTools(){
@@ -277,7 +290,9 @@ function renderTools(){
     const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(installedAt[rid(t)]||[]);
     return `<div class="card">
       <div class="row"><strong class="link-ish" onclick="showRecord('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
-        <span><span class="id">${esc(rid(t).slice(0,8))}</span> <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
+        <span><span class="id">${esc(rid(t).slice(0,8))}</span>
+          <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button>
+          <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
       where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">installed</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
       `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} install(s)</span>
@@ -321,6 +336,7 @@ function slotRow(m,s){
   return `<div class="trow">
     <div class="tinfo">
       <span class="tnum link-ish" onclick="showSlot('${rid(s)}')">T${cf(s,"tool_number")}</span>
+      <span>${esc(slotName(s)||"")}</span>
       <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
       ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
     </div>

@@ -128,3 +128,23 @@ def test_snapshot_mass_wipe_guarded_unless_forced(solo_client):
     assert _sync(solo_client, "m-s2", []).status_code == 409             # empty -> refused
     r = _sync(solo_client, "m-s2", [], force=True)
     assert r.status_code == 200 and sorted(r.json()["removed_tool_numbers"]) == [1, 2, 3, 4]
+
+
+@pytest.mark.contract
+def test_sync_observes_description_and_adopt_seeds_the_name(solo_client):
+    """The machine reports a table comment ('Probe'); it becomes the slot's
+    observed description, and adopting the slot names the new instance from it."""
+    r = _sync(solo_client, "m-name", [
+        {"tool_number": 1, "description": "Probe",
+         "offsets": {"diameter": 2.9972, "diameter_unit": "mm"},
+         "data": {"raw": "T1 P0 D+2.997200 ;Probe"}}])
+    slot = r.json()["items"][0]
+    assert slot["canonical"]["description"]["value"] == "Probe"
+    assert slot["canonical"]["description"]["source"] == "observed:linuxcnc@millstone"
+    # adopt -> a new instance whose NAME is the slot's label (asserted)
+    sid = slot["internal"]["id"]
+    out = solo_client.post(f"{BASE}/{sid}/adopt", json={"actor": "human@web"}).json()
+    inst = solo_client.get(f"/api/v1/tool-instance-records/{out['instance_id']}").json()
+    assert inst["canonical"]["name"]["value"] == "Probe"
+    assert inst["canonical"]["name"]["source"] == "asserted:human@web"
+    assert inst["canonical"]["geometry"]["diameter"]["value"] == 2.9972
