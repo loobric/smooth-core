@@ -17,7 +17,7 @@ import pytest
 
 from smooth.contract import (
     Field, Provenance, UNKNOWN, ClientWrite, LaneViolation, reject_out_of_lane,
-    ToolInstanceRecord, ToolCatalogRecord, ToolTableEntry, ToolSet,
+    Component, ToolInstanceRecord, ToolCatalogRecord, ToolTableEntry, ToolSet,
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "schema"
@@ -27,6 +27,7 @@ ENTITY_FOR = {
     "tool_instance_record.json": ToolInstanceRecord,
     "tool_table_entry.json": ToolTableEntry,
     "tool_set.json": ToolSet,
+    "tool_assembly_record.json": ToolInstanceRecord,   # an assembly IS a record
 }
 
 
@@ -69,6 +70,35 @@ def test_observed_requires_a_machine():
                           "source": Provenance.observed("linuxcnc", "millstone")})
     with pytest.raises(Exception):
         Field.model_validate({"value": 6.0, "source": "observed:linuxcnc"})  # no @machine
+
+
+# -- composition (ISO 13399) --------------------------------------------------
+
+@pytest.mark.contract
+def test_assembly_is_a_record_with_components_and_derived_geometry():
+    """An assembly is a first-class record (here an instance) composed of
+    items; its gauge length is DERIVED from the stack, a distinct provenance
+    from a human assertion or a machine observation."""
+    asm = ToolInstanceRecord.model_validate(load("tool_assembly_record.json"))
+    assert asm.canonical.item_type.value == "assembly"
+    roles = [c["role"] for c in asm.canonical.components.value]
+    assert roles == ["assembly_item", "adaptive_item", "cutting_item"]
+    gl = asm.canonical.geometry.gauge_length
+    assert gl.value == 92.4 and Provenance.kind(gl.source) == "derived"
+    # cutting diameter comes from the cutting item (asserted here)
+    assert asm.canonical.geometry.cutting_diameter.value == 6.0
+
+
+@pytest.mark.contract
+def test_component_role_must_be_an_iso_item_role():
+    Component.model_validate({"component_id": "x", "role": "cutting_item"})
+    with pytest.raises(Exception):
+        Component.model_validate({"component_id": "x", "role": "nonsense"})
+
+
+@pytest.mark.contract
+def test_derived_provenance_is_recognized():
+    Field.model_validate({"value": 92.4, "unit": "mm", "source": "derived:components"})
 
 
 @pytest.mark.contract

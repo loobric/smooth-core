@@ -25,6 +25,8 @@ from smooth.contract.models import (
     # canonical shapes
     Geometry, InstanceCanonical, CatalogCanonical, EntryCanonical,
     EntryOffsets, ToolSetCanonical, SetMember, MachineCanonical,
+    # composition (ISO 13399)
+    Component, ITEM_TYPES, COMPONENT_ROLES,
     # entities
     ToolInstanceRecord, ToolCatalogRecord, ToolTableEntry, ToolSet, Machine,
 )
@@ -35,6 +37,7 @@ __all__ = [
     "LaneViolation", "reject_out_of_lane",
     "Geometry", "InstanceCanonical", "CatalogCanonical", "EntryCanonical",
     "EntryOffsets", "ToolSetCanonical", "SetMember", "MachineCanonical",
+    "Component", "ITEM_TYPES", "COMPONENT_ROLES",
     "ToolInstanceRecord", "ToolCatalogRecord", "ToolTableEntry", "ToolSet",
     "Machine",
 ]

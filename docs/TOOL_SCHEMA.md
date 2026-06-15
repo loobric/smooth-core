@@ -147,10 +147,16 @@ versions if concurrent multi-client writes prove to cause false conflicts.)
 observed:<client>@<machine>     a machine measured it (the only thing a machine may write)
 asserted:<client>               a software client declared it
 asserted:human@<context>        a person declared it (e.g. asserted:human@inbox)
+derived:<by>                     COMPUTED from other canonical data (e.g. an
+                                 assembly's gauge length from its components);
+                                 recomputable and can go stale when inputs change
 unknown                         nobody has stated it; value MUST be null
 ```
 
-`kind(source)` is the part before `:` — `observed`, `asserted`, or `unknown`.
+`kind(source)` is the part before `:` — `observed`, `asserted`, `derived`, or
+`unknown`. `derived` is distinct because such a value is a *function of other
+canonical fields*: when an input changes the value is stale and must be
+recomputed — it is neither a human assertion nor a machine observation.
 
 Rules enforced by the contract models:
 
@@ -269,6 +275,45 @@ numbering is shared truth, not any one client's private copy.
 ### 7.5 `Machine` — a controller
 `canonical`: `name`, `controller_type`, `definition` (axes/spindle/units/post).
 
+### 7.6 Composition (ISO 13399)
+
+A real CNC tool is not one object — it is a **stack of items that couple
+through standardized interfaces** (ISO 13399): a cutting item (the edge), a
+tool item (the body), adaptive items (collets, extensions), and an assembly
+item (the holder / spindle interface, e.g. HSK63, BT40, Capto C6). The
+*assembly* — the stack — is the thing that actually installs in a machine slot
+and the thing CAM reasons about, because its **gauge/functional length is
+emergent from the whole stack** and exists on no single component.
+
+This is modeled with **composition as a canonical capability of a record**, not
+a separate entity — keeping the two-record model and uniform sections:
+
+- A record carries an optional **`item_type`** (`cutting_item` | `tool_item` |
+  `adaptive_item` | `assembly_item` | `assembly`) — its ISO role, *asserted*,
+  never inferred.
+- A record that is an assembly carries an ordered **`components`** field whose
+  value is a list of `{ component_id, role, connection }` — each a reference to
+  another record (catalog→catalog parts; instance→instance parts), the ISO role
+  it plays, and a flexible `connection` slot for the coupling/interface, gauge
+  offset, and stick-out. `components` is itself a provenance-tagged Field (who
+  asserted this composition).
+- Assembly **geometry is emergent**: `cutting_diameter` comes from the cutting
+  item; `gauge_length` is typically `derived:components` (computed from the
+  stack) — or `observed:presetter@<id>` when measured on a tool presetter (the
+  provenance model already handles that with nothing new).
+
+Both flavors exist: a **`ToolCatalogRecord`** with components is a reusable
+assembly *recipe*; a **`ToolInstanceRecord`** with components is a *physical
+built stack* — and that instance is what a `ToolTableEntry` binds. A lone tool
+is just a degenerate assembly of one (no `components`).
+
+See `tests/fixtures/schema/tool_assembly_record.json` for a worked example.
+
+> **Scope:** the schema *allows* composition (the hooks above are in the
+> contract models and validated). Assembly geometry computation, ISO connection
+> compatibility checking, and assembly CRUD/inbox flows are **not yet
+> implemented** — they layer on without further schema change.
+
 ---
 
 ## 8. Invariants & reconciliation
@@ -283,6 +328,10 @@ numbering is shared truth, not any one client's private copy.
 - **`ToolRecord` is an instance**, not a type. One `ToolInstanceRecord` per
   physical tool. Catalog types are separate, referenced, and may have zero
   instances.
+- **Transitive install-once (deferred).** When an *assembly* instance is
+  installed, its component instances are occupied by it; a component instance
+  cannot be live in two installed assemblies at once. The schema permits this
+  (composition is explicit); the enforcement lands with the assembly work.
 - **Number reconciliation.** For a `machine_id`-bound `ToolSet`, the machine's
   slots are the source of truth (observation > assertion): member numbers are
   inherited (`number = slot`). Cases the server cannot infer — a set member

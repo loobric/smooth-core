@@ -32,6 +32,7 @@ class Provenance:
 
     OBSERVED = "observed"
     ASSERTED = "asserted"
+    DERIVED = "derived"
     UNKNOWN = UNKNOWN
 
     @staticmethod
@@ -46,8 +47,15 @@ class Provenance:
         return "asserted:%s" % actor
 
     @staticmethod
+    def derived(by: str) -> str:
+        """Computed by the system from other canonical data (e.g. an assembly's
+        gauge length from its components). Recomputable; goes stale when its
+        inputs change — which is why it is distinct from an assertion."""
+        return "derived:%s" % by
+
+    @staticmethod
     def kind(source: str) -> str:
-        """The leading token: 'observed' | 'asserted' | 'unknown'."""
+        """The leading token: 'observed' | 'asserted' | 'derived' | 'unknown'."""
         return source.split(":", 1)[0]
 
 
@@ -67,7 +75,8 @@ class Field(BaseModel):
     @model_validator(mode="after")
     def _check(self) -> "Field":
         k = Provenance.kind(self.source)
-        if k not in (Provenance.OBSERVED, Provenance.ASSERTED, UNKNOWN):
+        if k not in (Provenance.OBSERVED, Provenance.ASSERTED,
+                     Provenance.DERIVED, UNKNOWN):
             raise ValueError("invalid provenance kind in source %r" % self.source)
         if k == UNKNOWN:
             if self.source != UNKNOWN:
@@ -79,8 +88,8 @@ class Field(BaseModel):
                 "observed source must be 'observed:<client>@<machine>', got %r"
                 % self.source
             )
-        if k == Provenance.ASSERTED and ":" not in self.source:
-            raise ValueError("asserted source must be 'asserted:<actor>'")
+        if k in (Provenance.ASSERTED, Provenance.DERIVED) and ":" not in self.source:
+            raise ValueError("%s source must be '%s:<actor>'" % (k, k))
         return self
 
 
@@ -174,29 +183,93 @@ class Geometry(BaseModel):
     flutes: Optional[Field] = None
     cutting_edge_height: Optional[Field] = None
     shank_diameter: Optional[Field] = None
+    # assembly-level geometry (ISO 13399 §Composition): the cutting diameter
+    # comes from the cutting item; the gauge/functional length is EMERGENT from
+    # the whole stack — typically source "derived:components", or
+    # "observed:presetter@…" when measured on a tool presetter.
+    cutting_diameter: Optional[Field] = None
+    gauge_length: Optional[Field] = None
+
+
+# -- Composition (ISO 13399) --------------------------------------------------
+# A record may be a leaf (a single item) or an assembly (a stack of items that
+# couple through interfaces). The assembly is itself a record; `components`
+# references the items it is built from. See docs/TOOL_SCHEMA.md §Composition.
+
+ITEM_TYPES = {"cutting_item", "tool_item", "adaptive_item", "assembly_item",
+              "assembly"}
+COMPONENT_ROLES = {"cutting_item", "tool_item", "adaptive_item", "assembly_item"}
+
+
+class Component(BaseModel):
+    """One entry in an assembly's `components` list: a reference to another
+    record, the ISO role it plays, and an opaque connection/interface slot
+    (HSK/BT/Capto coupling, gauge offset, stick-out, …) left flexible for now."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str
+    role: str
+    connection: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def _role(self) -> "Component":
+        if self.role not in COMPONENT_ROLES:
+            raise ValueError("invalid component role %r" % self.role)
+        return self
+
+
+def _validate_composition(item_type: Optional[Field],
+                          components: Optional[Field]) -> None:
+    """Shared rules for the two record canonicals that may be assemblies."""
+    if item_type is not None and item_type.value is not None:
+        if item_type.value not in ITEM_TYPES:
+            raise ValueError("invalid item_type %r" % item_type.value)
+    if components is not None and components.value is not None:
+        if not isinstance(components.value, list):
+            raise ValueError("components value must be a list")
+        for entry in components.value:
+            Component.model_validate(entry)
 
 
 class InstanceCanonical(BaseModel):
     """A physical tool's agreed truth: measured geometry, optional catalog
-    link (unknown until asserted), install status."""
+    link (unknown until asserted), install status. May be an assembly (a built
+    physical stack) via item_type/components — the assembly instance is what a
+    machine slot binds."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: Field
     catalog_type_id: Field            # provenance-tagged; unknown until asserted
     status: Optional[Field] = None
+    item_type: Optional[Field] = None     # ISO role; None ~ leaf, or "assembly"
+    components: Optional[Field] = None    # list[Component] when an assembly
     geometry: Geometry = Geometry()
+
+    @model_validator(mode="after")
+    def _composition(self) -> "InstanceCanonical":
+        _validate_composition(self.item_type, self.components)
+        return self
 
 
 class CatalogCanonical(BaseModel):
-    """A catalog type's agreed truth: nominal (asserted) geometry + identity."""
+    """A catalog type's agreed truth: nominal (asserted) geometry + identity.
+    May be a catalog assembly (a reusable recipe) via item_type/components."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: Field
     manufacturer: Optional[Field] = None
     product_code: Optional[Field] = None
+    item_type: Optional[Field] = None
+    components: Optional[Field] = None
     geometry: Geometry = Geometry()
+
+    @model_validator(mode="after")
+    def _composition(self) -> "CatalogCanonical":
+        _validate_composition(self.item_type, self.components)
+        return self
 
 
 class EntryOffsets(BaseModel):
