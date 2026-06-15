@@ -100,8 +100,7 @@ A map keyed by client name. Each section:
 
 ```jsonc
 "clients": {
-  "freecad": {
-    "client":         "freecad",            // client-asserted (also the map key)
+  "freecad": {                              // <- the map KEY is the client identity
     "client_version": "0.3.1",              // client-asserted
     "client_item_id": "Probe.fctb",         // client-asserted; re-adoption fallback (§6)
     "created_at":     "2026-06-15T08:55:02Z", // SERVER-stamped
@@ -111,18 +110,24 @@ A map keyed by client name. Each section:
 }
 ```
 
+The client is identified by its **map key**; on write, the client name is
+carried by the request path (`…/clients/{name}`), not the body. There is
+deliberately **no `client` field inside the section** — a second copy of the
+key could only diverge from it, the same anti-pattern we removed for tool
+numbers (Principle 5).
+
 **Envelope fields** (the contract every client section must satisfy):
 
 | field | who sets it | meaning |
 |---|---|---|
-| `client` | client | stable client identifier; equals the map key |
+| *(map key)* | client (via path) | the client identifier — single source of truth |
 | `client_version` | client | version string of the client software |
 | `client_item_id` | client | the client's own stable handle for this item (re-adoption fallback) |
 | `created_at` | **server** | when the server first received this client's section |
 | `updated_at` | **server** | when the server last received this client's section |
 
-The only things a client **asserts** about itself are `client`,
-`client_version`, and `client_item_id`. All time is the server's.
+The only things a client **asserts** about itself are `client_version` and
+`client_item_id`. Its identity is the map key; all time is the server's.
 
 **`data`** is opaque: the server never reads or interprets it; it round-trips
 verbatim. Anything a client needs that isn't canonical lives here (e.g. the

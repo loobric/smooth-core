@@ -92,11 +92,20 @@ def test_probe_is_honest_not_an_endmill():
 
 @pytest.mark.contract
 def test_client_write_is_envelope_plus_opaque_data():
-    """A clean client section validates."""
+    """A clean client section validates. The client name is NOT in the body —
+    it comes from the request path — so there's no redundant key to diverge."""
     w = reject_out_of_lane({
-        "client": "fusion", "client_version": "1.0",
-        "client_item_id": "tool-42", "data": {"anything": [1, 2, 3]}})
-    assert isinstance(w, ClientWrite) and w.client == "fusion"
+        "client_version": "1.0", "client_item_id": "tool-42",
+        "data": {"anything": [1, 2, 3]}})
+    assert isinstance(w, ClientWrite) and w.client_item_id == "tool-42"
+
+
+@pytest.mark.contract
+def test_client_field_in_body_is_rejected_as_a_stray_key():
+    """The map key is the single source of truth; a `client` field in the body
+    would be a divergent second copy — forbidden."""
+    with pytest.raises(LaneViolation):
+        reject_out_of_lane({"client": "freecad", "client_version": "0.3.1", "data": {}})
 
 
 @pytest.mark.contract
@@ -104,7 +113,7 @@ def test_client_write_is_envelope_plus_opaque_data():
 def test_sync_write_cannot_touch_internal_or_canonical(forbidden):
     """The load-bearing safety property: routine sync physically cannot mutate
     server/canonical state — it's a loud rejection, not a silent strip."""
-    payload = {"client": "freecad", "client_version": "0.3.1", "data": {}}
+    payload = {"client_version": "0.3.1", "data": {}}
     payload[forbidden] = {"id": "x"} if forbidden == "internal" else {
         "geometry": {"shape": {"value": "endmill", "source": "asserted:freecad"}}}
     with pytest.raises(LaneViolation):
@@ -114,7 +123,7 @@ def test_sync_write_cannot_touch_internal_or_canonical(forbidden):
 @pytest.mark.contract
 def test_stray_keys_in_a_client_write_are_rejected():
     with pytest.raises(LaneViolation):
-        reject_out_of_lane({"client": "x", "client_version": "1", "machines": []})
+        reject_out_of_lane({"client_version": "1", "machines": []})
 
 
 # -- helper -------------------------------------------------------------------

@@ -1,22 +1,54 @@
 {
-  "internal": { "id": "dc6c3faf-d8ea-4846-9666-b85934cdb08d", "version": 3,
-    "created_at": "2026-06-14T17:11:41Z", "updated_at": "2026-06-15T09:02:10Z" },
+  "internal": {
+    "id": "dc6c3faf-d8ea-4846-9666-b85934cdb08d",
+    "version": 3,
+    "created_at": "2026-06-14T17:11:41Z",
+    "updated_at": "2026-06-15T09:02:10Z"
+  },
   "canonical": {
-    "name":            { "value": "Probe", "source": "asserted:freecad" },
-    "catalog_type_id": { "value": null, "source": "unknown" },
-    "status":          { "value": "installed", "source": "observed:linuxcnc@millstone" },
+    "name": {
+      "value": "Probe",
+      "source": "asserted:freecad"
+    },
+    "catalog_type_id": {
+      "value": null,
+      "source": "unknown"
+    },
+    "status": {
+      "value": "installed",
+      "source": "observed:linuxcnc@millstone"
+    },
     "geometry": {
-      "shape":    { "value": "probe", "source": "asserted:freecad" },
-      "diameter": { "value": 2.9972, "unit": "mm", "source": "observed:linuxcnc@millstone" },
-      "length":   { "value": null, "source": "unknown" }
+      "shape": {
+        "value": "probe",
+        "source": "asserted:freecad"
+      },
+      "diameter": {
+        "value": 2.9972,
+        "unit": "mm",
+        "source": "observed:linuxcnc@millstone"
+      },
+      "length": {
+        "value": null,
+        "source": "unknown"
+      }
     }
   },
   "clients": {
     "freecad": {
-      "client": "freecad", "client_version": "0.3.1", "client_item_id": "Probe.fctb",
-      "created_at": "2026-06-15T08:55:02Z", "updated_at": "2026-06-15T09:02:10Z",
-      "data": { "fctb": { "shape": "probe.fcstd", "shape-type": "Probe",
-                          "parameter": { "Diameter": "2.9972 mm" } } }
+      "client_version": "0.3.1",
+      "client_item_id": "Probe.fctb",
+      "created_at": "2026-06-15T08:55:02Z",
+      "updated_at": "2026-06-15T09:02:10Z",
+      "data": {
+        "fctb": {
+          "shape": "probe.fcstd",
+          "shape-type": "Probe",
+          "parameter": {
+            "Diameter": "2.9972 mm"
+          }
+        }
+      }
     }
   }
 }

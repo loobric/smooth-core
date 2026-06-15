@@ -107,11 +107,15 @@ class EntryInternal(Internal):
 
 class ClientSection(BaseModel):
     """One client's section as it appears in a server *response*: the envelope
-    (timestamps server-stamped) plus opaque data."""
+    (timestamps server-stamped) plus opaque data.
+
+    The client is identified by this section's KEY in the `clients` map — there
+    is deliberately no redundant `client` field inside, since a second copy of
+    the key could only diverge (the anti-pattern we removed for tool numbers).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    client: str
     client_version: str
     client_item_id: Optional[str] = None
     created_at: Optional[str] = None   # server-stamped
@@ -120,7 +124,8 @@ class ClientSection(BaseModel):
 
 
 class ClientWrite(BaseModel):
-    """What a client *sends* to write its own section.
+    """What a client *sends* to write its own section. The client name is
+    carried by the request path (`…/clients/{name}`), not this body.
 
     `extra="forbid"` is load-bearing: a write that includes `internal` or
     `canonical` (or any stray key) fails validation. That is lane discipline —
@@ -129,7 +134,6 @@ class ClientWrite(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    client: str
     client_version: str
     client_item_id: Optional[str] = None
     data: Dict[str, Any] = {}
