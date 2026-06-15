@@ -223,6 +223,50 @@ async function adopt(slotId){ try{ await api("POST","/tool-table-entry-records/"
 async function unbindSlot(slotId){ if(!window.confirm("Unbind this slot? The instance stays; only the install link clears.")) return;
   try{ await api("POST","/tool-table-entry-records/"+slotId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
 
+// ---- delete (human admin actions; provenance human@web) --------------------
+async function deleteRecord(id){ const t=state.tools.find(x=>rid(x)===id);
+  if(!window.confirm(`Delete tool "${cf(t,"name")||id.slice(0,8)}"? Any slot holding it is unbound (its data stays).`)) return;
+  try{ await api("DELETE","/tool-instance-records/"+id); toast("Deleted tool."); refresh(); }catch(e){ toast(e.message); } }
+async function deleteMachine(id){
+  if(!window.confirm(`Delete machine "${state.machineNames[id]}" and its tool table? Tool instances stay.`)) return;
+  try{ const r=await api("DELETE","/machine-records/"+id); toast(`Deleted machine (${r.slots_removed} slot(s)).`); refresh(); }catch(e){ toast(e.message); } }
+async function deleteSlot(id){
+  if(!window.confirm("Remove this reported slot? If the controller pushes it again, it returns.")) return;
+  try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed slot."); refresh(); }catch(e){ toast(e.message); } }
+async function deleteSet(id){ const s=state.toolsets.find(x=>rid(x)===id);
+  if(!window.confirm(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`)) return;
+  try{ await api("DELETE","/tool-set-records/"+id); toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
+
+// ---- tool set from a machine (orchestrates existing canonical doors) --------
+function _installedInstances(machineId){
+  return [...new Set((state.slotsByMachine[machineId]||[]).map(s=>cf(s,"bound_instance_id")).filter(Boolean))];
+}
+async function createSetFromMachine(machineId){
+  const mname=state.machineNames[machineId], ids=_installedInstances(machineId);
+  if(!ids.length){ toast("No installed tools on this machine yet - adopt/confirm some first."); return; }
+  const name=window.prompt(`New tool set from ${mname} (${ids.length} installed tool(s)):`, mname);
+  if(name===null) return; if(!name.trim()){ toast("A name is required."); return; }
+  try{
+    const sid=(await api("POST","/tool-set-records",{})).internal.id;   // no client section: the web UI isn't a data client
+    await api("POST","/tool-set-records/"+sid+"/assert",{path:"name",value:name.trim(),actor:"human@web"});
+    await api("POST","/tool-set-records/"+sid+"/assert",{path:"machine_id",value:machineId,actor:"human@web"});
+    await api("POST","/tool-set-records/"+sid+"/members",{actor:"human@web",members:ids.map(id=>({tool_record_id:id}))});
+    await api("POST","/tool-set-records/"+sid+"/reconcile");            // numbers inherit the machine's slots
+    toast(`Created "${name.trim()}" from ${mname} (${ids.length} tool(s)).`);
+    state.tab="toolsets"; refresh();
+  }catch(e){ toast(e.message); }
+}
+async function refreshSet(setId){
+  const s=state.toolsets.find(x=>rid(x)===setId), machineId=cf(s,"machine_id");
+  if(!machineId){ toast("This set isn't linked to a machine."); return; }
+  const ids=_installedInstances(machineId);
+  try{
+    await api("POST","/tool-set-records/"+setId+"/members",{actor:"human@web",members:ids.map(id=>({tool_record_id:id}))});
+    await api("POST","/tool-set-records/"+setId+"/reconcile");
+    toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${ids.length} tool(s).`); refresh();
+  }catch(e){ toast(e.message); }
+}
+
 // ---- Tools (instances) -----------------------------------------------------
 function renderTools(){
   if(!state.tools.length) return `<div class="empty">No tool instances yet.<br><span class="muted">They appear as machines report tools and you adopt them, or as clients sync.</span></div>`;
@@ -236,6 +280,8 @@ function renderTools(){
         <span><span class="id">${esc(rid(t).slice(0,8))}</span> <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
       where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">installed</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
+      `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} install(s)</span>
+        <button class="unbind" onclick="deleteRecord('${rid(t)}')">Delete tool</button></div>`+
     `</div>`;
   }).join("");
 }
@@ -249,6 +295,9 @@ function renderToolSets(){
       <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
         <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
       <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):""}</div>
+      <div class="row" style="margin-top:.6rem"><span class="rowact">
+        ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
+        <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
   }).join("");
 }
@@ -261,7 +310,9 @@ function renderMachines(){
     const body = slots.length ? slots.map(s=>slotRow(m,s)).join("") : `<div class="muted">empty tool table</div>`;
     return `<div class="card">
       <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
-        <span class="muted">${esc(cf(m,"controller_type")||"")}</span></div>
+        <span class="rowact"><span class="muted">${esc(cf(m,"controller_type")||"")}</span>
+          <button class="mini create" onclick="createSetFromMachine('${rid(m)}')">Create tool set</button>
+          <button class="unbind" onclick="deleteMachine('${rid(m)}')">Delete machine</button></span></div>
       ${body}</div>`;
   }).join("");
 }
@@ -275,7 +326,8 @@ function slotRow(m,s){
     </div>
     <div class="rowact">${bound
       ?`<button class="unbind" onclick="unbindSlot('${rid(s)}')">Unbind</button>`
-      :`<button class="mini create" onclick="adopt('${rid(s)}')">Adopt</button>`}</div>
+      :`<button class="mini create" onclick="adopt('${rid(s)}')">Adopt</button>`}
+      <button class="mini del" onclick="deleteSlot('${rid(s)}')">Remove</button></div>
   </div>`;
 }
 

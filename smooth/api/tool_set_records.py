@@ -136,6 +136,21 @@ def get_set(record_id: str, db: Session = Depends(get_db),
     return _response(row)
 
 
+@router.delete("/{record_id}")
+def delete_set(record_id: str, db: Session = Depends(get_db),
+               user: User = Depends(get_authenticated_user)):
+    """Delete a tool set. The member tool instances are NOT deleted — only the
+    collection."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    db.delete(row)
+    create_audit_log(session=db, user_id=user.id, operation="DELETE",
+                     entity_type="tool_set_record", entity_id=record_id)
+    db.commit()
+    return {"deleted": record_id}
+
+
 @router.put("/{record_id}/clients/{client}")
 def write_client_section(record_id: str, client: str, payload: dict,
                          db: Session = Depends(get_db),

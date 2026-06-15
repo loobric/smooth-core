@@ -402,6 +402,23 @@ def adopt_new_instance(record_id: str, req: AdoptRequest, db: Session = Depends(
     return {"instance_id": inst.id, "slot": _response(row)}
 
 
+@router.delete("/{record_id}")
+def delete_slot(record_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_authenticated_user)):
+    """Remove a machine-reported slot (and its open proposals). The instance it
+    held, if any, is not deleted. If the controller re-pushes, the slot returns."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    from smooth.database.schema import SlotProposal
+    db.query(SlotProposal).filter(SlotProposal.slot_id == record_id).delete()
+    db.delete(row)
+    create_audit_log(session=db, user_id=user.id, operation="DELETE",
+                     entity_type="tool_table_entry_record", entity_id=record_id)
+    db.commit()
+    return {"deleted": record_id}
+
+
 @router.post("/{record_id}/unbind")
 def unbind_instance(record_id: str, db: Session = Depends(get_db),
                     user: User = Depends(get_authenticated_user)):
