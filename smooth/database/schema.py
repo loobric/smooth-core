@@ -378,6 +378,23 @@ class ToolUsage(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     preset: Mapped["ToolPreset"] = relationship("ToolPreset")
 
 
+class ToolInstanceRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """Sectioned tool-schema entity (docs/TOOL_SCHEMA.md): a physical tool.
+
+    `internal` is derived from the id/version/timestamp columns; `canonical`
+    (provenance-tagged truth) and `clients` (per-client envelope + opaque data)
+    are stored as JSON. `catalog_type_id` is extracted from canonical for FK-ish
+    queries. The sectioned facade lives in smooth/api/tool_instance_records.py
+    and is validated against smooth/contract on the way in and out.
+    """
+    __tablename__ = "tool_instance_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    catalog_type_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+
+
 class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Tool set model - collections of tools used as a group.
     
