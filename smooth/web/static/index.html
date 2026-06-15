@@ -129,454 +129,168 @@
 "use strict";
 const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
 let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[],
-              machineNames:{}, toolNames:{}, entriesByMachine:{}, proposalByEntry:{},
-              linkTarget:null };
+              machineNames:{}, toolNames:{}, slotsByMachine:{}, slotsById:{}, proposalBySlot:{} };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.style.opacity=1; setTimeout(()=>t.style.opacity=0,2600); }
 
-function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.style.opacity = 1;
-  setTimeout(() => t.style.opacity = 0, 2600);
-}
-
-async function api(method, path, body) {
-  const r = await fetch("/api/v1" + path, {
-    method, credentials: "same-origin",
-    headers: body ? {"Content-Type": "application/json"} : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (r.status === 401) { $("#login").style.display = "flex"; throw new Error("auth"); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+async function api(method, path, body){
+  const r = await fetch("/api/v1"+path, {method, credentials:"same-origin",
+    headers: body?{"Content-Type":"application/json"}:{}, body: body?JSON.stringify(body):undefined});
+  if(r.status===401){ $("#login").style.display="flex"; throw new Error("auth"); }
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail||("HTTP "+r.status));
   return data;
 }
-
-async function doLogin(ev) {
-  ev.preventDefault();
-  try {
-    await api("POST", "/auth/login", {email: $("#email").value, password: $("#password").value});
-    $("#login").style.display = "none";
-    refresh();
-  } catch (e) { $("#loginerr").textContent = "Sign-in failed - check credentials."; }
+async function doLogin(ev){ ev.preventDefault();
+  try { await api("POST","/auth/login",{email:$("#email").value,password:$("#password").value});
+        $("#login").style.display="none"; refresh();
+  } catch(e){ $("#loginerr").textContent="Sign-in failed - check credentials."; }
   return false;
 }
 
-async function refresh() {
+// Read a provenance-tagged canonical field's value / source by dotted path.
+function cf(obj, path){ let n=(obj&&obj.canonical)||{}; for(const p of path.split(".")) n=(n||{})[p]; return n?n.value:null; }
+const rid = (o)=>o.internal.id;
+
+async function refresh(){
   try {
-    const [inbox, tools, toolsets, machines, audit] = await Promise.all([
-      api("GET", "/inbox"), api("GET", "/tool-records"),
-      api("GET", "/tool-sets"),
-      api("GET", "/machines"), api("GET", "/audit-logs?limit=50"),
-    ]);
-    state.inbox = inbox.items; state.tools = tools.items;
-    state.toolsets = toolsets.items;
-    state.machines = machines.items; state.audit = audit.logs || [];
-    state.machineNames = Object.fromEntries(state.machines.map(m => [m.id, m.name]));
-    state.toolNames = Object.fromEntries(state.tools.map(t => [t.id, t.name]));
-    state.proposalByEntry = Object.fromEntries(inbox.items.map(i => [i.entry.id, i]));
-    // Tool tables feed both the Machines tab and the derived Inbox, so load
-    // them all here rather than lazily per-tab.
-    const tables = await Promise.all(state.machines.map(m =>
-      api("GET", `/machines/${m.id}/tool-table`)
-        .then(t => [m.id, t.items]).catch(() => [m.id, []])));
-    state.entriesByMachine = Object.fromEntries(tables);
-    $("#whoami").textContent = "";
+    const [inbox, tools, sets, machines, audit] = await Promise.all([
+      api("GET","/instance-inbox"), api("GET","/tool-instance-records"),
+      api("GET","/tool-set-records"), api("GET","/machine-records"),
+      api("GET","/audit-logs?limit=50")]);
+    state.inbox=inbox.items; state.tools=tools.items; state.toolsets=sets.items;
+    state.machines=machines.items; state.audit=audit.logs||[];
+    state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
+    state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
+    state.proposalBySlot=Object.fromEntries(inbox.items.map(p=>[p.slot.id, p]));
+    const tables = await Promise.all(machines.items.map(m =>
+      api("GET", "/tool-table-entry-records?machine_id="+rid(m)).then(t=>[rid(m),t.items]).catch(()=>[rid(m),[]])));
+    state.slotsByMachine=Object.fromEntries(tables);
+    state.slotsById={}; for(const slots of Object.values(state.slotsByMachine)) for(const s of slots) state.slotsById[rid(s)]=s;
     render();
-  } catch (e) { if (e.message !== "auth") toast("Load failed: " + e.message); }
+  } catch(e){ if(e.message!=="auth") toast("Load failed: "+e.message); }
 }
 
-// Every unbound entry across all machines — the work the inbox surfaces.
-function unboundEntries() {
-  const out = [];
-  for (const m of state.machines)
-    for (const e of (state.entriesByMachine[m.id] || []))
-      if (!e.tool_record_id) out.push({entry: e, machine: m});
+function unboundSlots(){
+  const out=[];
+  for(const m of state.machines) for(const s of (state.slotsByMachine[rid(m)]||[]))
+    if(cf(s,"bound_instance_id")==null) out.push({slot:s, machine:m});
   return out;
 }
 
-// The action that fits one entry's state: unbind when bound; confirm/reject
-// when a heuristic suggestion is open; link/create when it's an orphan.
-function actionControls(machineId, entry) {
-  if (entry.tool_record_id)
-    return `<button class="unbind" onclick="unbind('${machineId}',${entry.tool_number})">Unbind</button>`;
-  const linking = state.linkTarget &&
-    state.linkTarget.machineId === machineId &&
-    state.linkTarget.toolNumber === entry.tool_number;
-  if (linking) {
-    const opts = state.tools.map(t =>
-      `<option value="${t.id}">${esc(t.name)} (${esc(t.id.slice(0,8))})</option>`).join("");
-    return `<select id="recpick" class="picker">${opts}</select>
-      <button class="mini confirm" onclick="confirmLink('${machineId}',${entry.tool_number})">Link</button>
-      <button class="mini reject" onclick="cancelLink()">Cancel</button>`;
-  }
-  const prop = state.proposalByEntry[entry.id];
-  if (prop)
-    return `<span class="suggest muted">suggests <b>${esc(prop.proposed_record.name)}</b>` +
-      ` &middot; ${Math.round(prop.confidence*100)}%</span>` +
-      `<button class="mini confirm" onclick="resolve('${prop.id}','confirm')">Same tool</button>
-       <button class="mini reject" onclick="resolve('${prop.id}','reject')">Different</button>
-       <button class="mini link" onclick="startLink('${machineId}',${entry.tool_number})">Link&hellip;</button>`;
-  return `<button class="mini link" onclick="startLink('${machineId}',${entry.tool_number})">Link to record&hellip;</button>
-    <button class="mini create" onclick="createRecord('${machineId}',${entry.tool_number})">Create record</button>`;
+function render(){
+  const needs = unboundSlots().length;
+  $("#tabs").innerHTML = TABS.map(([id,label])=>
+    `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
+    (id==="inbox"&&needs?`<span class="n">${needs}</span>`:"")+`</button>`).join("");
+  $("#view").innerHTML = {inbox:renderInbox,tools:renderTools,toolsets:renderToolSets,machines:renderMachines,audit:renderAudit}[state.tab]();
 }
+function setTab(t){ state.tab=t; render(); refresh(); }
 
-function startLink(machineId, toolNumber) {
-  if (!state.tools.length) { toast("No tool records yet - use Create record."); return; }
-  state.linkTarget = {machineId, toolNumber}; render();
-}
-function cancelLink() { state.linkTarget = null; render(); }
+function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
+function closeDetail(){ $("#detail").style.display="none"; }
+function showRecord(id){ const t=state.tools.find(x=>rid(x)===id); if(t) showSchema("Tool instance · "+(cf(t,"name")||id.slice(0,8)), t); }
+function showSlot(id){ const s=state.slotsById[id]; if(s) showSchema("Slot · T"+cf(s,"tool_number"), s); }
+function showSet(id){ const s=state.toolsets.find(x=>rid(x)===id); if(s) showSchema("Tool set · "+(cf(s,"name")||id.slice(0,8)), s); }
 
-async function confirmLink(machineId, toolNumber) {
-  const sel = document.getElementById("recpick");
-  if (!sel || !sel.value) return;
-  try {
-    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/bind`,
-      {tool_record_id: sel.value});
-    state.linkTarget = null;
-    toast(`Linked T${toolNumber}. Nothing was overwritten.`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-async function createRecord(machineId, toolNumber) {
-  const e = (state.entriesByMachine[machineId] || []).find(x => x.tool_number === toolNumber);
-  const name = window.prompt("Name for the new record:", (e && e.description) || "");
-  if (name === null) return;  // cancelled
-  try {
-    const body = name.trim() ? {name: name.trim()} : undefined;
-    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/create-record`, body);
-    toast(`Created record and linked T${toolNumber}.`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-function geomSummary(g) {
-  if (!g) return "";
-  const bits = [];
-  if (g.shape) bits.push(g.shape);
-  if (g.diameter) bits.push("⌀" + g.diameter + (g.diameter_unit || ""));
-  if (g.flutes) bits.push(g.flutes + "fl");
-  return bits.join(" · ");
-}
-
-function render() {
-  const needs = unboundEntries().length;
-  $("#tabs").innerHTML = TABS.map(([id, label]) =>
-    `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}` +
-    (id==="inbox" && needs ? `<span class="n">${needs}</span>` : "") +
-    `</button>`).join("");
-  const v = {inbox: renderInbox, tools: renderTools, toolsets: renderToolSets, machines: renderMachines, audit: renderAudit}[state.tab];
-  $("#view").innerHTML = v();
-}
-function setTab(t) { state.tab = t; render(); refresh(); }   // re-render now, pull fresh data
-
-// ---- Schema inspector (debugging) -----------------------------------------
-function showSchema(title, obj) {
-  document.getElementById("detailtitle").textContent = title;
-  document.getElementById("detailbody").textContent = JSON.stringify(obj, null, 2);
-  document.getElementById("detail").style.display = "flex";
-}
-function closeDetail() { document.getElementById("detail").style.display = "none"; }
-function showRecord(id) {
-  const t = state.tools.find(x => x.id === id);
-  if (t) showSchema("Tool record · " + t.name, t);
-}
-function showEntry(machineId, toolNumber) {
-  const e = (state.entriesByMachine[machineId] || []).find(x => x.tool_number === toolNumber);
-  if (e) showSchema(`${state.machineNames[machineId] || "machine"} · T${toolNumber}`, e);
-}
-
-// ---- Inbox -----------------------------------------------------------------
-
-function renderInbox() {
-  const items = unboundEntries();
-  if (!items.length)
-    return `<div class="empty">Nothing needs you.<br>
-            <span class="muted">Every tool your machines reported is linked to a record.</span></div>`;
-  return `
-  <div class="explain">These are <b>tools your machines reported that aren't yet linked to a
-  record</b> &mdash; the same rows you'll find on each machine, gathered here. Linking
-  <b>overwrites nothing on either side</b>. Where the server has a guess, <b>Same tool</b> links them
-  and <b>Different</b> drops that guess. Otherwise <b>Link</b> to an existing record or <b>Create</b>
-  a new one. Nothing here is a one-way door: a link can be undone with Unbind, and a dropped guess
-  can always be linked by hand later.</div>` +
-  items.map(({entry, machine}) => {
-    const prop = state.proposalByEntry[entry.id];
-    return `
-  <div class="card">
-    <div class="row">
-      <strong>${esc(machine.name)} &middot; T${entry.tool_number}</strong>
-      <span class="id">${esc(entry.id.slice(0,8))}</span>
-    </div>
-    <div class="muted">${esc(entry.description || "no description")}` +
-      `${entry.offsets && entry.offsets.diameter ? " &middot; &#x2300;" + entry.offsets.diameter : ""}</div>` +
-    (prop ? `<div class="vs">is this the same tool as <b>${esc(prop.proposed_record.name)}</b>?</div>
-    <div class="conf"><div style="width:${Math.round(prop.confidence*100)}%"></div></div>
-    <div class="muted">${Math.round(prop.confidence*100)}% &middot; ${esc(prop.reason)}</div>` : "") +
-    `<div class="rowact" style="margin-top:.7rem">${actionControls(machine.id, entry)}</div>
-  </div>`;
+// ---- Inbox: unbound slots needing identity ---------------------------------
+function renderInbox(){
+  const items = unboundSlots();
+  if(!items.length) return `<div class="empty">Nothing needs you.<br><span class="muted">Every slot your machines reported is linked to a tool instance.</span></div>`;
+  return `<div class="explain">These are <b>slots your machines reported that aren't linked to a tool instance yet</b>. Where the server has a guess, <b>Same tool</b> installs it and <b>Different</b> drops the guess. Otherwise <b>Adopt</b> mints a new instance from the slot's measured diameter.</div>`+
+  items.map(({slot,machine})=>{
+    const p=state.proposalBySlot[rid(slot)]; const dia=cf(slot,"offsets.diameter");
+    return `<div class="card">
+      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(slot,"tool_number")}</strong>
+        <span class="id link-ish" onclick="showSlot('${rid(slot)}')">${esc(rid(slot).slice(0,8))}</span></div>
+      <div class="muted">${dia!=null?"&#x2300;"+dia:"no diameter reported"}</div>`+
+      (p?`<div class="vs">is this the same tool as <b>${esc(p.proposed_instance.name||p.proposed_instance.id.slice(0,8))}</b>? (&#x2300;${p.proposed_instance.diameter} · ${Math.round(p.confidence*100)}%)</div>
+        <div class="rowact" style="margin-top:.6rem">
+          <button class="mini confirm" onclick="confirmProp('${p.id}')">Same tool</button>
+          <button class="mini reject" onclick="rejectProp('${p.id}')">Different</button>
+          <button class="mini create" onclick="adopt('${rid(slot)}')">Adopt new</button></div>`
+       :`<div class="rowact" style="margin-top:.6rem">
+          <button class="mini create" onclick="adopt('${rid(slot)}')">Adopt as new instance</button></div>`)+
+    `</div>`;
   }).join("");
 }
+async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Installed. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
+async function rejectProp(id){ try{ await api("POST","/instance-inbox/"+id+"/reject"); toast("Dismissed - won't be suggested again."); refresh(); }catch(e){ toast(e.message); } }
+async function adopt(slotId){ try{ await api("POST","/tool-table-entry-records/"+slotId+"/adopt",{actor:"human@web"}); toast("Adopted a new instance from the slot."); refresh(); }catch(e){ toast(e.message); } }
+async function unbindSlot(slotId){ if(!window.confirm("Unbind this slot? The instance stays; only the install link clears.")) return;
+  try{ await api("POST","/tool-table-entry-records/"+slotId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
 
-async function resolve(id, action) {
-  try {
-    const item = await api("POST", `/inbox/${id}/${action}`);
-    toast(action === "confirm"
-      ? `Linked T${item.entry.tool_number} ↔ ${item.proposed_record.name}. Nothing was overwritten.`
-      : `Dismissed - won't be suggested again.`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-// ---- Tools -------------------------------------------------------------------
-
-function renderTools() {
-  if (!state.tools.length)
-    return `<div class="empty">No tool records yet.<br><span class="muted">Create them via the API or CLI; importers arrive in M2.</span></div>`;
-  const counts = {};
-  state.tools.forEach(t => counts[t.name] = (counts[t.name] || 0) + 1);
-  return state.tools.map(t => `
-  <div class="card">
-    <div class="row">
-      <strong class="link-ish" onclick="showRecord('${t.id}')" title="View full schema">${esc(t.name)}</strong>
-      <span>${counts[t.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
-            <span class="id">${esc(t.id.slice(0,8))}</span>
-            <button class="mini link" onclick="showRecord('${t.id}')">schema</button></span>
-    </div>
-    <div class="muted">${esc(geomSummary(t.geometry))}
-      ${t.tags?.length ? " &middot; " + t.tags.map(esc).join(", ") : ""}</div>
-    ${t.machines.map(m => `
-      <div class="row" style="margin-top:.5rem">
-        <span><span class="pill bound">bound</span>
-          T${m.tool_number} @ ${esc(state.machineNames[m.machine_id] || m.machine_id.slice(0,8))}</span>
-        <button class="unbind actions" onclick="unbind('${m.machine_id}',${m.tool_number})">Unbind</button>
-      </div>`).join("")}
-    <div class="row" style="margin-top:.6rem">
-      <span class="muted">${t.machines.length} machine link(s)</span>
-      <button class="unbind actions" onclick="deleteRecord('${t.id}')">Delete record</button>
-    </div>
-  </div>`).join("");
-}
-
-async function deleteRecord(id) {
-  const t = state.tools.find(x => x.id === id);
-  const name = t ? t.name : id.slice(0, 8);
-  const links = t ? t.machines.length : 0;
-  const warn = links
-    ? `Delete record "${name}"? ${links} machine entr${links > 1 ? "ies" : "y"} will be unbound — their data stays on the machine, only the link dies.`
-    : `Delete record "${name}"?`;
-  if (!window.confirm(warn)) return;
-  try {
-    const r = await api("DELETE", "/tool-records", {ids: [id]});
-    toast(r.errors?.length ? r.errors[0].message : `Deleted "${name}".`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-async function unbind(machineId, toolNumber) {
-  const name = state.machineNames[machineId] || "machine";
-  if (!window.confirm(`Unbind T${toolNumber} @ ${name}? The entry keeps its data and becomes eligible for new suggestions.`)) return;
-  try {
-    await api("POST", `/machines/${machineId}/tool-table/${toolNumber}/unbind`);
-    toast(`T${toolNumber} unbound - data untouched.`);
-    refresh();
-  } catch (e) { toast(e.message); }
+// ---- Tools (instances) -----------------------------------------------------
+function renderTools(){
+  if(!state.tools.length) return `<div class="empty">No tool instances yet.<br><span class="muted">They appear as machines report tools and you adopt them, or as clients sync.</span></div>`;
+  const installedAt={};
+  for(const m of state.machines) for(const s of (state.slotsByMachine[rid(m)]||[])){
+    const b=cf(s,"bound_instance_id"); if(b)(installedAt[b]=installedAt[b]||[]).push({m,n:cf(s,"tool_number")}); }
+  return state.tools.map(t=>{
+    const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(installedAt[rid(t)]||[]);
+    return `<div class="card">
+      <div class="row"><strong class="link-ish" onclick="showRecord('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
+        <span><span class="id">${esc(rid(t).slice(0,8))}</span> <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
+      <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
+      where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">installed</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
+    `</div>`;
+  }).join("");
 }
 
 // ---- Tool Sets -------------------------------------------------------------
-
-function sourceFile(extra) {
-  // Clients namespace their passthrough data; surface any recorded filename
-  // without privileging a particular client.
-  for (const v of Object.values(extra || {}))
-    if (v && typeof v === "object" && v.filename) return v.filename;
-  return null;
-}
-
-// A set created from a machine carries its source under extra.smooth.
-function sourceMachine(extra) {
-  const s = extra && extra.smooth;
-  return s && s.source_machine_id ? s : null;
-}
-
-function renderToolSets() {
-  if (!state.toolsets.length)
-    return `<div class="empty">No tool sets yet.<br><span class="muted">They arrive when a client publishes a collection of tools.</span></div>`;
-  const counts = {};
-  state.toolsets.forEach(s => counts[s.name] = (counts[s.name] || 0) + 1);
-  const toolName = Object.fromEntries(state.tools.map(t => [t.id, t.name]));
-  return state.toolsets.map(s => {
-    const src = sourceMachine(s.extra);
-    const srcName = src ? (state.machineNames[src.source_machine_id] || src.source_machine_name) : null;
-    const origin = sourceFile(s.extra) ? " &middot; from " + esc(sourceFile(s.extra))
-                 : src ? " &middot; from machine " + esc(srcName || "?") : "";
-    return `
-  <div class="card">
-    <div class="row">
-      <strong>${esc(s.name)}</strong>
-      <span>${counts[s.name] > 1 ? '<span class="pill dupe">duplicate name</span> ' : ""}
-            <span class="id">${esc(s.id.slice(0,8))}</span></span>
-    </div>
-    <div class="muted">${s.tool_record_ids.length} tool(s)${origin}</div>
-    <div class="muted" style="margin-top:.3rem">${
-      s.tool_record_ids.slice(0, 12).map(id => esc(toolName[id] || id.slice(0,8))).join(", ")
-    }${s.tool_record_ids.length > 12 ? " …" : ""}</div>
-    <div class="row" style="margin-top:.6rem">
-      <span class="muted">updated ${esc((s.updated_at || "").slice(0,16).replace("T"," "))}</span>
-      <span class="rowact">
-        ${src ? `<button class="mini link" onclick="refreshToolSetFromMachine('${s.id}')">Refresh from machine</button>` : ""}
-        <button class="unbind actions" onclick="deleteToolSet('${s.id}', '${esc(s.name)}')">Delete</button>
-      </span>
-    </div>
-  </div>`;
+function renderToolSets(){
+  if(!state.toolsets.length) return `<div class="empty">No tool sets yet.</div>`;
+  return state.toolsets.map(s=>{
+    const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
+    return `<div class="card">
+      <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
+        <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
+      <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):""}</div>
+    </div>`;
   }).join("");
 }
 
-async function refreshToolSetFromMachine(setId) {
-  const set = state.toolsets.find(s => s.id === setId);
-  const src = set && sourceMachine(set.extra);
-  if (!src) { toast("This set has no source machine."); return; }
-  const mid = src.source_machine_id;
-  const mname = state.machineNames[mid] || src.source_machine_name || "machine";
-  let entries;
-  try {
-    entries = (await api("GET", `/machines/${mid}/tool-table`)).items;  // current truth
-  } catch (e) {
-    toast(`Source machine "${mname}" is gone — can't refresh.`);
-    return;
-  }
-  const ids = [...new Set(entries.filter(e => e.tool_record_id).map(e => e.tool_record_id))];
-  const before = set.tool_record_ids.length;
-  if (!ids.length &&
-      !window.confirm(`${mname} has no linked tools now. Empty "${set.name}" (was ${before})?`)) return;
-  try {
-    const r = await api("PATCH", "/tool-sets",
-      {items: [{id: setId, version: set.version, tool_record_ids: ids}]});
-    if (r.errors?.length) { toast(r.errors[0].message); refresh(); return; }
-    toast(`Refreshed "${set.name}" from ${mname}: ${before} → ${ids.length} tool(s).`);
-    refresh();
-  } catch (e) { toast(e.message); }
+// ---- Machines (+ tool tables) ----------------------------------------------
+function renderMachines(){
+  if(!state.machines.length) return `<div class="empty">No machines yet.<br><span class="muted">They register on first sync from a controller.</span></div>`;
+  return state.machines.map(m=>{
+    const slots=(state.slotsByMachine[rid(m)]||[]).slice().sort((a,b)=>(cf(a,"tool_number")||0)-(cf(b,"tool_number")||0));
+    const body = slots.length ? slots.map(s=>slotRow(m,s)).join("") : `<div class="muted">empty tool table</div>`;
+    return `<div class="card">
+      <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
+        <span class="muted">${esc(cf(m,"controller_type")||"")}</span></div>
+      ${body}</div>`;
+  }).join("");
 }
-
-async function deleteToolSet(id, name) {
-  if (!window.confirm(`Delete tool set "${name}" (${id.slice(0,8)})? Its tool records are NOT deleted - only the collection.`)) return;
-  try {
-    const r = await api("DELETE", "/tool-sets", {ids: [id]});
-    toast(r.errors?.length ? r.errors[0].message : `Deleted "${name}". Tool records untouched.`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-// ---- Machines ------------------------------------------------------------------
-
-function entryRow(machineId, e) {
-  const bound = !!e.tool_record_id;
-  const recName = bound ? (state.toolNames[e.tool_record_id] || e.tool_record_id.slice(0,8)) : "";
-  const dia = e.offsets && e.offsets.diameter ? "&#x2300;" + e.offsets.diameter : "";
+function slotRow(m,s){
+  const bound=cf(s,"bound_instance_id"), dia=cf(s,"offsets.diameter");
   return `<div class="trow">
     <div class="tinfo">
-      <span class="tnum link-ish" onclick="showEntry('${machineId}',${e.tool_number})" title="View full schema">T${e.tool_number}</span>
-      <span>${esc(e.description || "—")}</span>
-      <span class="muted">${dia}</span>
-      ${bound
-        ? `<span class="pill bound">${esc(recName)}</span>`
-        : `<span class="pill unbound">unbound</span>`}
+      <span class="tnum link-ish" onclick="showSlot('${rid(s)}')">T${cf(s,"tool_number")}</span>
+      <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
+      ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
     </div>
-    <div class="rowact">${actionControls(machineId, e)}
-      <button class="mini del" title="Remove this reported entry" onclick="deleteEntry('${machineId}',${e.tool_number})">Remove</button>
-    </div>
+    <div class="rowact">${bound
+      ?`<button class="unbind" onclick="unbindSlot('${rid(s)}')">Unbind</button>`
+      :`<button class="mini create" onclick="adopt('${rid(s)}')">Adopt</button>`}</div>
   </div>`;
 }
 
-async function deleteEntry(machineId, toolNumber) {
-  const mname = state.machineNames[machineId] || "machine";
-  if (!window.confirm(`Remove T${toolNumber} from ${mname}? This deletes what the machine reported for that slot. If the controller pushes again, it comes back.`)) return;
-  try {
-    const r = await api("DELETE", `/machines/${machineId}/tool-table`, {tool_numbers: [toolNumber]});
-    toast(r.errors?.length ? r.errors[0].message : `Removed T${toolNumber} from ${mname}.`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-function renderMachines() {
-  if (!state.machines.length)
-    return `<div class="empty">No machines yet.<br><span class="muted">They register themselves on first push from a controller.</span></div>`;
-  return state.machines.map(m => {
-    const entries = state.entriesByMachine[m.id] || [];
-    const body = entries.length
-      ? entries.map(e => entryRow(m.id, e)).join("")
-      : `<div class="muted">empty tool table</div>`;
-    return `
-  <div class="card">
-    <div class="row">
-      <strong>${esc(m.name)}</strong>
-      <span class="rowact"><span class="muted">${esc(m.controller_type || "")}</span>
-        <button class="mini create" onclick="createToolSetFromMachine('${m.id}')">Create tool set</button>
-        <button class="mini del" onclick="deleteMachine('${m.id}')">Delete machine</button></span>
-    </div>
-    ${body}
-  </div>`;
-  }).join("");
-}
-
-async function createToolSetFromMachine(machineId) {
-  const mname = state.machineNames[machineId] || "machine";
-  const entries = state.entriesByMachine[machineId] || [];
-  // A tool set holds ToolRecords, so only BOUND entries can be members.
-  // Dedupe: a record bound to more than one slot should appear once.
-  const ids = [...new Set(entries.filter(e => e.tool_record_id).map(e => e.tool_record_id))];
-  if (!ids.length) {
-    toast("No linked tools on this machine — link some to records first.");
-    return;
-  }
-  const name = window.prompt(
-    `New tool set from ${mname}.\n${ids.length} of ${entries.length} tools are linked to records ` +
-    `and will be included (unlinked entries can't be in a set).\n\nName:`, mname);
-  if (name === null) return;            // cancelled
-  if (!name.trim()) { toast("A name is required."); return; }
-  try {
-    const r = await api("POST", "/tool-sets", {items: [{
-      name: name.trim(), tool_record_ids: ids,
-      // Remember the source so the set can be refreshed from the machine later.
-      extra: {smooth: {source_machine_id: machineId, source_machine_name: mname}},
-    }]});
-    if (r.errors?.length) { toast(r.errors[0].message); return; }
-    toast(`Created tool set "${name.trim()}" with ${ids.length} tool(s).`);
-    state.tab = "toolsets";             // show the result
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-async function deleteMachine(id) {
-  const name = state.machineNames[id] || "machine";
-  const n = (state.entriesByMachine[id] || []).length;
-  if (!window.confirm(`Delete machine "${name}" and its ${n} tool-table entr${n === 1 ? "y" : "ies"}? Tool records stay; only this machine and what it reported are removed.`)) return;
-  try {
-    const r = await api("DELETE", "/machines", {ids: [id]});
-    toast(r.errors?.length ? r.errors[0].message : `Deleted machine "${name}".`);
-    refresh();
-  } catch (e) { toast(e.message); }
-}
-
-// ---- Audit -------------------------------------------------------------------
-
-function renderAudit() {
-  if (!state.audit.length) return `<div class="empty">No audit entries.</div>`;
-  return `<div class="card"><table>
-    <tr><th>when</th><th>op</th><th>what</th></tr>
-    ${state.audit.map(l => `<tr>
-      <td class="muted">${esc((l.timestamp || "").replace("T", " ").slice(0, 16))}</td>
-      <td>${esc(l.operation)}</td>
-      <td>${esc(l.entity_type)} <span class="id">${esc((l.entity_id || "").slice(0,8))}</span></td>
-    </tr>`).join("")}</table></div>`;
+// ---- Audit -----------------------------------------------------------------
+function renderAudit(){
+  if(!state.audit.length) return `<div class="empty">No audit entries.</div>`;
+  return `<div class="card"><table><tr><th>when</th><th>op</th><th>what</th></tr>`+
+    state.audit.map(l=>`<tr><td class="muted">${esc((l.timestamp||"").replace("T"," ").slice(0,16))}</td>
+      <td>${esc(l.operation)}</td><td>${esc(l.entity_type)} <span class="id">${esc((l.entity_id||"").slice(0,8))}</span></td></tr>`).join("")+
+    `</table></div>`;
 }
 
 refresh();
-// Keep whatever tab you're on live; the schema modal is a separate overlay,
-// so a background refresh never interrupts inspecting a record.
 setInterval(refresh, 15000);
 </script>
 </body>
 </html>
+
