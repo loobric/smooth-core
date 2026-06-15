@@ -81,3 +81,50 @@ def test_a_machine_cannot_observe_the_binding(solo_client):
                          json={"path": "bound_instance_id", "value": "inst-Z",
                                "client": "linuxcnc", "machine": "millstone"})
     assert r.status_code == 400   # binding is a human assertion, not a machine observation
+
+
+# -- snapshot table sync (the linuxcnc-facing push) ---------------------------
+
+def _sync(client, machine, slots, mode="snapshot", force=False):
+    return client.post(f"{BASE}/sync", json={
+        "machine_id": machine, "client": "linuxcnc", "machine_name": "millstone",
+        "client_version": "0.2", "mode": mode, "force": force, "slots": slots})
+
+
+@pytest.mark.contract
+def test_sync_observes_offsets_and_writes_section(solo_client):
+    r = _sync(solo_client, "m-s0", [
+        {"tool_number": 5, "offsets": {"diameter": 6.35, "diameter_unit": "mm"},
+         "data": {"raw": "T5 P5 D6.35 ;endmill"}, "client_item_id": "millstone:T5"}])
+    assert r.status_code == 200, r.text
+    doc = conforms(r.json()["items"][0])
+    assert doc["canonical"]["tool_number"]["source"] == "observed:linuxcnc@millstone"
+    assert doc["canonical"]["offsets"]["diameter"]["value"] == 6.35
+    assert doc["canonical"]["offsets"]["diameter"]["unit"] == "mm"
+    assert doc["clients"]["linuxcnc"]["data"]["raw"] == "T5 P5 D6.35 ;endmill"
+
+
+@pytest.mark.contract
+def test_snapshot_removes_deleted_slot_keeps_binding(solo_client):
+    _sync(solo_client, "m-s1", [{"tool_number": n, "offsets": {"diameter": float(n)}}
+                                for n in (1, 2, 3)])
+    eid = next(e["internal"]["id"] for e in solo_client.get(BASE).json()["items"]
+               if e["internal"]["machine_id"] == "m-s1"
+               and e["canonical"]["tool_number"]["value"] == 2)
+    solo_client.post(f"{BASE}/{eid}/bind", json={"instance_id": "inst-keep", "actor": "human@inbox"})
+    # operator deletes T3 -> snapshot of {1,2}
+    r = _sync(solo_client, "m-s1", [{"tool_number": n, "offsets": {"diameter": float(n)}}
+                                    for n in (1, 2)])
+    assert r.json()["removed_tool_numbers"] == [3]
+    rows = [e for e in solo_client.get(BASE).json()["items"] if e["internal"]["machine_id"] == "m-s1"]
+    assert {e["canonical"]["tool_number"]["value"] for e in rows} == {1, 2}
+    s2 = next(e for e in rows if e["canonical"]["tool_number"]["value"] == 2)
+    assert s2["canonical"]["bound_instance_id"]["value"] == "inst-keep"   # binding survived
+
+
+@pytest.mark.contract
+def test_snapshot_mass_wipe_guarded_unless_forced(solo_client):
+    _sync(solo_client, "m-s2", [{"tool_number": n, "offsets": {}} for n in range(1, 5)])
+    assert _sync(solo_client, "m-s2", []).status_code == 409             # empty -> refused
+    r = _sync(solo_client, "m-s2", [], force=True)
+    assert r.status_code == 200 and sorted(r.json()["removed_tool_numbers"]) == [1, 2, 3, 4]

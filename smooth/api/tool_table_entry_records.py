@@ -12,7 +12,7 @@ a 409 naming where the tool already lives, and an atomic `move`.
 """
 import copy
 from datetime import datetime, UTC
-from typing import Any, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -136,6 +136,104 @@ def create_entry(payload: CreateRequest, db: Session = Depends(get_db),
                      entity_type="tool_table_entry_record", entity_id=row.id)
     db.commit()
     return _response(row)
+
+
+class SlotIn(BaseModel):
+    tool_number: int
+    offsets: dict = {}          # plain values + optional <key>_unit, e.g. {"diameter": 6.35, "diameter_unit": "mm"}
+    data: dict = {}             # the client section's opaque payload
+    client_item_id: Optional[str] = None
+
+
+class SlotSyncRequest(BaseModel):
+    machine_id: str
+    client: str                 # e.g. "linuxcnc"
+    machine_name: str           # observation source: observed:<client>@<machine_name>
+    client_version: str = ""
+    mode: Literal["merge", "snapshot"] = "merge"
+    force: bool = False
+    slots: List[SlotIn]
+
+
+@router.post("/sync")
+def sync_slots(req: SlotSyncRequest, db: Session = Depends(get_db),
+               user: User = Depends(get_authenticated_user)):
+    """The machine-table push: upsert a machine's slots by tool_number in one
+    call. Each slot's number+offsets are OBSERVED (the machine measured them)
+    and the client section is written. mode=snapshot reconciles away slots
+    absent from the payload (the controller is authoritative), guarded against a
+    mass-wipe. Bindings survive an update; a removed slot's proposals are dropped.
+    """
+    existing = {}
+    for r in db.query(Row).filter(Row.user_id == user.id,
+                                  Row.machine_id == req.machine_id).all():
+        tn = (r.canonical.get("tool_number") or {}).get("value")
+        if tn is not None:
+            existing[tn] = r
+    src = Provenance.observed(req.client, req.machine_name)
+
+    if req.mode == "snapshot" and not req.force and existing:
+        present = {s.tool_number for s in req.slots}
+        doomed = [tn for tn in existing if tn not in present]
+        if doomed and (not req.slots or len(doomed) * 2 > len(existing)):
+            raise HTTPException(status_code=409,
+                detail="snapshot would remove %d of %d slots — refusing as a likely "
+                       "partial read; resend with force=true if intended"
+                       % (len(doomed), len(existing)))
+
+    items = []
+    present = set()
+    for s in req.slots:
+        present.add(s.tool_number)
+        row = existing.get(s.tool_number)
+        if row is None:
+            row = Row(machine_id=req.machine_id, bound_instance_id=None,
+                      canonical=_blank_canonical(), clients={},
+                      user_id=user.id, created_by=user.id, updated_by=user.id)
+            db.add(row)
+            db.flush()
+        canonical = copy.deepcopy(row.canonical)
+        canonical["tool_number"] = {"value": s.tool_number, "source": src}
+        offsets = canonical.setdefault("offsets", {})
+        for key, value in s.offsets.items():
+            if key.endswith("_unit"):
+                continue
+            field = {"value": value, "source": src}
+            unit = s.offsets.get(key + "_unit")
+            if unit:
+                field["unit"] = unit
+            offsets[key] = field
+        _validate_canonical(canonical)
+        row.canonical = canonical
+        clients = copy.deepcopy(row.clients)
+        existing_sec = clients.get(req.client) or {}
+        clients[req.client] = {
+            "client_version": req.client_version,
+            "client_item_id": s.client_item_id,
+            "created_at": existing_sec.get("created_at") or _now(),
+            "updated_at": _now(), "data": s.data,
+        }
+        row.clients = clients
+        row.version += 1
+        row.updated_by = user.id
+        items.append(row)
+
+    removed = []
+    if req.mode == "snapshot":
+        from smooth.database.schema import SlotProposal
+        for tn, row in existing.items():
+            if tn in present:
+                continue
+            db.query(SlotProposal).filter(SlotProposal.slot_id == row.id).delete()
+            db.delete(row)
+            removed.append(tn)
+
+    create_audit_log(session=db, user_id=user.id, operation="SYNC_TABLE",
+                     entity_type="tool_table_entry_record", entity_id=req.machine_id,
+                     changes={"client": req.client, "count": len(req.slots),
+                              "removed": removed})
+    db.commit()
+    return {"items": [_response(r) for r in items], "removed_tool_numbers": removed}
 
 
 @router.get("")
