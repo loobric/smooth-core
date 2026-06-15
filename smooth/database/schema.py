@@ -442,6 +442,21 @@ class MachineRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class SlotProposal(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """A heuristic proposal that an unbound slot holds a particular instance,
+    awaiting human review (the sectioned successor to BindingProposal). status:
+    open | confirmed | rejected; a rejected (slot, instance) pair is never
+    re-proposed."""
+    __tablename__ = "slot_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    slot_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    proposed_instance_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True, nullable=False)
+
+
 class ToolSet(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Tool set model - collections of tools used as a group.
     

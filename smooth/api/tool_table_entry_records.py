@@ -20,8 +20,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
-from smooth.database.schema import User, ToolTableEntryRecord as Row
+from smooth.database.schema import (
+    User, ToolTableEntryRecord as Row, ToolInstanceRecord as InstanceRow,
+)
 from smooth.audit import create_audit_log
+from smooth.binding_v2 import close_open_proposal_on_bind
 from smooth.contract import (
     ToolTableEntry, EntryCanonical, Provenance, UNKNOWN,
     LaneViolation, reject_out_of_lane,
@@ -245,6 +248,7 @@ def bind_instance(record_id: str, req: BindRequest, db: Session = Depends(get_db
 
     _set_binding(row, req.instance_id, req.actor)
     row.updated_by = user.id
+    close_open_proposal_on_bind(db, user, row.id, req.instance_id)
     create_audit_log(session=db, user_id=user.id, operation="BIND",
                      entity_type="tool_table_entry_record", entity_id=row.id,
                      changes={"instance_id": req.instance_id})
@@ -256,6 +260,48 @@ def bind_instance(record_id: str, req: BindRequest, db: Session = Depends(get_db
                             detail="instance %s is already installed elsewhere"
                                    % req.instance_id[:8])
     return _response(row)
+
+
+class AdoptRequest(BaseModel):
+    actor: str = "human@inbox"
+
+
+@router.post("/{record_id}/adopt")
+def adopt_new_instance(record_id: str, req: AdoptRequest, db: Session = Depends(get_db),
+                       user: User = Depends(get_authenticated_user)):
+    """The slot holds a tool the catalog doesn't know yet: mint a new instance
+    seeded from the slot's observations (its measured diameter carries through
+    with its provenance) and install it. The 'new tool' path of the inbox."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    if row.bound_instance_id is not None:
+        raise HTTPException(status_code=409, detail="slot is already bound")
+
+    canonical = {
+        "name": {"value": None, "source": UNKNOWN},
+        "catalog_type_id": {"value": None, "source": UNKNOWN},
+        "geometry": {},
+    }
+    slot_dia = (row.canonical.get("offsets") or {}).get("diameter")
+    if slot_dia and slot_dia.get("value") is not None:
+        canonical["geometry"]["diameter"] = dict(slot_dia)   # measured, with provenance
+    inst = InstanceRow(canonical=canonical, clients={}, catalog_type_id=None,
+                       user_id=user.id, created_by=user.id, updated_by=user.id)
+    db.add(inst)
+    db.flush()
+    create_audit_log(session=db, user_id=user.id, operation="CREATE",
+                     entity_type="tool_instance_record", entity_id=inst.id,
+                     changes={"adopted_from_slot": row.id})
+
+    _set_binding(row, inst.id, req.actor)
+    row.updated_by = user.id
+    close_open_proposal_on_bind(db, user, row.id, inst.id)
+    create_audit_log(session=db, user_id=user.id, operation="BIND",
+                     entity_type="tool_table_entry_record", entity_id=row.id,
+                     changes={"instance_id": inst.id, "adopted": True})
+    db.commit()
+    return {"instance_id": inst.id, "slot": _response(row)}
 
 
 @router.post("/{record_id}/unbind")
