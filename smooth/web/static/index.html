@@ -227,7 +227,9 @@ function renderInbox(){
 }
 async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Installed. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
 async function rejectProp(id){ try{ await api("POST","/instance-inbox/"+id+"/reject"); toast("Dismissed - won't be suggested again."); refresh(); }catch(e){ toast(e.message); } }
-async function adopt(slotId){ try{ await api("POST","/tool-table-entry-records/"+slotId+"/adopt",{actor:"human@web"}); toast("Adopted a new instance from the slot."); refresh(); }catch(e){ toast(e.message); } }
+async function adopt(slotId){ const s=state.slotsById[slotId], name=s?slotName(s):null;
+  try{ await api("POST","/tool-table-entry-records/"+slotId+"/adopt",{actor:"human@web",name:name||undefined});
+       toast(name?`Adopted as "${name}".`:"Adopted a new instance from the slot."); refresh(); }catch(e){ toast(e.message); } }
 async function unbindSlot(slotId){ if(!window.confirm("Unbind this slot? The instance stays; only the install link clears.")) return;
   try{ await api("POST","/tool-table-entry-records/"+slotId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
 
@@ -274,9 +276,15 @@ async function refreshSet(setId){
     toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${ids.length} tool(s).`); refresh();
   }catch(e){ toast(e.message); }
 }
-// Name a tool instance (a human assertion).
-async function setName(id){ const t=state.tools.find(x=>rid(x)===id);
-  const name=window.prompt("Tool name:", cf(t,"name")||"");
+// A suggested name for an instance: its own name, else the label of a slot it's installed in.
+function instanceNameHint(id){
+  const t=state.tools.find(x=>rid(x)===id); const own=t&&cf(t,"name"); if(own) return own;
+  for(const s of Object.values(state.slotsById)) if(cf(s,"bound_instance_id")===id){ const sn=slotName(s); if(sn) return sn; }
+  return "";
+}
+// Name a tool instance (a human assertion); pre-fills a suggestion.
+async function setName(id){
+  const name=window.prompt("Tool name:", instanceNameHint(id));
   if(name===null) return; if(!name.trim()){ toast("Name can't be empty."); return; }
   try{ await api("POST","/tool-instance-records/"+id+"/assert",{path:"name",value:name.trim(),actor:"human@web"}); toast("Named."); refresh(); }catch(e){ toast(e.message); } }
 

@@ -148,3 +148,18 @@ def test_sync_observes_description_and_adopt_seeds_the_name(solo_client):
     assert inst["canonical"]["name"]["value"] == "Probe"
     assert inst["canonical"]["name"]["source"] == "asserted:human@web"
     assert inst["canonical"]["geometry"]["diameter"]["value"] == 2.9972
+
+
+@pytest.mark.contract
+def test_adopt_uses_caller_supplied_name(solo_client):
+    """A slot synced before `description` flowed (no canonical.description): the
+    UI parses the label from the raw line and passes it to adopt, which names
+    the instance even though canonical.description is absent."""
+    sid = solo_client.post(BASE, json={"machine_id": "m-legacy"}).json()["internal"]["id"]
+    solo_client.post(f"{BASE}/{sid}/observe", json={"path": "tool_number", "value": 1,
+                     "client": "linuxcnc", "machine": "millstone"})
+    assert "description" not in solo_client.get(f"{BASE}/{sid}").json()["canonical"]
+    out = solo_client.post(f"{BASE}/{sid}/adopt", json={"actor": "human@web", "name": "Probe"}).json()
+    inst = solo_client.get(f"/api/v1/tool-instance-records/{out['instance_id']}").json()
+    assert inst["canonical"]["name"]["value"] == "Probe"
+    assert inst["canonical"]["name"]["source"] == "asserted:human@web"

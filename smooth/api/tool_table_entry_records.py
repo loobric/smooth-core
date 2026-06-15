@@ -367,6 +367,7 @@ def bind_instance(record_id: str, req: BindRequest, db: Session = Depends(get_db
 
 class AdoptRequest(BaseModel):
     actor: str = "human@inbox"
+    name: Optional[str] = None      # caller-supplied name (e.g. the UI's parsed label)
 
 
 @router.post("/{record_id}/adopt")
@@ -386,12 +387,12 @@ def adopt_new_instance(record_id: str, req: AdoptRequest, db: Session = Depends(
         "catalog_type_id": {"value": None, "source": UNKNOWN},
         "geometry": {},
     }
-    # Seed the name from the slot's reported label (the table comment) — the
+    # Seed the name from the caller's label or the slot's reported comment — the
     # only human-readable identity the machine has. Adopting it is the human
     # endorsing that label, so it is asserted (human@web), not observed.
-    slot_desc = (row.canonical.get("description") or {}).get("value")
-    if slot_desc:
-        canonical["name"] = {"value": slot_desc, "source": Provenance.asserted(req.actor)}
+    name = req.name or (row.canonical.get("description") or {}).get("value")
+    if name:
+        canonical["name"] = {"value": name, "source": Provenance.asserted(req.actor)}
     slot_dia = (row.canonical.get("offsets") or {}).get("diameter")
     if slot_dia and slot_dia.get("value") is not None:
         canonical["geometry"]["diameter"] = dict(slot_dia)   # measured, with provenance
