@@ -29,13 +29,6 @@ from smooth.api.tool_presets import router as tool_presets_router
 from smooth.api.tool_usage import router as tool_usage_router
 from smooth.api.audit_log_api import router as audit_log_router
 from smooth.api.changes_api import router as changes_router
-from smooth.api.tool_records import (
-    router as tool_records_router,
-    changes_router as tool_records_changes_router,
-)
-from smooth.api.machines import router as machines_router
-from smooth.api.inbox import router as inbox_router
-from smooth.api.tool_sets import router as tool_sets_router
 from smooth.api.tool_instance_records import router as tool_instance_records_router
 from smooth.api.tool_catalog_records import router as tool_catalog_records_router
 from smooth.api.tool_table_entry_records import router as tool_table_entry_records_router
@@ -98,18 +91,14 @@ def create_app() -> FastAPI:
         }
     
     # Include routers.
-    # Public v2 facade (G3): tool-records is the published contract. The
-    # facade changes router is registered BEFORE the generic changes router
-    # so its literal path wins matching for /changes/tool-records/....
+    # Public facade = the sectioned tool schema (docs/TOOL_SCHEMA.md): the
+    # *-records entities + the instance inbox. The old flat facade (tool-records,
+    # the machines tool-table, tool-sets, the record inbox) was retired in the
+    # v2 cutover; clients and the web UI speak the sectioned API.
     app.include_router(auth_router)
     app.include_router(backup_router)
     app.include_router(users_router)
     app.include_router(catalogs_router)
-    app.include_router(tool_records_router)
-    app.include_router(tool_records_changes_router)
-    app.include_router(machines_router)
-    app.include_router(inbox_router)
-    app.include_router(tool_sets_router)
     app.include_router(tool_instance_records_router)
     app.include_router(tool_catalog_records_router)
     app.include_router(tool_table_entry_records_router)
