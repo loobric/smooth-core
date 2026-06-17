@@ -29,24 +29,30 @@ The first user created will automatically be the admin user.
 You can create a user account with the command line utility.
 
 ```
-  loobric.py --base-url http://127.0.0.1:8000 register admin@example.com
+  loobric --base-url http://127.0.0.1:8000 register admin@example.com
 ```
 
 5. Login as the admin user
 
 ```
-  loobric.py --base-url http://127.0.0.1:8000 login admin@example.com
+  loobric --base-url http://127.0.0.1:8000 login admin@example.com
 ```
 
 Create an access token
 
 ```
-  loobric.py create-key "Backup Script" \
-    --scopes "read" --tags "backup production" --expires-at "2025-12-31T23:59:59Z"
+  loobric create-key "Backup Script" \
+    --scopes "read" --tags "backup production" --expires-at "2027-12-31T23:59:59Z"
 ```
 
 6. Record the token
 
 The previous command will echo the token back to the console in clear text. Only the token hash is stored in the database so the actual token can not be recovered.  Write it down or store it securely.
 
-7. Use the token in one of the cliens like [smooth-freecad](https://github.com/loobric/smooth-freecad)
+7. Use the token in one of the clients like [smooth-freecad](https://github.com/loobric/smooth-freecad)
+
+## Next steps
+
+Once a client is reporting tools, you review and bind them with `loobric`. See
+the [CLI reference and walkthrough](CLI.md) for every command and a worked
+example from touch-off to a bound tool.

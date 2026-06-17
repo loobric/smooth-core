@@ -69,6 +69,23 @@
   .pill.bound { color:var(--ok); border-color:var(--ok); }
   .pill.unbound { color:var(--dim); }
   .pill.dupe { color:var(--warn); border-color:var(--warn); }
+  .pill.ok   { color:var(--ok); border-color:var(--ok); }
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .pill.bad  { color:var(--bad); border-color:var(--bad); }
+  .pill.info { color:var(--link); border-color:var(--link); }
+  .covsum { display:flex; gap:.4rem; flex-wrap:wrap; margin:.5rem 0 .8rem; }
+  .chip { font-size:.8rem; padding:.15em .6em; border-radius:9px;
+          border:1px solid var(--line); color:var(--dim); }
+  .chip b { color:var(--ink); }
+  .chip.bad  { border-color:var(--bad);  color:var(--bad);  } .chip.bad b  { color:var(--bad);  }
+  .chip.warn { border-color:var(--warn); color:var(--warn); } .chip.warn b { color:var(--warn); }
+  .chip.ok   { border-color:var(--ok);   color:var(--ok);   } .chip.ok b   { color:var(--ok);   }
+  .callout { background:#2a1614; border:1px solid var(--bad); color:#f0c9c6;
+             border-radius:10px; padding:.7rem .9rem; margin:.2rem 0 .9rem; font-size:.92rem; }
+  .callout b { color:#fff; }
+  tr.absent td { background:rgba(207,91,86,.14); }
+  .cbadge { background:var(--bad); color:#2b0c0a; border-radius:9px; padding:0 .45em;
+            font-size:.8em; margin-left:.3em; font-weight:600; }
   table { width:100%; border-collapse:collapse; font-size:.9rem; }
   td, th { text-align:left; padding:.35rem .4rem; border-top:1px solid var(--line); }
   th { color:var(--dim); font-weight:500; border-top:none; }
@@ -87,10 +104,11 @@
   .spacer { flex:1; }
   #whoami { font-size:.8rem; }
   .link-ish { cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
-  #detail { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+  #detail, #coverage { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
             align-items:center; justify-content:center; z-index:9; padding:1rem; }
-  #detail .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+  #detail .sheet, #coverage .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
                    padding:1rem; width:min(96vw,720px); max-height:86vh; display:flex; flex-direction:column; }
+  #covbody { overflow:auto; margin-top:.6rem; }
   #detail pre { overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px;
                 padding:.7rem; font-size:.78rem; line-height:1.4; margin:.6rem 0 0;
                 white-space:pre-wrap; word-break:break-word; }
@@ -133,6 +151,15 @@
   </div>
 </div>
 
+<!-- Coverage: a tool set viewed against the machine it mirrors (smooth-core#19). -->
+<div id="coverage" onclick="if(event.target.id==='coverage')closeCoverage()">
+  <div class="sheet">
+    <div class="row"><strong id="covtitle"></strong>
+      <button class="mini reject" onclick="closeCoverage()">Close</button></div>
+    <div id="covbody"></div>
+  </div>
+</div>
+
 <!-- In-page confirm/prompt: native window.confirm/prompt can be permanently
      suppressed by the browser's "prevent additional dialogs" checkbox. -->
 <div id="ask" onclick="if(event.target.id==='ask')askCancel()">
@@ -150,7 +177,8 @@
 "use strict";
 const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
 let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[],
-              machineNames:{}, toolNames:{}, slotsByMachine:{}, slotsById:{}, proposalBySlot:{} };
+              machineNames:{}, toolNames:{}, slotsByMachine:{}, slotsById:{}, proposalBySlot:{},
+              coverageBySet:{} };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -214,6 +242,11 @@ async function refresh(){
       api("GET", "/tool-table-entry-records?machine_id="+rid(m)).then(t=>[rid(m),t.items]).catch(()=>[rid(m),[]])));
     state.slotsByMachine=Object.fromEntries(tables);
     state.slotsById={}; for(const slots of Object.values(state.slotsByMachine)) for(const s of slots) state.slotsById[rid(s)]=s;
+    // Coverage for machine-linked sets, so a set's "tools to load" count shows at a glance.
+    const linked=sets.items.filter(s=>cf(s,"machine_id"));
+    const covs=await Promise.all(linked.map(s=>
+      api("GET","/tool-set-records/"+rid(s)+"/coverage").then(c=>[rid(s),c]).catch(()=>[rid(s),null])));
+    state.coverageBySet=Object.fromEntries(covs);
     render();
   } catch(e){ if(e.message!=="auth") toast("Load failed: "+e.message); }
 }
@@ -350,15 +383,127 @@ function renderToolSets(){
   if(!state.toolsets.length) return `<div class="empty">No tool sets yet.</div>`;
   return state.toolsets.map(s=>{
     const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
+    const cov=state.coverageBySet[rid(s)];
+    const absent=(cov&&cov.applicable)?(cov.summary.absent_on_machine||0):0;
     return `<div class="card">
       <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
         <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
-      <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):""}</div>
+      <div class="muted">${members.length} tool(s)${machine?" &middot; mirrors "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}${absent?` &middot; <span style="color:var(--bad);font-weight:600">${absent} to load</span>`:""}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
+        <button class="mini link" onclick="showCoverage('${rid(s)}')">Coverage${absent?`<span class="cbadge">${absent}</span>`:""}</button>
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
         <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
   }).join("");
+}
+
+// ---- Coverage: a set vs the machine it mirrors (smooth-core#19) -------------
+// member.status -> [pill class, label]; absent is styled to be unmistakable.
+const MEMBER_STATUS = { in_sync:["ok","in sync"], number_mismatch:["warn","number mismatch"],
+                        absent_on_machine:["bad","absent on machine"] };
+const SLOT_STATUS   = { machine_only:["info","machine only"], unbound_slot:["warn","unbound slot"] };
+function covChip(cls, n, label){ n=n||0; return `<span class="chip ${n&&cls?cls:""}"><b>${n}</b> ${esc(label)}</span>`; }
+function toolLabel(id){ return id?(state.toolNames[id]||id.slice(0,8)):""; }
+
+function closeCoverage(){ $("#coverage").style.display="none"; }
+async function showCoverage(setId){
+  const set=state.toolsets.find(x=>rid(x)===setId);
+  const name=set?(cf(set,"name")||rid(set).slice(0,8)):setId.slice(0,8);
+  $("#covtitle").textContent="Coverage · "+name;
+  $("#covbody").innerHTML=`<div class="muted">Loading…</div>`;
+  $("#coverage").style.display="flex";
+  try { const cov=await api("GET","/tool-set-records/"+setId+"/coverage");
+        $("#covbody").innerHTML=coverageHTML(setId, cov);
+  } catch(e){ $("#covbody").innerHTML=`<div class="muted">Couldn't load coverage: ${esc(e.message)}</div>`; }
+}
+
+function coverageHTML(setId, cov){
+  // Not linked to a machine: explain, and offer to link one (assert machine_id).
+  if(!cov.applicable){
+    const opts = state.machines.length
+      ? state.machines.map(m=>`<button class="mini create" onclick="linkSetToMachine('${setId}','${rid(m)}')">Link to ${esc(state.machineNames[rid(m)])}</button>`).join("")
+      : `<span class="muted">No machines registered yet.</span>`;
+    return `<div class="explain">This set <b>isn't linked to a machine</b>, so there's nothing to mirror.${cov.reason?` <span class="muted">(${esc(cov.reason)})</span>`:""}</div>
+      <div class="muted" style="margin-bottom:.5rem">Link it to a machine to compare its tools against what's loaded:</div>
+      <div class="rowact">${opts}</div>`;
+  }
+  const sm=cov.summary||{}, mname=state.machineNames[cov.machine_id]||(cov.machine_id||"").slice(0,8);
+  let html="";
+  // The headline: tools promised in the set but not yet on the machine.
+  if(sm.absent_on_machine) html+=`<div class="callout"><b>${sm.absent_on_machine} tool(s)</b> in this set ${sm.absent_on_machine===1?"is":"are"} <b>not on ${esc(mname)}</b> yet — the tools to order or load.</div>`;
+  html+=`<div class="muted">Mirroring <b>${esc(mname)}</b> · ${sm.total_members} set tool(s) vs ${sm.total_slots} machine slot(s)</div>`;
+  html+=`<div class="covsum">`+
+    covChip("ok",   sm.in_sync,           "in sync")+
+    covChip("bad",  sm.absent_on_machine, "absent on machine")+
+    covChip("warn", sm.number_mismatch,   "number mismatch")+
+    covChip("bad",  sm.number_collision,  "collision")+
+    covChip("",     sm.machine_only,      "machine only")+
+    covChip("",     sm.unbound_slot,      "unbound slot")+
+    `</div>`;
+
+  // Members: absent first, then mismatches, then in-sync, so problems lead.
+  const rank={absent_on_machine:0, number_mismatch:1, in_sync:2};
+  const members=(cov.members||[]).slice().sort((a,b)=>{
+    const ra=rank[a.status]??3, rb=rank[b.status]??3;
+    if(ra!==rb) return ra-rb;
+    return (b.collides?1:0)-(a.collides?1:0);   // collisions lead within a status
+  });
+  if(members.length){
+    html+=`<table><tr><th>Tool</th><th>Set&nbsp;#</th><th>Machine&nbsp;#</th><th>Status</th></tr>`+
+      members.map(m=>{
+        const st=MEMBER_STATUS[m.status]||["",m.status];
+        const absent=m.status==="absent_on_machine";
+        const machCell=absent?`<span class="muted">not loaded</span>`
+                              :esc(String(m.machine_tool_number ?? "—"));
+        const collide=m.collides
+          ?` <span class="pill bad" title="shares a T-number with: ${esc((m.collides_with||[]).map(toolLabel).join(', '))}">collision</span>`:"";
+        return `<tr class="${absent?'absent':''}">
+          <td>${esc(toolLabel(m.tool_record_id))}</td>
+          <td>${esc(String(m.set_number ?? "—"))}</td>
+          <td>${machCell}</td>
+          <td><span class="pill ${st[0]}">${esc(st[1])}</span>${collide}</td></tr>`;
+      }).join("")+`</table>`;
+  } else {
+    html+=`<div class="muted">This set has no tools yet.</div>`;
+  }
+
+  // Machine slots the set doesn't account for.
+  if((cov.slots||[]).length){
+    html+=`<div class="muted" style="margin-top:1rem">Machine slots not in this set</div>`+
+      `<table><tr><th>Machine&nbsp;#</th><th>Holds</th><th>Status</th></tr>`+
+      cov.slots.map(s=>{
+        const st=SLOT_STATUS[s.status]||["",s.status];
+        const holds=s.bound_instance_id?esc(toolLabel(s.bound_instance_id))
+                                        :`<span class="muted">empty</span>`;
+        return `<tr><td>T${esc(String(s.tool_number ?? "—"))}</td>
+          <td>${holds}</td><td><span class="pill ${st[0]}">${esc(st[1])}</span></td></tr>`;
+      }).join("")+`</table>`;
+  }
+
+  // A clear path to make numbers match when they don't (the reconcile door).
+  if(sm.number_mismatch || sm.machine_only){
+    html+=`<div class="row" style="margin-top:1rem"><span class="muted">Numbers out of step with the machine?</span>
+      <button class="mini link" onclick="reconcileSetCoverage('${setId}')">Reconcile numbers to machine</button></div>`;
+  }
+  return html;
+}
+
+// Link an existing set to a machine (assert only — no reconcile — so coverage
+// shows the true current diff, including mismatches, before any alignment).
+async function linkSetToMachine(setId, machineId){
+  try {
+    await api("POST","/tool-set-records/"+setId+"/assert",{path:"machine_id",value:machineId,actor:"human@web"});
+    toast("Linked to "+(state.machineNames[machineId]||"machine")+".");
+    await refresh();
+    showCoverage(setId);
+  } catch(e){ toast(e.message); }
+}
+async function reconcileSetCoverage(setId){
+  if(!(await confirmDialog("Reconcile this set's tool numbers to match the machine's slots?"))) return;
+  try { await api("POST","/tool-set-records/"+setId+"/reconcile");
+        toast("Reconciled numbers from the machine.");
+        await refresh(); showCoverage(setId);
+  } catch(e){ toast(e.message); }
 }
 
 // ---- Machines (+ tool tables) ----------------------------------------------

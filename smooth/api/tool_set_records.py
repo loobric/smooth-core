@@ -232,6 +232,145 @@ def set_members(record_id: str, req: MembersRequest, db: Session = Depends(get_d
     return _response(row)
 
 
+def compute_coverage(canonical: dict, entries: List[dict]) -> dict:
+    """Pure two-sided diff of a machine-linked set against that machine's slots.
+
+    Reads only; mutates nothing. `entries` is the machine's slots as plain dicts
+    ``{"id", "tool_number", "bound_instance_id"}``. The join matches a member's
+    ``tool_record_id`` to a slot's ``bound_instance_id`` — the same join
+    ``reconcile`` performs, surfaced here without writing.
+
+    Each member gets a binding ``status``:
+      - ``in_sync``           bound to a slot (set number agrees, or is unknown)
+      - ``number_mismatch``   bound, but the set claims a different T-number
+      - ``absent_on_machine`` in the set, no slot holds it (the promised-but-
+                              not-yet-real tool)
+    and a ``collides`` flag when two+ members claim one T-number. Machine slots
+    the set does not account for are returned separately as ``machine_only``
+    (bound to an instance outside the set) or ``unbound_slot``.
+    """
+    members = canonical.get("members", [])
+
+    slot_by_instance = {}
+    for e in entries:
+        bid = e.get("bound_instance_id")
+        if bid is not None:
+            slot_by_instance[bid] = e
+
+    # T-number collisions: members asserting the same non-null number.
+    by_number: dict = {}
+    for m in members:
+        num = (m.get("number") or {}).get("value")
+        if num is not None:
+            by_number.setdefault(num, []).append(m["tool_record_id"])
+    collided = {n: ids for n, ids in by_number.items() if len(ids) > 1}
+
+    member_rows = []
+    accounted_slots = set()
+    counts = {"in_sync": 0, "number_mismatch": 0, "absent_on_machine": 0,
+              "number_collision": 0}
+    for m in members:
+        rid = m["tool_record_id"]
+        set_number = (m.get("number") or {}).get("value")
+        slot = slot_by_instance.get(rid)
+        if slot is None:
+            status = "absent_on_machine"
+            machine_number = None
+            slot_id = None
+        else:
+            accounted_slots.add(slot["id"])
+            machine_number = slot.get("tool_number")
+            slot_id = slot["id"]
+            if set_number is not None and machine_number is not None \
+                    and set_number != machine_number:
+                status = "number_mismatch"
+            else:
+                status = "in_sync"
+        collides = set_number is not None and set_number in collided
+        counts[status] += 1
+        if collides:
+            counts["number_collision"] += 1
+        member_rows.append({
+            "tool_record_id": rid,
+            "set_number": set_number,
+            "machine_tool_number": machine_number,
+            "slot_id": slot_id,
+            "status": status,
+            "collides": collides,
+            "collides_with": [i for i in collided.get(set_number, []) if i != rid]
+                             if collides else [],
+        })
+
+    slot_rows = []
+    machine_only = unbound = 0
+    for e in entries:
+        if e["id"] in accounted_slots:
+            continue
+        if e.get("bound_instance_id") is not None:
+            status = "machine_only"
+            machine_only += 1
+        else:
+            status = "unbound_slot"
+            unbound += 1
+        slot_rows.append({
+            "slot_id": e["id"],
+            "tool_number": e.get("tool_number"),
+            "bound_instance_id": e.get("bound_instance_id"),
+            "status": status,
+        })
+
+    return {
+        "members": member_rows,
+        "slots": slot_rows,
+        "summary": {
+            "total_members": len(members),
+            "total_slots": len(entries),
+            "in_sync": counts["in_sync"],
+            "number_mismatch": counts["number_mismatch"],
+            "absent_on_machine": counts["absent_on_machine"],
+            "number_collision": counts["number_collision"],
+            "machine_only": machine_only,
+            "unbound_slot": unbound,
+        },
+    }
+
+
+@router.get("/{record_id}/coverage")
+def set_coverage(record_id: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_authenticated_user)):
+    """Read-only: how a tool set lines up against its linked machine's table.
+
+    Non-destructive sibling of `reconcile`. For a machine-linked set, returns a
+    per-tool diff so a CAM client can show "this set mirrors machine M, here is
+    each tool's bind status" — crucially, which tools are promised in the set but
+    not yet present on the machine. A set with no machine link has nothing to
+    diff against, so the response is `applicable: false` (not an error)."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    machine_id = (row.canonical.get("machine_id") or {}).get("value")
+    if not machine_id:
+        return {
+            "set_id": row.id,
+            "machine_id": None,
+            "applicable": False,
+            "reason": "set is not linked to a machine (machine_id unknown)",
+        }
+
+    entries = []
+    for e in db.query(EntryRow).filter(
+            EntryRow.user_id == user.id, EntryRow.machine_id == machine_id).all():
+        entries.append({
+            "id": e.id,
+            "tool_number": (e.canonical.get("tool_number") or {}).get("value"),
+            "bound_instance_id": e.bound_instance_id,
+        })
+
+    coverage = compute_coverage(row.canonical, entries)
+    return {"set_id": row.id, "machine_id": machine_id, "applicable": True,
+            **coverage}
+
+
 @router.post("/{record_id}/reconcile")
 def reconcile_numbers(record_id: str, db: Session = Depends(get_db),
                       user: User = Depends(get_authenticated_user)):

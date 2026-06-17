@@ -10,7 +10,7 @@
 ## Development Setup
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.11+
 - SQLite (development) / PostgreSQL (production)
 - UV (recommended) or pip
 
@@ -32,6 +32,7 @@
 3. Run tests:
    ```bash
    pytest
+   ```
 
 4. Start the development server:
    ```bash
@@ -43,17 +44,18 @@
 ```
 smooth-core/
 ├── smooth/               # Main package
-│   ├── api/             # API endpoints and routers
+│   ├── api/             # API endpoints and routers (v2 sectioned records)
 │   ├── auth/            # Authentication & authorization
+│   ├── contract/        # Authoritative contract models (tool schema, §10)
 │   ├── database/        # Database models and sessions
 │   ├── models/          # Data models and schemas
 │   ├── notifications/   # Notification system
-│   └── static/          # Static files and templates
+│   └── web/            # Web UI templates and static assets
 ├── tests/               # Test suite
+│   ├── contract/        # Schema contract tests (golden fixtures)
 │   ├── fixtures/        # Test fixtures
 │   ├── integration/     # Integration tests
-│   ├── property/        # Property-based tests
-│   └── unit/            # Unit tests
+│   └── unit/            # Unit tests (includes test_loobric_cli.py)
 ├── migrations/          # Database migrations
 └── docs/                # Documentation
 ```
@@ -140,29 +142,7 @@ Core dependencies:
 - pytest - Testing framework
 - hypothesis - Property-based testing
 
-### Planned Future Work
+## Planned Future Work
 
-### Authentication & Authorization
-**Remaining Work:**
-- [ ] Password reset/recovery flow
-- [ ] Email verification
-- [ ] Multi-factor authentication (MFA)
-- [ ] User role management (beyond admin/user)
-- [ ] API key expiration enforcement
-- [ ] Rate limiting per user/API key
-
-
-### Notification System
-- [ ] Write tests for MQTT message publishing
-- [ ] Write tests for WebSocket connections
-- [ ] Implement MQTT broker integration
-- [ ] Implement WebSocket server
-- [ ] Add auth context to notifications
-- [ ] Test subscription filtering by user/machine
-
-### Log Query API
-- [ ] Write tests for log search and filtering
-- [ ] Implement log query endpoints
-- [ ] Add log filtering by user, entity, date range
-- [ ] Implement audit log export for compliance
-- [ ] Test log retention policies
+Planned and aspirational work (auth hardening, notifications, log query API, and
+more) is tracked in [ROADMAP.md](../ROADMAP.md), the single source of truth.

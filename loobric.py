@@ -7,16 +7,16 @@ Loobric CLI Utility - Manage authentication and API keys for Smooth Core
 
 Usage:
     # Interactive login (saves session)
-    loobric.py --login
-    loobric.py --logout
+    loobric --login
+    loobric --logout
     
     # Session-based auth (after login)
-    loobric.py list-keys
-    loobric.py create-key <name> [options]
+    loobric list-keys
+    loobric create-key <name> [options]
     
     # API key auth (one-off commands)
-    loobric.py --api-key <key> list-keys
-    loobric.py --api-key <key> --base-url https://api.loobric.com list-tool-sets
+    loobric --api-key <key> list-keys
+    loobric --api-key <key> --base-url https://api.loobric.com list-tool-sets
 
 Environment Variables:
     LOOBRIC_BASE_URL - Default base URL (can be overridden with --base-url)
@@ -231,7 +231,7 @@ def register(email: str = None, password: str = None):
     if data.get('id'):
         print(f"  User ID: {data.get('id')}")
     print("\nYou can now login with:")
-    print(f"  ./loobric.py login {email}")
+    print(f"  loobric login {email}")
 
 
 def login(email: str = None, password: str = None, base_url: str = None):
@@ -358,25 +358,23 @@ def revoke_key(key_id: str):
 
 
 def list_tool_sets():
-    """List the user's tool sets (v2 facade: /api/v1/tool-sets)."""
-    data = make_request("GET", "/tool-sets", require_auth=True)
+    """List the user's tool sets (v2 facade: /api/v1/tool-set-records)."""
+    items = make_request("GET", "/tool-set-records", require_auth=True).get("items", [])
 
-    if not data.get("items"):
+    if not items:
         print("No tool sets found.")
         return
 
-    print(f"\nTool Sets ({len(data['items'])}):")
+    print(f"\nTool Sets ({len(items)}):")
     print("=" * 80)
-    for tool_set in data["items"]:
-        print(f"  ID: {tool_set.get('id')}")
-        print(f"  Name: {tool_set.get('name')}")
-        if tool_set.get('description'):
-            print(f"  Description: {tool_set.get('description')}")
-        members = tool_set.get('tool_record_ids', [])
+    for tool_set in items:
+        print(f"  ID: {_rid(tool_set)}")
+        print(f"  Name: {_cval(tool_set, 'name')}")
+        members = (tool_set.get("canonical") or {}).get("members") or []
         print(f"  Members: {len(members)} tool record(s)")
-        if tool_set.get('updated_at'):
-            print(f"  Updated: {tool_set.get('updated_at')}")
-        print(f"  Version: {tool_set.get('version')}")
+        if _ival(tool_set, 'updated_at'):
+            print(f"  Updated: {_ival(tool_set, 'updated_at')}")
+        print(f"  Version: {_ival(tool_set, 'version')}")
         print("=" * 80)
 
 
@@ -387,7 +385,7 @@ def list_pending():
     binding proposals awaiting a human. Resolve with `resolve <id> confirm`
     or `resolve <id> reject`.
     """
-    data = make_request("GET", "/inbox", require_auth=True)
+    data = make_request("GET", "/instance-inbox", require_auth=True)
     items = data.get("items", [])
     if not items:
         print("Inbox is empty - nothing pending.")
@@ -407,16 +405,14 @@ def list_pending():
     print("            a wrong confirm is currently hard to undo.")
     print("=" * 78)
     for item in items:
-        entry = item.get("entry", {})
-        record = item.get("proposed_record", {})
+        slot = item.get("slot", {})
+        proposed = item.get("proposed_instance", {})
         print(f"  ID: {item.get('id')[:8]}")
-        print(f"  Type: {item.get('type')}")
-        print(f"  Machine entry: T{entry.get('tool_number')} "
-              f"({entry.get('description') or 'no description'})")
-        print(f"  Proposed match: {record.get('name')}")
+        print(f"  Machine entry: T{slot.get('tool_number')}")
+        print(f"  Proposed match: {proposed.get('name')}")
         print(f"  Confidence: {item.get('confidence'):.0%} - {item.get('reason')}")
         print("-" * 78)
-    print("Resolve with: loobric.py resolve <id> confirm|reject")
+    print("Resolve with: loobric resolve <id> confirm|reject")
 
 
 def resolve_pending(item_id: str, action: str):
@@ -429,61 +425,118 @@ def resolve_pending(item_id: str, action: str):
         item_id: Inbox item id or unique prefix (from `pending`)
         action: "confirm" (bind entry to proposed record) or "reject"
     """
-    if len(item_id) < 36:
-        open_items = make_request("GET", "/inbox", require_auth=True).get("items", [])
-        matches = [i for i in open_items if i.get("id", "").startswith(item_id)]
-        if not matches:
-            print(f"Error: no open inbox item starts with '{item_id}'", file=sys.stderr)
-            sys.exit(1)
-        if len(matches) > 1:
-            print(f"Error: '{item_id}' is ambiguous ({len(matches)} matches):", file=sys.stderr)
-            for m in matches:
-                entry = m.get("entry", {})
-                print(f"  {m['id'][:8]}  T{entry.get('tool_number')} "
-                      f"-> {m.get('proposed_record', {}).get('name')}", file=sys.stderr)
-            sys.exit(1)
-        item_id = matches[0]["id"]
-    data = make_request("POST", f"/inbox/{item_id}/{action}", require_auth=True)
-    entry = data.get("entry", {})
-    record = data.get("proposed_record", {})
+    # The confirm/reject responses no longer echo the slot/instance, so resolve
+    # the item against the open inbox first — this both supports id prefixes and
+    # gives us the details for a friendly message.
+    open_items = make_request("GET", "/instance-inbox", require_auth=True).get("items", [])
+    matches = [i for i in open_items if i.get("id", "").startswith(item_id)]
+    if not matches:
+        print(f"Error: no open inbox item starts with '{item_id}'", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"Error: '{item_id}' is ambiguous ({len(matches)} matches):", file=sys.stderr)
+        for m in matches:
+            slot = m.get("slot", {})
+            print(f"  {m['id'][:8]}  T{slot.get('tool_number')} "
+                  f"-> {m.get('proposed_instance', {}).get('name')}", file=sys.stderr)
+        sys.exit(1)
+    item = matches[0]
+    slot = item.get("slot", {})
+    proposed = item.get("proposed_instance", {})
+    make_request("POST", f"/instance-inbox/{item['id']}/{action}", require_auth=True)
     if action == "confirm":
-        print(f"Linked: T{entry.get('tool_number')} and '{record.get('name')}' are "
+        print(f"Linked: T{slot.get('tool_number')} and '{proposed.get('name')}' are "
               f"now the same tool. No data was changed on either side; future "
               f"changes will route between them.")
     else:
-        print(f"Dismissed: T{entry.get('tool_number')} is not '{record.get('name')}'. "
+        print(f"Dismissed: T{slot.get('tool_number')} is not '{proposed.get('name')}'. "
               f"This suggestion won't reappear; the entry stays unbound.")
+
+
+# ---------------------------------------------------------------------------
+# Sectioned-record accessors (docs/TOOL_SCHEMA.md). Every v2 record is the
+# three-section shape {internal, canonical, clients}; the server-owned id lives
+# at internal.id and every canonical field is a provenance-tagged leaf
+# {value, unit?, source}. All listing/parsing routes through these so the CLI
+# never reaches for the retired flat top-level fields again.
+# ---------------------------------------------------------------------------
+
+def _rid(record: Dict[str, Any]) -> Optional[str]:
+    """The server-owned record id: internal.id."""
+    return (record.get("internal") or {}).get("id")
+
+
+def _ival(record: Dict[str, Any], key: str) -> Any:
+    """An internal-section value (version, created_at, updated_at, machine_id)."""
+    return (record.get("internal") or {}).get(key)
+
+
+def _cfield(record: Dict[str, Any], *path: str) -> Dict[str, Any]:
+    """The canonical leaf at a dotted path, e.g. ('geometry','diameter') ->
+    {value, unit?, source}. Returns {} when absent."""
+    node = record.get("canonical") or {}
+    for p in path:
+        node = (node or {}).get(p) or {}
+    return node if isinstance(node, dict) else {}
+
+
+def _cval(record: Dict[str, Any], *path: str) -> Any:
+    """The `.value` of the canonical leaf at a dotted path (None when absent)."""
+    return _cfield(record, *path).get("value")
 
 
 def _match_id(items: List[Dict[str, Any]], prefix: str, label: str) -> Dict[str, Any]:
     """Resolve a possibly-abbreviated id against a list (git short-SHA style).
 
     An exact match wins outright; otherwise a unique prefix match is used.
-    Exits with a helpful message on no/ambiguous match.
+    Exits with a helpful message on no/ambiguous match. Works on sectioned
+    records: the id is internal.id and the human label is canonical.name.value.
     """
-    exact = [i for i in items if i.get("id") == prefix]
+    exact = [i for i in items if _rid(i) == prefix]
     if exact:
         return exact[0]
-    matches = [i for i in items if str(i.get("id", "")).startswith(prefix)]
+    matches = [i for i in items if str(_rid(i) or "").startswith(prefix)]
     if not matches:
         print(f"Error: no {label} matches '{prefix}'", file=sys.stderr)
         sys.exit(1)
     if len(matches) > 1:
         print(f"Error: '{prefix}' is ambiguous ({len(matches)} {label}s):", file=sys.stderr)
         for m in matches:
-            print(f"  {str(m.get('id'))[:8]}  {m.get('name', '')}", file=sys.stderr)
+            print(f"  {str(_rid(m))[:8]}  {_cval(m, 'name') or ''}", file=sys.stderr)
         sys.exit(1)
     return matches[0]
 
 
 def _resolve_machine(prefix: str) -> Dict[str, Any]:
-    items = make_request("GET", "/machines", require_auth=True).get("items", [])
+    items = make_request("GET", "/machine-records", require_auth=True).get("items", [])
     return _match_id(items, prefix, "machine")
 
 
 def _resolve_record(prefix: str) -> Dict[str, Any]:
-    items = make_request("GET", "/tool-records", require_auth=True).get("items", [])
+    items = make_request("GET", "/tool-instance-records", require_auth=True).get("items", [])
     return _match_id(items, prefix, "tool record")
+
+
+def _resolve_tool_set(prefix: str) -> Dict[str, Any]:
+    items = make_request("GET", "/tool-set-records", require_auth=True).get("items", [])
+    return _match_id(items, prefix, "tool set")
+
+
+def _resolve_slot(machine: Dict[str, Any], tool_number: int) -> Dict[str, Any]:
+    """Find a machine's tool-table slot record (a sectioned entry) by its
+    observed tool number. v2 mutations (bind/unbind/delete-entry/adopt) key off
+    the slot's own record id, not machine+tool_number, so callers resolve the
+    slot first."""
+    items = make_request(
+        "GET", f"/tool-table-entry-records?machine_id={_rid(machine)}",
+        require_auth=True,
+    ).get("items", [])
+    for entry in items:
+        if _cval(entry, "tool_number") == tool_number:
+            return entry
+    print(f"Error: machine '{_cval(machine, 'name')}' has no tool T{tool_number}",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def _confirm(message: str, assume_yes: bool) -> bool:
@@ -499,152 +552,229 @@ def _confirm(message: str, assume_yes: bool) -> bool:
 
 def list_machines():
     """List the user's machines (id, name, controller)."""
-    items = make_request("GET", "/machines", require_auth=True).get("items", [])
+    items = make_request("GET", "/machine-records", require_auth=True).get("items", [])
     if not items:
         print("No machines found.")
         return
     print(f"\nMachines ({len(items)}):")
     print("=" * 78)
     for m in items:
-        print(f"  ID: {m.get('id')}")
-        print(f"  Name: {m.get('name')}")
-        if m.get("controller_type"):
-            print(f"  Controller: {m.get('controller_type')}")
+        print(f"  ID: {_rid(m)}")
+        print(f"  Name: {_cval(m, 'name')}")
+        if _cval(m, "controller_type"):
+            print(f"  Controller: {_cval(m, 'controller_type')}")
         print("=" * 78)
 
 
 def list_tools():
-    """List the user's tool records (the public facade)."""
-    items = make_request("GET", "/tool-records", require_auth=True).get("items", [])
+    """List the user's tool instance records (the public facade)."""
+    items = make_request("GET", "/tool-instance-records", require_auth=True).get("items", [])
     if not items:
         print("No tool records found.")
         return
     print(f"\nTool Records ({len(items)}):")
     print("=" * 78)
     for t in items:
-        print(f"  ID: {t.get('id')}")
-        print(f"  Name: {t.get('name')}")
-        g = t.get("geometry") or {}
+        print(f"  ID: {_rid(t)}")
+        print(f"  Name: {_cval(t, 'name')}")
         bits = []
-        if g.get("shape"):
-            bits.append(str(g["shape"]))
-        if g.get("diameter"):
-            bits.append(f"⌀{g['diameter']}{g.get('diameter_unit', '')}")
+        shape = _cval(t, "geometry", "shape")
+        if shape:
+            bits.append(str(shape))
+        dia = _cfield(t, "geometry", "diameter")
+        if dia.get("value") is not None:
+            bits.append(f"⌀{dia['value']}{dia.get('unit', '')}")
         if bits:
             print(f"  Geometry: {' · '.join(bits)}")
-        bound = t.get("machines", [])
-        if bound:
-            plural = "entries" if len(bound) != 1 else "entry"
-            print(f"  Bound: {len(bound)} machine {plural}")
         print("=" * 78)
 
 
 def show_tool_table(machine_id: str):
     """List a machine's tool-table entries and their bind state."""
     machine = _resolve_machine(machine_id)
+    name = _cval(machine, "name")
     items = make_request(
-        "GET", f"/machines/{machine['id']}/tool-table", require_auth=True
+        "GET", f"/tool-table-entry-records?machine_id={_rid(machine)}", require_auth=True
     ).get("items", [])
     if not items:
-        print(f"{machine['name']}: empty tool table.")
+        print(f"{name}: empty tool table.")
         return
     plural = "entries" if len(items) != 1 else "entry"
-    print(f"\n{machine['name']} tool table ({len(items)} {plural}):")
+    print(f"\n{name} tool table ({len(items)} {plural}):")
     print("=" * 78)
     for e in items:
-        rec_id = e.get("tool_record_id")
+        rec_id = _cval(e, "bound_instance_id")
         state = f"bound -> {str(rec_id)[:8]}" if rec_id else "unbound"
-        dia = (e.get("offsets") or {}).get("diameter")
-        line = f"  T{e.get('tool_number')}: {e.get('description') or '—'}"
-        if dia:
+        dia = _cval(e, "offsets", "diameter")
+        line = f"  T{_cval(e, 'tool_number')}: {_cval(e, 'description') or '—'}"
+        if dia is not None:
             line += f"  ⌀{dia}"
         print(f"{line}  [{state}]")
     print("=" * 78)
 
 
+def link_machine(set_id: str, machine_id: str, actor: str = "human@cli"):
+    """Link a tool set to a machine: 'this set mirrors this machine's table.'"""
+    tool_set = _resolve_tool_set(set_id)
+    machine = _resolve_machine(machine_id)
+    make_request(
+        "POST", f"/tool-set-records/{_rid(tool_set)}/assert",
+        body={"path": "machine_id", "value": _rid(machine), "actor": actor},
+        require_auth=True,
+    )
+    set_name = _cval(tool_set, "name") or str(_rid(tool_set))[:8]
+    print(f"✓ Tool set '{set_name}' now mirrors machine '{_cval(machine, 'name')}'.")
+
+
+def reconcile_set(set_id: str):
+    """Inherit each member's tool number from the linked machine's slots."""
+    tool_set = _resolve_tool_set(set_id)
+    res = make_request(
+        "POST", f"/tool-set-records/{_rid(tool_set)}/reconcile", require_auth=True
+    )
+    unreconciled = res.get("unreconciled", [])
+    print("✓ Member numbers reconciled from the machine.")
+    if unreconciled:
+        print(f"  {len(unreconciled)} member(s) had no machine slot (number left unknown):")
+        for rid in unreconciled:
+            print(f"    {str(rid)[:8]}")
+
+
+_COVERAGE_LABELS = {
+    "in_sync": "in sync",
+    "number_mismatch": "NUMBER MISMATCH",
+    "absent_on_machine": "NOT ON MACHINE",
+    "machine_only": "machine only (not in set)",
+    "unbound_slot": "unbound pocket",
+}
+
+
+def show_coverage(set_id: str):
+    """Show how a tool set lines up against its linked machine's tool table."""
+    tool_set = _resolve_tool_set(set_id)
+    set_name = _cval(tool_set, "name") or str(_rid(tool_set))[:8]
+    data = make_request(
+        "GET", f"/tool-set-records/{_rid(tool_set)}/coverage", require_auth=True
+    )
+    if not data.get("applicable"):
+        print(f"Tool set '{set_name}' is not linked to a machine — nothing to compare.")
+        print("Link it first:  loobric link-machine <set> <machine>")
+        return
+
+    members = data.get("members", [])
+    print(f"\nCoverage of '{set_name}' against machine {str(data['machine_id'])[:8]}:")
+    print("=" * 78)
+    for m in members:
+        set_n = m.get("set_number")
+        tnum = f"T{set_n}" if set_n is not None else "T?"
+        label = _COVERAGE_LABELS.get(m["status"], m["status"])
+        line = f"  {tnum:>4}  {str(m['tool_record_id'])[:8]}  [{label}]"
+        if m["status"] == "number_mismatch":
+            line += f"  (machine has it at T{m['machine_tool_number']})"
+        if m.get("collides"):
+            others = ", ".join(str(x)[:8] for x in m.get("collides_with", []))
+            line += f"  ⚠ shares T{set_n} with {others}"
+        print(line)
+
+    for s in data.get("slots", []):
+        label = _COVERAGE_LABELS.get(s["status"], s["status"])
+        tnum = f"T{s['tool_number']}" if s.get("tool_number") is not None else "T?"
+        print(f"  {tnum:>4}  {'—':>8}  [{label}]")
+    print("=" * 78)
+
+    s = data.get("summary", {})
+    absent = s.get("absent_on_machine", 0)
+    print(f"  {s.get('in_sync', 0)} in sync · {absent} not yet on machine · "
+          f"{s.get('number_mismatch', 0)} mismatched · "
+          f"{s.get('machine_only', 0)} machine-only · "
+          f"{s.get('unbound_slot', 0)} empty pockets")
+    if absent:
+        print(f"\n  {absent} tool(s) are in this library but not yet set up on the "
+              f"machine — the tools to order/load.")
+
+
 def delete_machine(machine_id: str, assume_yes: bool = False):
     """Delete a machine and its tool-table entries (tool records untouched)."""
     machine = _resolve_machine(machine_id)
+    name = _cval(machine, "name")
     if not _confirm(
-        f"Delete machine '{machine['name']}' and its tool-table entries?", assume_yes
+        f"Delete machine '{name}' and its tool-table entries?", assume_yes
     ):
         print("Aborted.")
         return
-    r = make_request("DELETE", "/machines", body={"ids": [machine["id"]]}, require_auth=True)
-    if r.get("errors"):
-        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
-        sys.exit(1)
-    print(f"✓ Deleted machine '{machine['name']}'. Tool records were not affected.")
+    make_request("DELETE", f"/machine-records/{_rid(machine)}", require_auth=True)
+    print(f"✓ Deleted machine '{name}'. Tool records were not affected.")
 
 
 def delete_tool(record_id: str, assume_yes: bool = False):
     """Delete a tool record; entries bound to it are unbound, not orphaned."""
     rec = _resolve_record(record_id)
+    name = _cval(rec, "name")
     if not _confirm(
-        f"Delete tool record '{rec['name']}'? Bound machine entries will be unbound "
+        f"Delete tool record '{name}'? Bound machine entries will be unbound "
         f"(their data stays on the machine).", assume_yes
     ):
         print("Aborted.")
         return
-    r = make_request("DELETE", "/tool-records", body={"ids": [rec["id"]]}, require_auth=True)
-    if r.get("errors"):
-        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
-        sys.exit(1)
-    print(f"✓ Deleted tool record '{rec['name']}'. Any bound entries were unbound; "
+    make_request("DELETE", f"/tool-instance-records/{_rid(rec)}", require_auth=True)
+    print(f"✓ Deleted tool record '{name}'. Any bound entries were unbound; "
           f"their data stays on the machine.")
 
 
 def delete_entry(machine_id: str, tool_number: int, assume_yes: bool = False):
     """Remove a machine-reported tool-table entry by tool number."""
     machine = _resolve_machine(machine_id)
+    name = _cval(machine, "name")
+    slot = _resolve_slot(machine, tool_number)
     if not _confirm(
-        f"Remove T{tool_number} from '{machine['name']}'?", assume_yes
+        f"Remove T{tool_number} from '{name}'?", assume_yes
     ):
         print("Aborted.")
         return
-    r = make_request(
-        "DELETE", f"/machines/{machine['id']}/tool-table",
-        body={"tool_numbers": [tool_number]}, require_auth=True,
-    )
-    if r.get("errors"):
-        print(f"Error: {r['errors'][0].get('message')}", file=sys.stderr)
-        sys.exit(1)
-    print(f"✓ Removed T{tool_number} from '{machine['name']}'. "
+    make_request("DELETE", f"/tool-table-entry-records/{_rid(slot)}", require_auth=True)
+    print(f"✓ Removed T{tool_number} from '{name}'. "
           f"If the controller pushes it again, it returns.")
 
 
 def bind_entry(machine_id: str, tool_number: int, record_id: str):
     """Link an unbound entry to an owned tool record (overwrites nothing)."""
     machine = _resolve_machine(machine_id)
+    m_name = _cval(machine, "name")
+    slot = _resolve_slot(machine, tool_number)
     rec = _resolve_record(record_id)
     make_request(
-        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/bind",
-        body={"tool_record_id": rec["id"]}, require_auth=True,
+        "POST", f"/tool-table-entry-records/{_rid(slot)}/bind",
+        body={"instance_id": _rid(rec)}, require_auth=True,
     )
-    print(f"✓ Linked T{tool_number} @ {machine['name']} -> '{rec['name']}'. "
+    print(f"✓ Linked T{tool_number} @ {m_name} -> '{_cval(rec, 'name')}'. "
           f"Nothing was overwritten on either side.")
 
 
 def unbind_entry(machine_id: str, tool_number: int):
     """Unbind an entry; it keeps its data and becomes eligible for suggestions."""
     machine = _resolve_machine(machine_id)
+    m_name = _cval(machine, "name")
+    slot = _resolve_slot(machine, tool_number)
     make_request(
-        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/unbind",
+        "POST", f"/tool-table-entry-records/{_rid(slot)}/unbind",
         require_auth=True,
     )
-    print(f"✓ Unbound T{tool_number} @ {machine['name']}. The entry keeps its data.")
+    print(f"✓ Unbound T{tool_number} @ {m_name}. The entry keeps its data.")
 
 
 def create_record_from_entry(machine_id: str, tool_number: int, name: str = None):
-    """Create a tool record from an entry and bind it in one step."""
+    """Adopt a slot's tool: mint a new instance record seeded from the slot's
+    observations and install it, in one step (v2 /adopt)."""
     machine = _resolve_machine(machine_id)
+    m_name = _cval(machine, "name")
+    slot = _resolve_slot(machine, tool_number)
     body = {"name": name} if name else None
-    entry = make_request(
-        "POST", f"/machines/{machine['id']}/tool-table/{tool_number}/create-record",
+    result = make_request(
+        "POST", f"/tool-table-entry-records/{_rid(slot)}/adopt",
         body=body, require_auth=True,
     )
-    rec_id = str(entry.get("tool_record_id") or "")[:8]
-    print(f"✓ Created a record from T{tool_number} @ {machine['name']} and linked it "
+    rec_id = str(result.get("instance_id") or "")[:8]
+    print(f"✓ Created a record from T{tool_number} @ {m_name} and linked it "
           f"(record {rec_id}).")
 
 
@@ -702,41 +832,41 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   # First time setup - register a user on fresh database
-  loobric.py --base-url http://127.0.0.1:8000 register admin@example.com
+  loobric --base-url http://127.0.0.1:8000 register admin@example.com
   
   # Interactive login (prompts for URL, email, password)
-  loobric.py --login
+  loobric --login
   
   # Login with specific URL and email
-  loobric.py --base-url http://127.0.0.1:8000 login user@example.com
+  loobric --base-url http://127.0.0.1:8000 login user@example.com
   
   # After login, base URL is saved - just run commands
-  loobric.py list-keys
-  loobric.py create-key "My Key" --scopes "read write:items"
+  loobric list-keys
+  loobric create-key "My Key" --scopes "read write:items"
   
   # Create a key with tags and expiration
-  loobric.py create-key "Backup Script" \\
+  loobric create-key "Backup Script" \\
     --scopes "read" --tags "backup production" --expires-at "2025-12-31T23:59:59Z"
   
   # Revoke an API key
-  loobric.py revoke-key <key_id>
+  loobric revoke-key <key_id>
 
   # Inspect and manage machines, tool records, and reported entries
-  loobric.py list-machines
-  loobric.py list-tools
-  loobric.py tool-table <machine>          # ids accept unique prefixes
-  loobric.py bind <machine> 3 <record>     # link entry T3 to a record
-  loobric.py create-record <machine> 3 --name "1/4 downcut"
-  loobric.py unbind <machine> 3
-  loobric.py delete-entry <machine> 3 --yes
-  loobric.py delete-tool <record> --yes
-  loobric.py delete-machine <machine> --yes
+  loobric list-machines
+  loobric list-tools
+  loobric tool-table <machine>          # ids accept unique prefixes
+  loobric bind <machine> 3 <record>     # link entry T3 to a record
+  loobric create-record <machine> 3 --name "1/4 downcut"
+  loobric unbind <machine> 3
+  loobric delete-entry <machine> 3 --yes
+  loobric delete-tool <record> --yes
+  loobric delete-machine <machine> --yes
 
   # Check server health
-  loobric.py ping
+  loobric ping
   
   # Logout
-  loobric.py logout
+  loobric logout
 
 Environment Variables:
   LOOBRIC_BASE_URL - Default base URL (can override with --base-url)
@@ -833,6 +963,40 @@ Environment Variables:
         description="List the user's tool sets (named collections of ToolRecords)."
     )
     list_tool_sets_parser.set_defaults(func=lambda args: list_tool_sets())
+
+    # === link-machine ===
+    link_parser = subparsers.add_parser(
+        "link-machine",
+        help="Link a tool set to a machine ('this set mirrors this table')",
+        description="Assert a tool set's machine_id so it mirrors that machine's "
+                    "tool table. Enables 'reconcile' and 'coverage'."
+    )
+    link_parser.add_argument("set", help="Tool set id or unique prefix")
+    link_parser.add_argument("machine", help="Machine id or unique prefix")
+    link_parser.set_defaults(func=lambda args: link_machine(args.set, args.machine))
+
+    # === reconcile ===
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="Inherit member tool numbers from the linked machine's slots",
+        description="For a machine-linked set, set each member's tool number from "
+                    "the machine's slots (the machine wins). Members with no slot "
+                    "are reported, never silently renumbered."
+    )
+    reconcile_parser.add_argument("set", help="Tool set id or unique prefix")
+    reconcile_parser.set_defaults(func=lambda args: reconcile_set(args.set))
+
+    # === coverage ===
+    coverage_parser = subparsers.add_parser(
+        "coverage",
+        help="Show how a tool set lines up against its linked machine's table",
+        description="Read-only diff of a machine-linked tool set against that "
+                    "machine's tool table: which tools are in sync, which are "
+                    "promised in the set but not yet on the machine, which machine "
+                    "pockets the set doesn't account for, and number collisions."
+    )
+    coverage_parser.add_argument("set", help="Tool set id or unique prefix")
+    coverage_parser.set_defaults(func=lambda args: show_coverage(args.set))
 
     # === pending / resolve (v2 inbox) ===
     pending_parser = subparsers.add_parser(
@@ -980,7 +1144,7 @@ Environment Variables:
     
     # Validate BASE_URL is set
     if not BASE_URL:
-        print("Error: Base URL required. Use --base-url, set LOOBRIC_BASE_URL, or run 'loobric.py --login' first", file=sys.stderr)
+        print("Error: Base URL required. Use --base-url, set LOOBRIC_BASE_URL, or run 'loobric --login' first", file=sys.stderr)
         sys.exit(1)
     
     if args.verbose:

@@ -25,6 +25,17 @@ Planned work (standards import, more clients, hosted offering) lives in [ROADMAP
 - [For Users and the curious](docs/QUICK_START.md)
 - [For Developers](docs/DEVELOPMENT.md)
 
+## How-to guides
+
+Task-oriented walkthroughs for linking a CNC control and a CAM library:
+
+- [Mirror your machine's tools into CAM](docs/HOWTO_MIRROR_MACHINE_TOOLS_TO_CAM.md)
+  — the machine has the tools; get them into your CAM library (control → CAM).
+- [Reconcile a machine and a CAM library you built separately](docs/HOWTO_RECONCILE_MACHINE_AND_CAM_LIBRARY.md)
+  — both sides exist; link them by identity, then reconcile numbering.
+- Coming soon: the reverse direction (CAM → control), once the coverage view
+  ships ([issue #18](https://github.com/loobric/smooth-core/issues/18)).
+
 ## Getting Help
 
 - **Issues**: If you encounter any problems, please [open an issue](https://github.com/loobric/smooth-core/issues).
@@ -42,9 +53,11 @@ This project was started out of a personal need to synchronize linuxcnc machine 
 
 [smooth-linuxcnc](https://github.com/loobric/smooth-linuxcnc)
 
-### **loobric.py** - Command Line Interface
+### **loobric** - Command Line Interface
 
-installed with smooth-core
+Installed with smooth-core (the `loobric` command). Use it to manage API keys
+and to review and bind reported tools. See the
+[CLI reference and walkthrough](docs/CLI.md).
 
 ## Contributing
 
