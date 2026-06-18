@@ -203,8 +203,8 @@ COMPONENT_ROLES = {"cutting_item", "tool_item", "adaptive_item", "assembly_item"
 
 class Component(BaseModel):
     """One entry in an assembly's `components` list: a reference to another
-    record, the ISO role it plays, and an opaque connection/interface slot
-    (HSK/BT/Capto coupling, gauge offset, stick-out, …) left flexible for now."""
+    record, the ISO role it plays, and an opaque connection/interface coupling
+    (HSK/BT/Capto interface, gauge offset, stick-out, …) left flexible for now."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -236,7 +236,7 @@ class InstanceCanonical(BaseModel):
     """A physical tool's agreed truth: measured geometry, optional catalog
     link (unknown until asserted), install status. May be an assembly (a built
     physical stack) via item_type/components — the assembly instance is what a
-    machine slot binds."""
+    machine tool-table entry binds."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -282,12 +282,12 @@ class EntryOffsets(BaseModel):
 
 
 class EntryCanonical(BaseModel):
-    """A machine slot's agreed truth."""
+    """A machine tool-table entry's agreed truth."""
 
     model_config = ConfigDict(extra="forbid")
 
     tool_number: Field                 # the CAM<->CNC contract; observed
-    bound_instance_id: Field           # the physical tool in the slot
+    bound_instance_id: Field           # the physical tool in the entry
     description: Optional[Field] = None  # the table comment (observed label), e.g. "Probe"
     offsets: EntryOffsets = EntryOffsets()
 
@@ -303,7 +303,7 @@ class SetMember(BaseModel):
 
 class ToolSetCanonical(BaseModel):
     """An agnostic named collection. `machine_id` (optional) links it to a
-    machine whose slots its member numbers then inherit."""
+    machine whose entries its member numbers then inherit."""
 
     model_config = ConfigDict(extra="forbid")
 

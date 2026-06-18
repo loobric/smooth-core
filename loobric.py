@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
-# GNU Affero General Public License v3.0 only
+# MIT License
 # Copyright (c) 2025 sliptonic
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: MIT
+#
+# loobric.py is THE reference Python client for Smooth Core: a single,
+# stdlib-only file that exercises every public API operation. It is licensed MIT
+# (not AGPL like the server it lives beside) so MIT clients may vendor or import
+# it. Other Python clients (FreeCAD, future Fusion) reuse this rather than
+# writing their own HTTP client. See REBOOT.md Phase 2.5.
+#
+# Two layers in one file: an ops/library layer (returns data, raises typed
+# errors, no printing) usable via `import loobric`, and a thin CLI shell
+# (argparse + formatting) usable via `python loobric.py <verb>`.
 """
 Loobric CLI Utility - Manage authentication and API keys for Smooth Core
 
@@ -45,6 +55,45 @@ BASE_URL: str = ""  # Will be set from CLI or environment
 # Session file location
 SESSION_DIR = Path.home() / ".loobric"
 SESSION_FILE = SESSION_DIR / "session.json"
+
+
+# ---------------------------------------------------------------------------
+# Library errors. The ops/library layer (Client, make_request) NEVER prints or
+# exits — it raises these so importing clients can handle failure. The CLI shell
+# (main) catches LoobricError and turns it into a message + exit code.
+# ---------------------------------------------------------------------------
+
+class LoobricError(Exception):
+    """Base class for every error the loobric library raises."""
+
+
+class ConnectionFailed(LoobricError):
+    """The server could not be reached (network/DNS/refused/timeout)."""
+
+
+class HTTPError(LoobricError):
+    """The server returned a non-2xx status. Carries .status and .detail."""
+
+    def __init__(self, status: int, detail: Any):
+        self.status = status
+        self.detail = detail
+        super().__init__(f"HTTP {status}: {detail}")
+
+
+class NotFound(HTTPError):
+    """404 — the resource does not exist."""
+
+
+class AuthRequired(HTTPError):
+    """401/403 — authentication is missing or insufficient."""
+
+
+def _http_error(status: int, detail: Any) -> HTTPError:
+    if status == 404:
+        return NotFound(status, detail)
+    if status in (401, 403):
+        return AuthRequired(status, detail)
+    return HTTPError(status, detail)
 
 
 def load_session():
@@ -104,16 +153,16 @@ def clear_session():
             print(f"Warning: Could not clear session file: {e}", file=sys.stderr)
 
 
-def get_connection():
-    """Create HTTP/HTTPS connection based on BASE_URL scheme."""
-    parsed = urllib.parse.urlparse(BASE_URL)
+def get_connection(base_url: Optional[str] = None):
+    """Create an HTTP/HTTPS connection for the given base URL (or the global)."""
+    base = base_url or BASE_URL
+    parsed = urllib.parse.urlparse(base)
     if parsed.scheme == "https":
         return http.client.HTTPSConnection(parsed.netloc)
     elif parsed.scheme == "http":
         return http.client.HTTPConnection(parsed.netloc)
     else:
-        print(f"Error: Unsupported scheme in base URL: {parsed.scheme}", file=sys.stderr)
-        sys.exit(1)
+        raise LoobricError(f"Unsupported scheme in base URL: {parsed.scheme!r}")
 
 
 def make_request(
@@ -121,51 +170,71 @@ def make_request(
     endpoint: str,
     body: Optional[Dict[str, Any]] = None,
     extra_headers: Optional[Dict[str, str]] = None,
-    require_auth: bool = False
+    require_auth: bool = False,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    session_cookie: Optional[str] = None,
+    raw_body: Optional[bytes] = None,
+    content_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Make authenticated HTTP request to Loobric API.
-    
+    """Make an HTTP request to the Smooth API and return parsed JSON.
+
+    The transport for both the CLI and the `Client` library. It NEVER prints or
+    exits — on failure it raises a `LoobricError` subclass (`NotFound`,
+    `AuthRequired`, `HTTPError`, `ConnectionFailed`). `base_url` / `api_key` /
+    `session_cookie` override the module globals so a `Client` can carry its own
+    config; when omitted the globals (set by the CLI) are used.
+
     Args:
-        method: HTTP method (GET, POST, DELETE, etc.)
-        endpoint: API endpoint path
-        body: Optional request body (will be JSON encoded)
+        method: HTTP method (GET, POST, DELETE, …)
+        endpoint: API path relative to /api/v1 (e.g. "/tool-set-records")
+        body: Optional request body (JSON-encoded)
         extra_headers: Optional additional headers
-        require_auth: If True, fail if no authentication is available
-    
+        require_auth: reserved; auth is decided by the server (solo vs multi-user)
+        base_url / api_key / session_cookie: per-call config overriding the globals
+
     Returns:
-        Parsed JSON response
+        Parsed JSON response (``{}`` for an empty 2xx body).
     """
     global SESSION_COOKIE, API_KEY
 
-    conn = get_connection()
+    conn = get_connection(base_url)
     path = urllib.parse.urljoin("/api/v1/", endpoint.lstrip("/"))
-    headers = extra_headers or {}
-    headers.update({
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    })
-    
-    # Prefer API key authentication over session cookie. With neither,
-    # send the request anyway and let the server decide: a solo-mode
-    # server (SMOOTH_SOLO=1) accepts it; a multi-tenant server returns
-    # 401 with a clear message. The client must not pre-judge auth.
-    if API_KEY:
-        headers["Authorization"] = f"Bearer {API_KEY}"
-    elif SESSION_COOKIE:
-        headers["Cookie"] = f"session={SESSION_COOKIE}"
+    headers = dict(extra_headers or {})
+    headers["Accept"] = "application/json"
+    if raw_body is None:
+        headers["Content-Type"] = "application/json"
+    elif content_type:
+        headers["Content-Type"] = content_type
 
-    body_str = json.dumps(body) if body else None
+    # Prefer API key over session cookie. With neither, send anyway and let the
+    # server decide: a solo-mode server (SMOOTH_SOLO=1) accepts it; a multi-user
+    # server returns 401. The client must not pre-judge auth.
+    key = api_key if api_key is not None else API_KEY
+    cookie = session_cookie if session_cookie is not None else SESSION_COOKIE
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    elif cookie:
+        headers["Cookie"] = f"session={cookie}"
+
+    # A raw body (e.g. a multipart upload) overrides the JSON path. Otherwise
+    # send the body whenever one is given, including an empty {} — some POST
+    # endpoints (e.g. record creation) require a JSON body even when it carries
+    # only defaults. `if body` would wrongly drop {} as falsy.
+    if raw_body is not None:
+        send_body = raw_body
+    else:
+        send_body = json.dumps(body) if body is not None else None
 
     try:
-        conn.request(method, path, body=body_str, headers=headers)
+        conn.request(method, path, body=send_body, headers=headers)
         response = conn.getresponse()
         status = response.status
         content = response.read().decode("utf-8")
 
-        # Extract session cookie from Set-Cookie header (for login)
+        # Capture the session cookie from a login response (CLI session auth).
         set_cookie = response.getheader("set-cookie") or response.getheader("Set-Cookie")
         if set_cookie:
-            # Parse: "session=VALUE; HttpOnly; ..." -> extract VALUE
             for part in set_cookie.split(";"):
                 part = part.strip()
                 if part.startswith("session="):
@@ -174,26 +243,323 @@ def make_request(
 
         if 200 <= status < 300:
             return json.loads(content) if content.strip() else {}
-        else:
-            try:
-                error_data = json.loads(content)
-                error_msg = error_data.get("detail", content)
-            except json.JSONDecodeError:
-                error_msg = content
-            print(f"Error: HTTP {status}: {error_msg}", file=sys.stderr)
-            sys.exit(1)
-    except http.client.HTTPException as e:
-        print(f"HTTP request failed: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ConnectionError as e:
-        print(f"Connection failed: {e}", file=sys.stderr)
-        print(f"Check that the server is running at {BASE_URL}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
-        sys.exit(1)
+        try:
+            detail = json.loads(content).get("detail", content)
+        except json.JSONDecodeError:
+            detail = content
+        raise _http_error(status, detail)
+    except (http.client.HTTPException, ConnectionError, OSError) as e:
+        raise ConnectionFailed(f"{e} (server at {base_url or BASE_URL})")
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Client — the reference library surface. Every method returns parsed data and
+# raises a LoobricError subclass on failure; none of them print. This is what
+# other Python clients (FreeCAD, Fusion) import and reuse:
+#
+#     from loobric import Client, NotFound
+#     c = Client(base_url="http://nas:8000", api_key="…")   # solo: api_key omitted
+#     for s in c.list_tool_sets(): ...
+#
+# IDs are real server ids; prefix matching (a CLI convenience) lives in the CLI
+# shell below, not here. The CLI builds a Client from the module globals via
+# _client(); the library delegates transport to make_request so a test that
+# patches loobric.make_request intercepts both layers.
+# ---------------------------------------------------------------------------
+
+class Client:
+    """A reusable Smooth API client. Returns data; raises LoobricError."""
+
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None,
+                 session_cookie: Optional[str] = None, transport=None):
+        self.base_url = (base_url or BASE_URL or "").rstrip("/")
+        self.api_key = api_key
+        self.session_cookie = session_cookie
+        # transport(method, endpoint, **kw) -> dict, raising LoobricError. Defaults
+        # to make_request (real HTTP); a test can inject one that calls the app
+        # in-process. None => resolve make_request at call time (so patching the
+        # module-level make_request still intercepts).
+        self._transport = transport
+
+    def _send(self, method: str, endpoint: str, **kw):
+        return (self._transport or make_request)(
+            method, endpoint, base_url=self.base_url or None,
+            api_key=self.api_key, session_cookie=self.session_cookie, **kw)
+
+    def _call(self, method: str, endpoint: str, body: Optional[Dict[str, Any]] = None,
+              require_auth: bool = True) -> Dict[str, Any]:
+        return self._send(method, endpoint, body=body, require_auth=require_auth)
+
+    # -- tool sets -----------------------------------------------------------
+    def list_tool_sets(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/tool-set-records").get("items", [])
+
+    def get_tool_set(self, record_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/tool-set-records/{record_id}")
+
+    def create_tool_set(self, name: Optional[str] = None,
+                        actor: str = "human@cli") -> Dict[str, Any]:
+        rec = self._call("POST", "/tool-set-records", body={})
+        if name is not None:
+            rec = self.assert_field("tool-set-records", rec["internal"]["id"], "name", name, actor)
+        return rec
+
+    def delete_tool_set(self, record_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", f"/tool-set-records/{record_id}")
+
+    def link_set_to_machine(self, set_id: str, machine_id: str,
+                            actor: str = "human@cli") -> Dict[str, Any]:
+        return self.assert_field("tool-set-records", set_id, "machine_id", machine_id, actor)
+
+    def set_members(self, set_id: str, members: List[Dict[str, Any]],
+                    actor: str = "human@cli") -> Dict[str, Any]:
+        """Replace a tool set's membership. `members` is a list of
+        `{tool_record_id, number?}`."""
+        return self._call("POST", f"/tool-set-records/{set_id}/members",
+                          body={"members": members, "actor": actor})
+
+    # -- machines ------------------------------------------------------------
+    def list_machines(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/machine-records").get("items", [])
+
+    def get_machine(self, record_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/machine-records/{record_id}")
+
+    def create_machine(self, name: Optional[str] = None,
+                       controller_type: Optional[str] = None,
+                       actor: str = "human@cli") -> Dict[str, Any]:
+        """Mint a machine, then assert its name/controller (canonical changes go
+        through the assert door, never the create)."""
+        rec = self._call("POST", "/machine-records", body={})
+        rid = rec["internal"]["id"]
+        if name is not None:
+            rec = self.assert_field("machine-records", rid, "name", name, actor)
+        if controller_type is not None:
+            rec = self.assert_field("machine-records", rid, "controller_type", controller_type, actor)
+        return rec
+
+    def delete_machine(self, record_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", f"/machine-records/{record_id}")
+
+    # -- tool (instance) records --------------------------------------------
+    def list_tool_records(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/tool-instance-records").get("items", [])
+
+    def get_tool_record(self, record_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/tool-instance-records/{record_id}")
+
+    def delete_tool_record(self, record_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", f"/tool-instance-records/{record_id}")
+
+    # -- machine tool-table entries (ToolTableEntry) ------------------------
+    def list_entries(self, machine_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        if machine_id:
+            return self._call(
+                "GET", f"/tool-table-entry-records?machine_id={machine_id}").get("items", [])
+        return self._call("GET", "/tool-table-entry-records").get("items", [])
+
+    def get_entry(self, record_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/tool-table-entry-records/{record_id}")
+
+    def sync_entries(self, machine_id: str, entries: List[Dict[str, Any]],
+                     client: str = "loobric", machine_name: Optional[str] = None,
+                     mode: str = "merge", client_version: str = "") -> Dict[str, Any]:
+        """The controller-side tool-table push: upsert a machine's tool-table
+        entries by tool_number in one call (numbers/offsets observed). Returns
+        ``{"items": [...], "removed_tool_numbers": [...]}``.
+
+        ``entries`` is the wire field too (the old server-side term was purged
+        with everything else, REBOOT R10)."""
+        return self._call("POST", "/tool-table-entry-records/sync", body={
+            "machine_id": machine_id, "client": client,
+            "machine_name": machine_name or machine_id,
+            "client_version": client_version, "mode": mode, "entries": entries,
+        })
+
+    def bind_entry(self, entry_id: str, instance_id: Optional[str] = None,
+                   name: Optional[str] = None, move: bool = False,
+                   actor: Optional[str] = None) -> Dict[str, Any]:
+        """Bind an instance into an entry. Omit instance_id to MINT a new
+        instance from the entry's observations (the 'new tool' path) and bind it."""
+        body: Dict[str, Any] = {}
+        if instance_id is not None:
+            body["instance_id"] = instance_id
+        if name is not None:
+            body["name"] = name
+        if move:
+            body["move"] = True
+        if actor is not None:
+            body["actor"] = actor
+        return self._call("POST", f"/tool-table-entry-records/{entry_id}/bind", body=body)
+
+    def unbind_entry(self, entry_id: str) -> Dict[str, Any]:
+        return self._call("POST", f"/tool-table-entry-records/{entry_id}/unbind")
+
+    def delete_entry(self, entry_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", f"/tool-table-entry-records/{entry_id}")
+
+    # -- the canonical 'assert' door ----------------------------------------
+    def assert_field(self, resource: str, record_id: str, path: str, value: Any,
+                     actor: str = "human@cli") -> Dict[str, Any]:
+        return self._call("POST", f"/{resource}/{record_id}/assert",
+                          body={"path": path, "value": value, "actor": actor})
+
+    # -- inbox ---------------------------------------------------------------
+    def list_inbox(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/instance-inbox").get("items", [])
+
+    def confirm_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        return self._call("POST", f"/instance-inbox/{proposal_id}/confirm")
+
+    def reject_proposal(self, proposal_id: str) -> Dict[str, Any]:
+        return self._call("POST", f"/instance-inbox/{proposal_id}/reject")
+
+    # -- auth & keys ---------------------------------------------------------
+    def register(self, email: str, password: str) -> Dict[str, Any]:
+        return self._call("POST", "/auth/register",
+                          body={"email": email, "password": password}, require_auth=False)
+
+    def login(self, email: str, password: str) -> Dict[str, Any]:
+        return self._call("POST", "/auth/login",
+                          body={"email": email, "password": password}, require_auth=False)
+
+    def logout(self) -> Dict[str, Any]:
+        return self._call("POST", "/auth/logout", require_auth=False)
+
+    def list_keys(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/auth/keys")
+
+    def create_key(self, name: str, scopes: Optional[List[str]] = None,
+                   tags: Optional[List[str]] = None,
+                   expires_at: Optional[str] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"name": name}
+        if scopes:
+            payload["scopes"] = scopes
+        if tags:
+            payload["tags"] = tags
+        if expires_at:
+            payload["expires_at"] = expires_at
+        return self._call("POST", "/auth/keys", body=payload)
+
+    def revoke_key(self, key_id: str) -> Dict[str, Any]:
+        return self._call("DELETE", f"/auth/keys/{key_id}")
+
+    def whoami(self) -> Dict[str, Any]:
+        return self._call("GET", "/auth/me")
+
+    def change_password(self, current_password: str, new_password: str) -> Dict[str, Any]:
+        return self._call("POST", "/auth/change-password",
+                          body={"current_password": current_password,
+                                "new_password": new_password})
+
+    # -- the canonical observe door + the client-section sync door ----------
+    def observe_field(self, resource: str, record_id: str, path: str, value: Any,
+                      client: str, machine: str, unit: Optional[str] = None) -> Dict[str, Any]:
+        body = {"path": path, "value": value, "client": client, "machine": machine}
+        if unit is not None:
+            body["unit"] = unit
+        return self._call("POST", f"/{resource}/{record_id}/observe", body=body)
+
+    def sync_client_section(self, resource: str, record_id: str, client: str, data: dict,
+                            client_version: str = "",
+                            client_item_id: Optional[str] = None) -> Dict[str, Any]:
+        """The sync door: write only this client's own section. Physically
+        cannot touch internal/canonical (the server rejects that)."""
+        return self._call("PUT", f"/{resource}/{record_id}/clients/{client}", body={
+            "client_version": client_version, "client_item_id": client_item_id, "data": data,
+        })
+
+    # -- record creation (instance / catalog / entry) ------------------------
+    def create_tool_record(self, **section) -> Dict[str, Any]:
+        return self._call("POST", "/tool-instance-records", body=dict(section))
+
+    def list_catalog_records(self) -> List[Dict[str, Any]]:
+        return self._call("GET", "/tool-catalog-records").get("items", [])
+
+    def get_catalog_record(self, record_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/tool-catalog-records/{record_id}")
+
+    def create_catalog_record(self, **section) -> Dict[str, Any]:
+        return self._call("POST", "/tool-catalog-records", body=dict(section))
+
+    def create_entry(self, machine_id: str, **section) -> Dict[str, Any]:
+        return self._call("POST", "/tool-table-entry-records",
+                          body={"machine_id": machine_id, **section})
+
+    # -- users (admin) -------------------------------------------------------
+    def create_user(self, email: str, password: str, **extra) -> Dict[str, Any]:
+        return self._call("POST", "/users",
+                          body={"email": email, "password": password, **extra})
+
+    def update_user(self, user_id: str, **fields) -> Dict[str, Any]:
+        return self._call("PATCH", f"/users/{user_id}", body=dict(fields))
+
+    def update_user_roles(self, user_id: str, **fields) -> Dict[str, Any]:
+        return self._call("PATCH", f"/users/{user_id}/roles", body=dict(fields))
+
+    # -- manufacturer catalogs ----------------------------------------------
+    def list_catalogs(self) -> Any:
+        return self._call("GET", "/catalogs")
+
+    def get_catalog(self, catalog_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/catalogs/{catalog_id}")
+
+    def catalog_analytics(self, catalog_id: str) -> Dict[str, Any]:
+        return self._call("GET", f"/catalogs/{catalog_id}/analytics")
+
+    def create_catalog(self, **fields) -> Dict[str, Any]:
+        return self._call("POST", "/catalogs", body=dict(fields))
+
+    def update_catalog(self, catalog_id: str, **fields) -> Dict[str, Any]:
+        return self._call("PATCH", f"/catalogs/{catalog_id}", body=dict(fields))
+
+    # -- change detection ----------------------------------------------------
+    def changes_max_version(self, entity_type: str) -> Dict[str, Any]:
+        return self._call("GET", f"/changes/{entity_type}/max-version")
+
+    def changes_since_version(self, entity_type: str, version: int) -> Dict[str, Any]:
+        return self._call(
+            "GET", f"/changes/{entity_type}/since-version?since_version={version}")
+
+    def changes_since_timestamp(self, entity_type: str, timestamp: str) -> Dict[str, Any]:
+        return self._call(
+            "GET", f"/changes/{entity_type}/since-timestamp?since_timestamp={timestamp}")
+
+    # -- audit log -----------------------------------------------------------
+    def list_audit_logs(self) -> Any:
+        return self._call("GET", "/audit-logs")
+
+    # -- backup (admin) ------------------------------------------------------
+    def export_backup(self) -> Any:
+        return self._call("GET", "/backup/export")
+
+    def import_backup(self, backup_json: str, filename: str = "backup.json") -> Any:
+        """Restore from a backup JSON document. /backup/import is a multipart
+        file upload, so build the body by hand (stdlib, no requests)."""
+        boundary = "----loobricFormBoundary7MA4YWxkTrZu0gW"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: application/json\r\n\r\n"
+            f"{backup_json}\r\n"
+            f"--{boundary}--\r\n"
+        ).encode("utf-8")
+        return self._send("POST", "/backup/import", raw_body=body,
+                          content_type=f"multipart/form-data; boundary={boundary}")
+
+    # -- account -------------------------------------------------------------
+    def reset_account(self) -> Dict[str, Any]:
+        """Wipe all of the caller's tool data, keeping the account + keys."""
+        return self._call("POST", "/account/reset", body={})
+
+
+def _client() -> Client:
+    """Build a Client from the CLI's current global config (BASE_URL/API_KEY/
+    session). Used by the CLI shell so its commands exercise the same library
+    other clients import."""
+    return Client(base_url=BASE_URL, api_key=API_KEY, session_cookie=SESSION_COOKIE)
 
 
 def register(email: str = None, password: str = None):
@@ -224,8 +590,7 @@ def register(email: str = None, password: str = None):
             print("Error: Passwords do not match", file=sys.stderr)
             sys.exit(1)
     
-    payload = {"email": email, "password": password}
-    data = make_request("POST", "/auth/register", body=payload)
+    data = _client().register(email, password)
     print("✓ Registration successful!")
     print(f"  User: {data.get('email', 'Unknown')}")
     if data.get('id'):
@@ -267,8 +632,7 @@ def login(email: str = None, password: str = None, base_url: str = None):
             print("Error: Password is required", file=sys.stderr)
             sys.exit(1)
     
-    payload = {"email": email, "password": password}
-    data = make_request("POST", "/auth/login", body=payload)
+    data = _client().login(email, password)
     print("✓ Login successful!")
     print(f"  User: {data.get('email', 'Unknown')}")
     if data.get('id'):
@@ -295,15 +659,12 @@ def create_key(
         tags: Space-separated list of tags (e.g., 'production mill-3')
         expires_at: ISO 8601 datetime string for expiration
     """
-    payload = {"name": name}
-    if scopes:
-        payload["scopes"] = scopes.strip().split()
-    if tags:
-        payload["tags"] = tags.strip().split()
-    if expires_at:
-        payload["expires_at"] = expires_at
-
-    data = make_request("POST", "/auth/keys", body=payload, require_auth=True)
+    data = _client().create_key(
+        name,
+        scopes=scopes.strip().split() if scopes else None,
+        tags=tags.strip().split() if tags else None,
+        expires_at=expires_at,
+    )
 
     # Output the plain API key first (for easy copying/piping)
     print(data.get('key'))
@@ -324,8 +685,8 @@ def create_key(
 
 def list_keys():
     """List all API keys for the authenticated user."""
-    data = make_request("GET", "/auth/keys", require_auth=True)
-    
+    data = _client().list_keys()
+
     if not data:
         print("No API keys found.")
         return
@@ -335,6 +696,7 @@ def list_keys():
     for key in data:
         print(f"  ID: {key.get('id')}")
         print(f"  Name: {key.get('name')}")
+        print(f"  Status: {'active' if key.get('is_active', True) else 'REVOKED'}")
         print(f"  Scopes: {', '.join(key.get('scopes', []))}")
         if key.get('tags'):
             print(f"  Tags: {', '.join(key.get('tags', []))}")
@@ -353,13 +715,13 @@ def revoke_key(key_id: str):
     Args:
         key_id: The ID of the key to revoke
     """
-    make_request("DELETE", f"/auth/keys/{key_id}", require_auth=True)
+    _client().revoke_key(key_id)
     print(f"✓ API key {key_id} revoked successfully.")
 
 
 def list_tool_sets():
     """List the user's tool sets (v2 facade: /api/v1/tool-set-records)."""
-    items = make_request("GET", "/tool-set-records", require_auth=True).get("items", [])
+    items = _client().list_tool_sets()
 
     if not items:
         print("No tool sets found.")
@@ -385,8 +747,7 @@ def list_pending():
     binding proposals awaiting a human. Resolve with `resolve <id> confirm`
     or `resolve <id> reject`.
     """
-    data = make_request("GET", "/instance-inbox", require_auth=True)
-    items = data.get("items", [])
+    items = _client().list_inbox()
     if not items:
         print("Inbox is empty - nothing pending.")
         return
@@ -405,10 +766,10 @@ def list_pending():
     print("            a wrong confirm is currently hard to undo.")
     print("=" * 78)
     for item in items:
-        slot = item.get("slot", {})
+        entry = item.get("entry", {})
         proposed = item.get("proposed_instance", {})
         print(f"  ID: {item.get('id')[:8]}")
-        print(f"  Machine entry: T{slot.get('tool_number')}")
+        print(f"  Machine entry: T{entry.get('tool_number')}")
         print(f"  Proposed match: {proposed.get('name')}")
         print(f"  Confidence: {item.get('confidence'):.0%} - {item.get('reason')}")
         print("-" * 78)
@@ -425,10 +786,10 @@ def resolve_pending(item_id: str, action: str):
         item_id: Inbox item id or unique prefix (from `pending`)
         action: "confirm" (bind entry to proposed record) or "reject"
     """
-    # The confirm/reject responses no longer echo the slot/instance, so resolve
+    # The confirm/reject responses no longer echo the entry/instance, so resolve
     # the item against the open inbox first — this both supports id prefixes and
     # gives us the details for a friendly message.
-    open_items = make_request("GET", "/instance-inbox", require_auth=True).get("items", [])
+    open_items = _client().list_inbox()
     matches = [i for i in open_items if i.get("id", "").startswith(item_id)]
     if not matches:
         print(f"Error: no open inbox item starts with '{item_id}'", file=sys.stderr)
@@ -436,20 +797,21 @@ def resolve_pending(item_id: str, action: str):
     if len(matches) > 1:
         print(f"Error: '{item_id}' is ambiguous ({len(matches)} matches):", file=sys.stderr)
         for m in matches:
-            slot = m.get("slot", {})
-            print(f"  {m['id'][:8]}  T{slot.get('tool_number')} "
+            entry = m.get("entry", {})
+            print(f"  {m['id'][:8]}  T{entry.get('tool_number')} "
                   f"-> {m.get('proposed_instance', {}).get('name')}", file=sys.stderr)
         sys.exit(1)
     item = matches[0]
-    slot = item.get("slot", {})
+    entry = item.get("entry", {})
     proposed = item.get("proposed_instance", {})
-    make_request("POST", f"/instance-inbox/{item['id']}/{action}", require_auth=True)
+    c = _client()
+    (c.confirm_proposal if action == "confirm" else c.reject_proposal)(item["id"])
     if action == "confirm":
-        print(f"Linked: T{slot.get('tool_number')} and '{proposed.get('name')}' are "
+        print(f"Linked: T{entry.get('tool_number')} and '{proposed.get('name')}' are "
               f"now the same tool. No data was changed on either side; future "
               f"changes will route between them.")
     else:
-        print(f"Dismissed: T{slot.get('tool_number')} is not '{proposed.get('name')}'. "
+        print(f"Dismissed: T{entry.get('tool_number')} is not '{proposed.get('name')}'. "
               f"This suggestion won't reappear; the entry stays unbound.")
 
 
@@ -495,7 +857,14 @@ def _match_id(items: List[Dict[str, Any]], prefix: str, label: str) -> Dict[str,
     exact = [i for i in items if _rid(i) == prefix]
     if exact:
         return exact[0]
+    # An exact, unique name is as good as an id (humans think in names).
+    by_name = [i for i in items if _cval(i, "name") == prefix]
+    if len(by_name) == 1:
+        return by_name[0]
+    # Otherwise an id prefix, falling back to a name prefix.
     matches = [i for i in items if str(_rid(i) or "").startswith(prefix)]
+    if not matches:
+        matches = [i for i in items if str(_cval(i, "name") or "").startswith(prefix)]
     if not matches:
         print(f"Error: no {label} matches '{prefix}'", file=sys.stderr)
         sys.exit(1)
@@ -508,29 +877,23 @@ def _match_id(items: List[Dict[str, Any]], prefix: str, label: str) -> Dict[str,
 
 
 def _resolve_machine(prefix: str) -> Dict[str, Any]:
-    items = make_request("GET", "/machine-records", require_auth=True).get("items", [])
-    return _match_id(items, prefix, "machine")
+    return _match_id(_client().list_machines(), prefix, "machine")
 
 
 def _resolve_record(prefix: str) -> Dict[str, Any]:
-    items = make_request("GET", "/tool-instance-records", require_auth=True).get("items", [])
-    return _match_id(items, prefix, "tool record")
+    return _match_id(_client().list_tool_records(), prefix, "tool record")
 
 
 def _resolve_tool_set(prefix: str) -> Dict[str, Any]:
-    items = make_request("GET", "/tool-set-records", require_auth=True).get("items", [])
-    return _match_id(items, prefix, "tool set")
+    return _match_id(_client().list_tool_sets(), prefix, "tool set")
 
 
-def _resolve_slot(machine: Dict[str, Any], tool_number: int) -> Dict[str, Any]:
-    """Find a machine's tool-table slot record (a sectioned entry) by its
-    observed tool number. v2 mutations (bind/unbind/delete-entry/adopt) key off
-    the slot's own record id, not machine+tool_number, so callers resolve the
-    slot first."""
-    items = make_request(
-        "GET", f"/tool-table-entry-records?machine_id={_rid(machine)}",
-        require_auth=True,
-    ).get("items", [])
+def _resolve_entry(machine: Dict[str, Any], tool_number: int) -> Dict[str, Any]:
+    """Find a machine's tool-table entry record (a sectioned entry) by its
+    observed tool number. v2 mutations (bind/unbind/delete-entry) key off
+    the entry's own record id, not machine+tool_number, so callers resolve the
+    entry first."""
+    items = _client().list_entries(_rid(machine))
     for entry in items:
         if _cval(entry, "tool_number") == tool_number:
             return entry
@@ -552,7 +915,7 @@ def _confirm(message: str, assume_yes: bool) -> bool:
 
 def list_machines():
     """List the user's machines (id, name, controller)."""
-    items = make_request("GET", "/machine-records", require_auth=True).get("items", [])
+    items = _client().list_machines()
     if not items:
         print("No machines found.")
         return
@@ -568,7 +931,7 @@ def list_machines():
 
 def list_tools():
     """List the user's tool instance records (the public facade)."""
-    items = make_request("GET", "/tool-instance-records", require_auth=True).get("items", [])
+    items = _client().list_tool_records()
     if not items:
         print("No tool records found.")
         return
@@ -593,9 +956,7 @@ def show_tool_table(machine_id: str):
     """List a machine's tool-table entries and their bind state."""
     machine = _resolve_machine(machine_id)
     name = _cval(machine, "name")
-    items = make_request(
-        "GET", f"/tool-table-entry-records?machine_id={_rid(machine)}", require_auth=True
-    ).get("items", [])
+    items = _client().list_entries(_rid(machine))
     if not items:
         print(f"{name}: empty tool table.")
         return
@@ -614,83 +975,12 @@ def show_tool_table(machine_id: str):
 
 
 def link_machine(set_id: str, machine_id: str, actor: str = "human@cli"):
-    """Link a tool set to a machine: 'this set mirrors this machine's table.'"""
+    """Link a tool set to a machine: member numbers are inherited from its entries."""
     tool_set = _resolve_tool_set(set_id)
     machine = _resolve_machine(machine_id)
-    make_request(
-        "POST", f"/tool-set-records/{_rid(tool_set)}/assert",
-        body={"path": "machine_id", "value": _rid(machine), "actor": actor},
-        require_auth=True,
-    )
+    _client().link_set_to_machine(_rid(tool_set), _rid(machine), actor)
     set_name = _cval(tool_set, "name") or str(_rid(tool_set))[:8]
-    print(f"✓ Tool set '{set_name}' now mirrors machine '{_cval(machine, 'name')}'.")
-
-
-def reconcile_set(set_id: str):
-    """Inherit each member's tool number from the linked machine's slots."""
-    tool_set = _resolve_tool_set(set_id)
-    res = make_request(
-        "POST", f"/tool-set-records/{_rid(tool_set)}/reconcile", require_auth=True
-    )
-    unreconciled = res.get("unreconciled", [])
-    print("✓ Member numbers reconciled from the machine.")
-    if unreconciled:
-        print(f"  {len(unreconciled)} member(s) had no machine slot (number left unknown):")
-        for rid in unreconciled:
-            print(f"    {str(rid)[:8]}")
-
-
-_COVERAGE_LABELS = {
-    "in_sync": "in sync",
-    "number_mismatch": "NUMBER MISMATCH",
-    "absent_on_machine": "NOT ON MACHINE",
-    "machine_only": "machine only (not in set)",
-    "unbound_slot": "unbound pocket",
-}
-
-
-def show_coverage(set_id: str):
-    """Show how a tool set lines up against its linked machine's tool table."""
-    tool_set = _resolve_tool_set(set_id)
-    set_name = _cval(tool_set, "name") or str(_rid(tool_set))[:8]
-    data = make_request(
-        "GET", f"/tool-set-records/{_rid(tool_set)}/coverage", require_auth=True
-    )
-    if not data.get("applicable"):
-        print(f"Tool set '{set_name}' is not linked to a machine — nothing to compare.")
-        print("Link it first:  loobric link-machine <set> <machine>")
-        return
-
-    members = data.get("members", [])
-    print(f"\nCoverage of '{set_name}' against machine {str(data['machine_id'])[:8]}:")
-    print("=" * 78)
-    for m in members:
-        set_n = m.get("set_number")
-        tnum = f"T{set_n}" if set_n is not None else "T?"
-        label = _COVERAGE_LABELS.get(m["status"], m["status"])
-        line = f"  {tnum:>4}  {str(m['tool_record_id'])[:8]}  [{label}]"
-        if m["status"] == "number_mismatch":
-            line += f"  (machine has it at T{m['machine_tool_number']})"
-        if m.get("collides"):
-            others = ", ".join(str(x)[:8] for x in m.get("collides_with", []))
-            line += f"  ⚠ shares T{set_n} with {others}"
-        print(line)
-
-    for s in data.get("slots", []):
-        label = _COVERAGE_LABELS.get(s["status"], s["status"])
-        tnum = f"T{s['tool_number']}" if s.get("tool_number") is not None else "T?"
-        print(f"  {tnum:>4}  {'—':>8}  [{label}]")
-    print("=" * 78)
-
-    s = data.get("summary", {})
-    absent = s.get("absent_on_machine", 0)
-    print(f"  {s.get('in_sync', 0)} in sync · {absent} not yet on machine · "
-          f"{s.get('number_mismatch', 0)} mismatched · "
-          f"{s.get('machine_only', 0)} machine-only · "
-          f"{s.get('unbound_slot', 0)} empty pockets")
-    if absent:
-        print(f"\n  {absent} tool(s) are in this library but not yet set up on the "
-              f"machine — the tools to order/load.")
+    print(f"✓ Tool set '{set_name}' now linked to machine '{_cval(machine, 'name')}'.")
 
 
 def delete_machine(machine_id: str, assume_yes: bool = False):
@@ -702,7 +992,7 @@ def delete_machine(machine_id: str, assume_yes: bool = False):
     ):
         print("Aborted.")
         return
-    make_request("DELETE", f"/machine-records/{_rid(machine)}", require_auth=True)
+    _client().delete_machine(_rid(machine))
     print(f"✓ Deleted machine '{name}'. Tool records were not affected.")
 
 
@@ -716,7 +1006,7 @@ def delete_tool(record_id: str, assume_yes: bool = False):
     ):
         print("Aborted.")
         return
-    make_request("DELETE", f"/tool-instance-records/{_rid(rec)}", require_auth=True)
+    _client().delete_tool_record(_rid(rec))
     print(f"✓ Deleted tool record '{name}'. Any bound entries were unbound; "
           f"their data stays on the machine.")
 
@@ -725,13 +1015,13 @@ def delete_entry(machine_id: str, tool_number: int, assume_yes: bool = False):
     """Remove a machine-reported tool-table entry by tool number."""
     machine = _resolve_machine(machine_id)
     name = _cval(machine, "name")
-    slot = _resolve_slot(machine, tool_number)
+    entry = _resolve_entry(machine, tool_number)
     if not _confirm(
         f"Remove T{tool_number} from '{name}'?", assume_yes
     ):
         print("Aborted.")
         return
-    make_request("DELETE", f"/tool-table-entry-records/{_rid(slot)}", require_auth=True)
+    _client().delete_entry(_rid(entry))
     print(f"✓ Removed T{tool_number} from '{name}'. "
           f"If the controller pushes it again, it returns.")
 
@@ -740,12 +1030,9 @@ def bind_entry(machine_id: str, tool_number: int, record_id: str):
     """Link an unbound entry to an owned tool record (overwrites nothing)."""
     machine = _resolve_machine(machine_id)
     m_name = _cval(machine, "name")
-    slot = _resolve_slot(machine, tool_number)
+    entry = _resolve_entry(machine, tool_number)
     rec = _resolve_record(record_id)
-    make_request(
-        "POST", f"/tool-table-entry-records/{_rid(slot)}/bind",
-        body={"instance_id": _rid(rec)}, require_auth=True,
-    )
+    _client().bind_entry(_rid(entry), instance_id=_rid(rec))
     print(f"✓ Linked T{tool_number} @ {m_name} -> '{_cval(rec, 'name')}'. "
           f"Nothing was overwritten on either side.")
 
@@ -754,28 +1041,143 @@ def unbind_entry(machine_id: str, tool_number: int):
     """Unbind an entry; it keeps its data and becomes eligible for suggestions."""
     machine = _resolve_machine(machine_id)
     m_name = _cval(machine, "name")
-    slot = _resolve_slot(machine, tool_number)
-    make_request(
-        "POST", f"/tool-table-entry-records/{_rid(slot)}/unbind",
-        require_auth=True,
-    )
+    entry = _resolve_entry(machine, tool_number)
+    _client().unbind_entry(_rid(entry))
     print(f"✓ Unbound T{tool_number} @ {m_name}. The entry keeps its data.")
 
 
 def create_record_from_entry(machine_id: str, tool_number: int, name: str = None):
-    """Adopt a slot's tool: mint a new instance record seeded from the slot's
-    observations and install it, in one step (v2 /adopt)."""
+    """Mint a new instance record from a entry's observations and bind it, in one
+    step. The bind endpoint mints a new instance when no instance_id is given."""
     machine = _resolve_machine(machine_id)
     m_name = _cval(machine, "name")
-    slot = _resolve_slot(machine, tool_number)
-    body = {"name": name} if name else None
-    result = make_request(
-        "POST", f"/tool-table-entry-records/{_rid(slot)}/adopt",
-        body=body, require_auth=True,
-    )
-    rec_id = str(result.get("instance_id") or "")[:8]
-    print(f"✓ Created a record from T{tool_number} @ {m_name} and linked it "
+    entry = _resolve_entry(machine, tool_number)
+    result = _client().bind_entry(_rid(entry), name=name)
+    bound = (result.get("canonical", {}).get("bound_instance_id") or {}).get("value")
+    rec_id = str(bound or "")[:8]
+    print(f"✓ Created a record from T{tool_number} @ {m_name} and bound it "
           f"(record {rec_id}).")
+
+
+def create_machine(name, controller=None):
+    """Create a machine and assert its name (and optional controller)."""
+    rec = _client().create_machine(name=name, controller_type=controller)
+    print(f"✓ Created machine '{name}' ({str(_rid(rec))[:8]}).")
+    if controller:
+        print(f"  Controller: {controller}")
+
+
+def create_set(name):
+    """Create a tool set and assert its name."""
+    rec = _client().create_tool_set(name=name)
+    print(f"✓ Created tool set '{name}' ({str(_rid(rec))[:8]}).")
+
+
+def _parse_entry(spec):
+    """Parse a --entry spec 'N[:description[:diameter]]' into a tool-table entry."""
+    parts = spec.split(":")
+    try:
+        tool_number = int(parts[0])
+    except ValueError:
+        print(f"Error: bad --entry '{spec}': first field must be a tool number",
+              file=sys.stderr)
+        sys.exit(1)
+    entry = {"tool_number": tool_number}
+    if len(parts) > 1 and parts[1]:
+        entry["description"] = parts[1]
+    if len(parts) > 2 and parts[2]:
+        try:
+            entry["offsets"] = {"diameter": float(parts[2]), "diameter_unit": "mm"}
+        except ValueError:
+            print(f"Error: bad --entry '{spec}': diameter must be a number", file=sys.stderr)
+            sys.exit(1)
+    return entry
+
+
+def push_table(machine_id, entry_specs, client="loobric", snapshot=False):
+    """Push a tool table to a machine — the controller-side sync (stand-in for a
+    real controller client). Each --entry is 'N[:description[:diameter]]'."""
+    machine = _resolve_machine(machine_id)
+    name = _cval(machine, "name") or str(_rid(machine))[:8]
+    entries = [_parse_entry(s) for s in (entry_specs or [])]
+    res = _client().sync_entries(
+        _rid(machine), entries, client=client, machine_name=name,
+        mode="snapshot" if snapshot else "merge",
+    )
+    n = len(res.get("items", []))
+    print(f"✓ Pushed {n} tool-table entr{'y' if n == 1 else 'ies'} to '{name}' "
+          f"as client '{client}'.")
+    removed = res.get("removed_tool_numbers", [])
+    if removed:
+        print(f"  Removed (snapshot): {', '.join('T' + str(t) for t in removed)}")
+
+
+def reset_account(assume_yes=False):
+    """Wipe ALL tool data for this account (keeps login + API keys)."""
+    if not _confirm(
+        "Delete ALL tool data for this account (records, sets, machines, "
+        "entries)? Login and API keys are kept.", assume_yes
+    ):
+        print("Aborted.")
+        return
+    res = _client().reset_account()
+    deleted = res.get("deleted", {}) or {}
+    total = sum(deleted.values()) if isinstance(deleted, dict) else 0
+    detail = ", ".join(f"{k}={v}" for k, v in deleted.items()) if deleted else ""
+    print(f"✓ Account reset — deleted {total} item(s).{(' ' + detail) if detail else ''}")
+
+
+def whoami():
+    """Show the authenticated account."""
+    me = _client().whoami()
+    print(f"  Email: {me.get('email')}")
+    print(f"  Role:  {me.get('role')}")
+    print(f"  Admin: {me.get('is_admin')}")
+    if me.get("id"):
+        print(f"  ID:    {me.get('id')}")
+
+
+def list_audit(limit=50):
+    """Show recent audit-log entries (who changed what, when)."""
+    data = _client().list_audit_logs()
+    items = data.get("logs", []) if isinstance(data, dict) else (data or [])
+    if not items:
+        print("No audit entries.")
+        return
+    for e in list(items)[:limit]:
+        when = e.get("created_at") or e.get("timestamp") or ""
+        print(f"  {when}  {e.get('operation', ''):8}  "
+              f"{e.get('entity_type', '')}  {str(e.get('entity_id', ''))[:8]}")
+
+
+def backup_export(path=None):
+    """Export a full account backup (admin)."""
+    data = _client().export_backup()
+    text = data if isinstance(data, str) else json.dumps(data, indent=2)
+    if path:
+        with open(path, "w") as f:
+            f.write(text)
+        print(f"✓ Backup written to {path}.")
+    else:
+        print(text)
+
+
+def backup_import(path):
+    """Restore an account backup from a JSON file (admin)."""
+    with open(path) as f:
+        backup_json = f.read()
+    _client().import_backup(backup_json)
+    print(f"✓ Backup imported from {path}.")
+
+
+def assert_canonical(resource, record_id, path, value, actor="human@cli"):
+    """Assert a canonical field (the assert door): loobric assert <resource> <id> <path> <value>."""
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        parsed = value
+    rec = _client().assert_field(resource, record_id, path, parsed, actor=actor)
+    print(f"✓ Asserted {path}={parsed!r} on {resource}/{str(_rid(rec))[:8]}.")
 
 
 def ping():
@@ -818,11 +1220,21 @@ def logout():
         print("No active session to logout.")
         return
 
-    make_request("POST", "/auth/logout")
+    _client().logout()
     SESSION_COOKIE = None
     clear_session()
     print("✓ Logged out successfully.")
     print(f"  Session cleared from {SESSION_FILE}")
+
+
+def _run(fn, *args, **kwargs):
+    """Run a CLI command, turning library errors into a message + exit code.
+    The library raises; the CLI shell is where that becomes user-facing output."""
+    try:
+        return fn(*args, **kwargs)
+    except LoobricError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
@@ -851,21 +1263,34 @@ def main():
   # Revoke an API key
   loobric revoke-key <key_id>
 
-  # Inspect and manage machines, tool records, and reported entries
+  # The sync loop, end to end (machine ids/names accept unique prefixes)
+  loobric create-machine millstone --controller linuxcnc
+  loobric push millstone --entry "3:1/4 downcut:6.35" --entry "7:vee:6.0"
+  loobric tool-table millstone
+  loobric create-record millstone 3 --name "1/4 downcut"   # mint + bind T3
+  loobric bind millstone 7 <record>     # or bind an existing record
+  loobric unbind millstone 7
+
+  # Inspect
   loobric list-machines
   loobric list-tools
-  loobric tool-table <machine>          # ids accept unique prefixes
-  loobric bind <machine> 3 <record>     # link entry T3 to a record
-  loobric create-record <machine> 3 --name "1/4 downcut"
-  loobric unbind <machine> 3
-  loobric delete-entry <machine> 3 --yes
-  loobric delete-tool <record> --yes
-  loobric delete-machine <machine> --yes
+  loobric list-tool-sets
+  loobric pending                       # binding proposals awaiting review
+  loobric audit --limit 20
 
-  # Check server health
+  # Tool sets
+  loobric create-set "Aluminum job"
+  loobric link-machine "Aluminum job" millstone
+
+  # Canonical assert door
+  loobric assert tool-set-records <id> name "Aluminum job v2"
+
+  # Admin / housekeeping
+  loobric reset --yes                   # wipe all tool data (keeps login + keys)
+  loobric backup-export --out backup.json
+  loobric backup-import backup.json
+  loobric delete-machine millstone --yes
   loobric ping
-  
-  # Logout
   loobric logout
 
 Environment Variables:
@@ -967,36 +1392,13 @@ Environment Variables:
     # === link-machine ===
     link_parser = subparsers.add_parser(
         "link-machine",
-        help="Link a tool set to a machine ('this set mirrors this table')",
-        description="Assert a tool set's machine_id so it mirrors that machine's "
-                    "tool table. Enables 'reconcile' and 'coverage'."
+        help="Link a tool set to a machine",
+        description="Assert a tool set's machine_id so its member numbers are "
+                    "inherited from that machine's tool table."
     )
     link_parser.add_argument("set", help="Tool set id or unique prefix")
     link_parser.add_argument("machine", help="Machine id or unique prefix")
     link_parser.set_defaults(func=lambda args: link_machine(args.set, args.machine))
-
-    # === reconcile ===
-    reconcile_parser = subparsers.add_parser(
-        "reconcile",
-        help="Inherit member tool numbers from the linked machine's slots",
-        description="For a machine-linked set, set each member's tool number from "
-                    "the machine's slots (the machine wins). Members with no slot "
-                    "are reported, never silently renumbered."
-    )
-    reconcile_parser.add_argument("set", help="Tool set id or unique prefix")
-    reconcile_parser.set_defaults(func=lambda args: reconcile_set(args.set))
-
-    # === coverage ===
-    coverage_parser = subparsers.add_parser(
-        "coverage",
-        help="Show how a tool set lines up against its linked machine's table",
-        description="Read-only diff of a machine-linked tool set against that "
-                    "machine's tool table: which tools are in sync, which are "
-                    "promised in the set but not yet on the machine, which machine "
-                    "pockets the set doesn't account for, and number collisions."
-    )
-    coverage_parser.add_argument("set", help="Tool set id or unique prefix")
-    coverage_parser.set_defaults(func=lambda args: show_coverage(args.set))
 
     # === pending / resolve (v2 inbox) ===
     pending_parser = subparsers.add_parser(
@@ -1094,6 +1496,78 @@ Environment Variables:
         func=lambda args: create_record_from_entry(args.machine, args.tool_number, args.name)
     )
 
+    # === create-machine ===
+    create_machine_parser = subparsers.add_parser(
+        "create-machine", help="Create a machine and name it"
+    )
+    create_machine_parser.add_argument("name", help="Machine name (e.g. millstone)")
+    create_machine_parser.add_argument("--controller", help="Controller type (e.g. linuxcnc)")
+    create_machine_parser.set_defaults(
+        func=lambda args: create_machine(args.name, args.controller)
+    )
+
+    # === create-set ===
+    create_set_parser = subparsers.add_parser(
+        "create-set", help="Create a tool set and name it"
+    )
+    create_set_parser.add_argument("name", help="Tool set name")
+    create_set_parser.set_defaults(func=lambda args: create_set(args.name))
+
+    # === push ===
+    push_parser = subparsers.add_parser(
+        "push", help="Push a tool table to a machine (controller-side sync)"
+    )
+    push_parser.add_argument("machine", help="Machine id, name, or unique prefix")
+    push_parser.add_argument(
+        "--entry", action="append", dest="entries", metavar="N[:DESC[:DIA]]",
+        help="A tool-table entry, e.g. --entry '3:1/4 downcut:6.35' (repeatable)"
+    )
+    push_parser.add_argument("--client", default="loobric",
+                             help="Client name stamped on the push (default: loobric)")
+    push_parser.add_argument("--snapshot", action="store_true",
+                             help="Snapshot mode: entries absent from this push are removed")
+    push_parser.set_defaults(
+        func=lambda args: push_table(args.machine, args.entries, args.client, args.snapshot)
+    )
+
+    # === reset ===
+    reset_parser = subparsers.add_parser(
+        "reset", help="Wipe all tool data for this account (keeps login + API keys)"
+    )
+    reset_parser.add_argument("--yes", "-y", action="store_true",
+                              help="Skip the confirmation prompt")
+    reset_parser.set_defaults(func=lambda args: reset_account(args.yes))
+
+    # === whoami ===
+    whoami_parser = subparsers.add_parser("whoami", help="Show the authenticated account")
+    whoami_parser.set_defaults(func=lambda _: whoami())
+
+    # === audit ===
+    audit_parser = subparsers.add_parser("audit", help="Show recent audit-log entries")
+    audit_parser.add_argument("--limit", type=int, default=50, help="Max entries (default 50)")
+    audit_parser.set_defaults(func=lambda args: list_audit(args.limit))
+
+    # === backup-export / backup-import ===
+    backup_export_parser = subparsers.add_parser(
+        "backup-export", help="Export a full account backup (admin)")
+    backup_export_parser.add_argument("--out", help="Write to this file (default: stdout)")
+    backup_export_parser.set_defaults(func=lambda args: backup_export(args.out))
+
+    backup_import_parser = subparsers.add_parser(
+        "backup-import", help="Restore an account backup from a JSON file (admin)")
+    backup_import_parser.add_argument("file", help="Path to the backup JSON file")
+    backup_import_parser.set_defaults(func=lambda args: backup_import(args.file))
+
+    # === assert (the canonical assert door) ===
+    assert_parser = subparsers.add_parser(
+        "assert", help="Assert a canonical field: assert <resource> <id> <path> <value>")
+    assert_parser.add_argument("resource", help="e.g. machine-records, tool-set-records")
+    assert_parser.add_argument("record_id", help="Record id")
+    assert_parser.add_argument("path", help="Canonical path, e.g. name")
+    assert_parser.add_argument("value", help="Value (JSON-parsed if possible, else string)")
+    assert_parser.set_defaults(
+        func=lambda args: assert_canonical(args.resource, args.record_id, args.path, args.value))
+
     # === ping ===
     ping_parser = subparsers.add_parser(
         "ping",
@@ -1118,16 +1592,16 @@ Environment Variables:
     
     # Handle --login shortcut
     if args.login:
-        login()
+        _run(login)
         return
-    
+
     # Handle --logout shortcut
     if args.logout:
         # Load session to get BASE_URL for logout request
         API_KEY = os.environ.get("LOOBRIC_API_KEY")
         if not API_KEY:
             session_data = load_session()
-        logout()
+        _run(logout)
         return
     
     # Set BASE_URL from args or environment first (before loading session)
@@ -1158,7 +1632,7 @@ Environment Variables:
 
     # Run command if one was provided
     if hasattr(args, 'func'):
-        args.func(args)
+        _run(args.func, args)
     else:
         parser.print_help()
 

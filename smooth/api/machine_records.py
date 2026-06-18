@@ -157,24 +157,24 @@ def get_machine(record_id: str, db: Session = Depends(get_db),
 @router.delete("/{record_id}")
 def delete_machine(record_id: str, db: Session = Depends(get_db),
                    user: User = Depends(get_authenticated_user)):
-    """Delete a machine and its tool-table slots (and their proposals). Tool
+    """Delete a machine and its tool-table entries (and their proposals). Tool
     instances are NOT deleted — only this machine and what it reported."""
     row = _owned(db, user, record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not found")
     from smooth.database.schema import (
-        ToolTableEntryRecord as SlotRow, SlotProposal)
-    slots = db.query(SlotRow).filter(
-        SlotRow.user_id == user.id, SlotRow.machine_id == record_id).all()
-    for slot in slots:
-        db.query(SlotProposal).filter(SlotProposal.slot_id == slot.id).delete()
-        db.delete(slot)
+        ToolTableEntryRecord as EntryRow, EntryProposal)
+    entries = db.query(EntryRow).filter(
+        EntryRow.user_id == user.id, EntryRow.machine_id == record_id).all()
+    for entry in entries:
+        db.query(EntryProposal).filter(EntryProposal.entry_id == entry.id).delete()
+        db.delete(entry)
     db.delete(row)
     create_audit_log(session=db, user_id=user.id, operation="DELETE",
                      entity_type="machine_record", entity_id=record_id,
-                     changes={"slots_removed": len(slots)})
+                     changes={"entries_removed": len(entries)})
     db.commit()
-    return {"deleted": record_id, "slots_removed": len(slots)}
+    return {"deleted": record_id, "entries_removed": len(entries)}
 
 
 @router.put("/{record_id}/clients/{client}")

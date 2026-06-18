@@ -73,19 +73,6 @@
   .pill.warn { color:var(--warn); border-color:var(--warn); }
   .pill.bad  { color:var(--bad); border-color:var(--bad); }
   .pill.info { color:var(--link); border-color:var(--link); }
-  .covsum { display:flex; gap:.4rem; flex-wrap:wrap; margin:.5rem 0 .8rem; }
-  .chip { font-size:.8rem; padding:.15em .6em; border-radius:9px;
-          border:1px solid var(--line); color:var(--dim); }
-  .chip b { color:var(--ink); }
-  .chip.bad  { border-color:var(--bad);  color:var(--bad);  } .chip.bad b  { color:var(--bad);  }
-  .chip.warn { border-color:var(--warn); color:var(--warn); } .chip.warn b { color:var(--warn); }
-  .chip.ok   { border-color:var(--ok);   color:var(--ok);   } .chip.ok b   { color:var(--ok);   }
-  .callout { background:#2a1614; border:1px solid var(--bad); color:#f0c9c6;
-             border-radius:10px; padding:.7rem .9rem; margin:.2rem 0 .9rem; font-size:.92rem; }
-  .callout b { color:#fff; }
-  tr.absent td { background:rgba(207,91,86,.14); }
-  .cbadge { background:var(--bad); color:#2b0c0a; border-radius:9px; padding:0 .45em;
-            font-size:.8em; margin-left:.3em; font-weight:600; }
   table { width:100%; border-collapse:collapse; font-size:.9rem; }
   td, th { text-align:left; padding:.35rem .4rem; border-top:1px solid var(--line); }
   th { color:var(--dim); font-weight:500; border-top:none; }
@@ -104,11 +91,10 @@
   .spacer { flex:1; }
   #whoami { font-size:.8rem; }
   .link-ish { cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
-  #detail, #coverage { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+  #detail { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
             align-items:center; justify-content:center; z-index:9; padding:1rem; }
-  #detail .sheet, #coverage .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+  #detail .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
                    padding:1rem; width:min(96vw,720px); max-height:86vh; display:flex; flex-direction:column; }
-  #covbody { overflow:auto; margin-top:.6rem; }
   #detail pre { overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px;
                 padding:.7rem; font-size:.78rem; line-height:1.4; margin:.6rem 0 0;
                 white-space:pre-wrap; word-break:break-word; }
@@ -151,15 +137,6 @@
   </div>
 </div>
 
-<!-- Coverage: a tool set viewed against the machine it mirrors (smooth-core#19). -->
-<div id="coverage" onclick="if(event.target.id==='coverage')closeCoverage()">
-  <div class="sheet">
-    <div class="row"><strong id="covtitle"></strong>
-      <button class="mini reject" onclick="closeCoverage()">Close</button></div>
-    <div id="covbody"></div>
-  </div>
-</div>
-
 <!-- In-page confirm/prompt: native window.confirm/prompt can be permanently
      suppressed by the browser's "prevent additional dialogs" checkbox. -->
 <div id="ask" onclick="if(event.target.id==='ask')askCancel()">
@@ -177,8 +154,7 @@
 "use strict";
 const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
 let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[],
-              machineNames:{}, toolNames:{}, slotsByMachine:{}, slotsById:{}, proposalBySlot:{},
-              coverageBySet:{} };
+              machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -218,9 +194,9 @@ async function doLogin(ev){ ev.preventDefault();
 // Read a provenance-tagged canonical field's value / source by dotted path.
 function cf(obj, path){ let n=(obj&&obj.canonical)||{}; for(const p of path.split(".")) n=(n||{})[p]; return n?n.value:null; }
 const rid = (o)=>o.internal.id;
-// A slot's human label: its observed description, else the ";comment" parsed
-// from a linuxcnc raw line (so slots synced before description flowed still show it).
-function slotName(s){
+// a tool-table entry's human label: its observed description, else the ";comment" parsed
+// from a linuxcnc raw line (so entries synced before description flowed still show it).
+function entryName(s){
   const d=cf(s,"description"); if(d) return d;
   const data=((s.clients||{}).linuxcnc||{}).data; const raw=data&&data.raw;
   if(raw){ const i=raw.indexOf(";"); if(i>=0) return raw.slice(i+1).trim()||null; }
@@ -237,29 +213,24 @@ async function refresh(){
     state.machines=machines.items; state.audit=audit.logs||[];
     state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
     state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
-    state.proposalBySlot=Object.fromEntries(inbox.items.map(p=>[p.slot.id, p]));
+    state.proposalByEntry=Object.fromEntries(inbox.items.map(p=>[p.entry.id, p]));
     const tables = await Promise.all(machines.items.map(m =>
       api("GET", "/tool-table-entry-records?machine_id="+rid(m)).then(t=>[rid(m),t.items]).catch(()=>[rid(m),[]])));
-    state.slotsByMachine=Object.fromEntries(tables);
-    state.slotsById={}; for(const slots of Object.values(state.slotsByMachine)) for(const s of slots) state.slotsById[rid(s)]=s;
-    // Coverage for machine-linked sets, so a set's "tools to load" count shows at a glance.
-    const linked=sets.items.filter(s=>cf(s,"machine_id"));
-    const covs=await Promise.all(linked.map(s=>
-      api("GET","/tool-set-records/"+rid(s)+"/coverage").then(c=>[rid(s),c]).catch(()=>[rid(s),null])));
-    state.coverageBySet=Object.fromEntries(covs);
+    state.entriesByMachine=Object.fromEntries(tables);
+    state.entriesById={}; for(const entries of Object.values(state.entriesByMachine)) for(const s of entries) state.entriesById[rid(s)]=s;
     render();
   } catch(e){ if(e.message!=="auth") toast("Load failed: "+e.message); }
 }
 
-function unboundSlots(){
+function unboundEntries(){
   const out=[];
-  for(const m of state.machines) for(const s of (state.slotsByMachine[rid(m)]||[]))
-    if(cf(s,"bound_instance_id")==null) out.push({slot:s, machine:m});
+  for(const m of state.machines) for(const s of (state.entriesByMachine[rid(m)]||[]))
+    if(cf(s,"bound_instance_id")==null) out.push({entry:s, machine:m});
   return out;
 }
 
 function render(){
-  const needs = unboundSlots().length;
+  const needs = unboundEntries().length;
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="inbox"&&needs?`<span class="n">${needs}</span>`:"")+`</button>`).join("");
@@ -270,67 +241,67 @@ function setTab(t){ state.tab=t; render(); refresh(); }
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
 function showRecord(id){ const t=state.tools.find(x=>rid(x)===id); if(t) showSchema("Tool instance · "+(cf(t,"name")||id.slice(0,8)), t); }
-function showSlot(id){ const s=state.slotsById[id]; if(s) showSchema("Slot · T"+cf(s,"tool_number"), s); }
+function showEntry(id){ const s=state.entriesById[id]; if(s) showSchema("Entry · T"+cf(s,"tool_number"), s); }
 function showSet(id){ const s=state.toolsets.find(x=>rid(x)===id); if(s) showSchema("Tool set · "+(cf(s,"name")||id.slice(0,8)), s); }
 
-// ---- Inbox: unbound slots needing identity ---------------------------------
+// ---- Inbox: unbound entries needing identity -------------------------------
 function renderInbox(){
-  const items = unboundSlots();
-  if(!items.length) return `<div class="empty">Nothing needs you.<br><span class="muted">Every slot your machines reported is linked to a tool instance.</span></div>`;
-  return `<div class="explain">These are <b>slots your machines reported that aren't linked to a tool instance yet</b>. Where the server has a guess, <b>Same tool</b> installs it and <b>Different</b> drops the guess. Otherwise <b>Adopt</b> mints a new instance from the slot's measured diameter.</div>`+
-  items.map(({slot,machine})=>{
-    const p=state.proposalBySlot[rid(slot)]; const dia=cf(slot,"offsets.diameter");
+  const items = unboundEntries();
+  if(!items.length) return `<div class="empty">Nothing needs you.<br><span class="muted">Every entry your machines reported is linked to a tool instance.</span></div>`;
+  return `<div class="explain">These are <b>entries your machines reported that aren't linked to a tool instance yet</b>. Where the server has a guess, <b>Same tool</b> binds it and <b>Different</b> drops the guess. Otherwise <b>Bind new</b> mints a new instance from the entry's measured diameter.</div>`+
+  items.map(({entry,machine})=>{
+    const p=state.proposalByEntry[rid(entry)]; const dia=cf(entry,"offsets.diameter");
     return `<div class="card">
-      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(slot,"tool_number")}${slotName(slot)?" · "+esc(slotName(slot)):""}</strong>
-        <span class="id link-ish" onclick="showSlot('${rid(slot)}')">${esc(rid(slot).slice(0,8))}</span></div>
+      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(entry,"tool_number")}${entryName(entry)?" · "+esc(entryName(entry)):""}</strong>
+        <span class="id link-ish" onclick="showEntry('${rid(entry)}')">${esc(rid(entry).slice(0,8))}</span></div>
       <div class="muted">${dia!=null?"&#x2300;"+dia:"no diameter reported"}</div>`+
       (p?`<div class="vs">is this the same tool as <b>${esc(p.proposed_instance.name||p.proposed_instance.id.slice(0,8))}</b>? (&#x2300;${p.proposed_instance.diameter} · ${Math.round(p.confidence*100)}%)</div>
         <div class="rowact" style="margin-top:.6rem">
           <button class="mini confirm" onclick="confirmProp('${p.id}')">Same tool</button>
           <button class="mini reject" onclick="rejectProp('${p.id}')">Different</button>
-          <button class="mini create" onclick="adopt('${rid(slot)}')">Adopt new</button></div>`
+          <button class="mini create" onclick="bindNew('${rid(entry)}')">Bind new</button></div>`
        :`<div class="rowact" style="margin-top:.6rem">
-          <button class="mini create" onclick="adopt('${rid(slot)}')">Adopt as new instance</button></div>`)+
+          <button class="mini create" onclick="bindNew('${rid(entry)}')">Bind new</button></div>`)+
     `</div>`;
   }).join("");
 }
-async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Installed. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
+async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Bound. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
 async function rejectProp(id){ try{ await api("POST","/instance-inbox/"+id+"/reject"); toast("Dismissed - won't be suggested again."); refresh(); }catch(e){ toast(e.message); } }
-async function adopt(slotId){ const s=state.slotsById[slotId], name=s?slotName(s):null;
-  try{ await api("POST","/tool-table-entry-records/"+slotId+"/adopt",{actor:"human@web",name:name||undefined});
-       toast(name?`Adopted as "${name}".`:"Adopted a new instance from the slot."); refresh(); }catch(e){ toast(e.message); } }
-async function unbindSlot(slotId){ if(!(await confirmDialog("Unbind this slot? The instance stays; only the install link clears."))) return;
-  try{ await api("POST","/tool-table-entry-records/"+slotId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
+async function bindNew(entryId){ const s=state.entriesById[entryId], name=s?entryName(s):null;
+  // Mint+bind a new instance from this entry: /bind with no instance_id in the body.
+  try{ await api("POST","/tool-table-entry-records/"+entryId+"/bind", name?{name}:{});
+       toast(name?`Bound a new tool "${name}".`:"Bound a new tool from the entry."); refresh(); }catch(e){ toast(e.message); } }
+async function unbindEntry(entryId){ if(!(await confirmDialog("Unbind this entry? The instance stays; only the binding clears."))) return;
+  try{ await api("POST","/tool-table-entry-records/"+entryId+"/unbind"); toast("Unbound."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- delete (human admin actions; provenance human@web) --------------------
 async function deleteRecord(id){ const t=state.tools.find(x=>rid(x)===id);
-  if(!(await confirmDialog(`Delete tool "${cf(t,"name")||id.slice(0,8)}"? Any slot holding it is unbound (its data stays).`))) return;
+  if(!(await confirmDialog(`Delete tool "${cf(t,"name")||id.slice(0,8)}"? Any entry holding it is unbound (its data stays).`))) return;
   try{ await api("DELETE","/tool-instance-records/"+id); toast("Deleted tool."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteMachine(id){
   if(!(await confirmDialog(`Delete machine "${state.machineNames[id]}" and its tool table? Tool instances stay.`))) return;
-  try{ const r=await api("DELETE","/machine-records/"+id); toast(`Deleted machine (${r.slots_removed} slot(s)).`); refresh(); }catch(e){ toast(e.message); } }
-async function deleteSlot(id){
-  if(!(await confirmDialog("Remove this reported slot? If the controller pushes it again, it returns."))) return;
-  try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed slot."); refresh(); }catch(e){ toast(e.message); } }
+  try{ const r=await api("DELETE","/machine-records/"+id); toast(`Deleted machine (${r.entries_removed} entr${r.entries_removed===1?"y":"ies"}).`); refresh(); }catch(e){ toast(e.message); } }
+async function deleteEntry(id){
+  if(!(await confirmDialog("Remove this reported entry? If the controller pushes it again, it returns."))) return;
+  try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed entry."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteSet(id){ const s=state.toolsets.find(x=>rid(x)===id);
   if(!(await confirmDialog(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`))) return;
   try{ await api("DELETE","/tool-set-records/"+id); toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- tool set from a machine (orchestrates existing canonical doors) --------
-function _installedInstances(machineId){
-  return [...new Set((state.slotsByMachine[machineId]||[]).map(s=>cf(s,"bound_instance_id")).filter(Boolean))];
+function _boundInstances(machineId){
+  return [...new Set((state.entriesByMachine[machineId]||[]).map(s=>cf(s,"bound_instance_id")).filter(Boolean))];
 }
 async function createSetFromMachine(machineId){
-  const mname=state.machineNames[machineId], ids=_installedInstances(machineId);
-  if(!ids.length){ toast("No installed tools on this machine yet - adopt/confirm some first."); return; }
-  const name=await promptDialog(`New tool set from ${mname} (${ids.length} installed tool(s)):`, mname);
+  const mname=state.machineNames[machineId], ids=_boundInstances(machineId);
+  if(!ids.length){ toast("No bound tools on this machine yet - bind/confirm some first."); return; }
+  const name=await promptDialog(`New tool set from ${mname} (${ids.length} bound tool(s)):`, mname);
   if(name===null) return; if(!name.trim()){ toast("A name is required."); return; }
   try{
     const sid=(await api("POST","/tool-set-records",{})).internal.id;   // no client section: the web UI isn't a data client
     await api("POST","/tool-set-records/"+sid+"/assert",{path:"name",value:name.trim(),actor:"human@web"});
     await api("POST","/tool-set-records/"+sid+"/assert",{path:"machine_id",value:machineId,actor:"human@web"});
     await api("POST","/tool-set-records/"+sid+"/members",{actor:"human@web",members:ids.map(id=>({tool_record_id:id}))});
-    await api("POST","/tool-set-records/"+sid+"/reconcile");            // numbers inherit the machine's slots
     toast(`Created "${name.trim()}" from ${mname} (${ids.length} tool(s)).`);
     state.tab="toolsets"; refresh();
   }catch(e){ toast(e.message); }
@@ -338,17 +309,16 @@ async function createSetFromMachine(machineId){
 async function refreshSet(setId){
   const s=state.toolsets.find(x=>rid(x)===setId), machineId=cf(s,"machine_id");
   if(!machineId){ toast("This set isn't linked to a machine."); return; }
-  const ids=_installedInstances(machineId);
+  const ids=_boundInstances(machineId);
   try{
     await api("POST","/tool-set-records/"+setId+"/members",{actor:"human@web",members:ids.map(id=>({tool_record_id:id}))});
-    await api("POST","/tool-set-records/"+setId+"/reconcile");
     toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${ids.length} tool(s).`); refresh();
   }catch(e){ toast(e.message); }
 }
-// A suggested name for an instance: its own name, else the label of a slot it's installed in.
+// A suggested name for an instance: its own name, else the label of an entry it's bound in.
 function instanceNameHint(id){
   const t=state.tools.find(x=>rid(x)===id); const own=t&&cf(t,"name"); if(own) return own;
-  for(const s of Object.values(state.slotsById)) if(cf(s,"bound_instance_id")===id){ const sn=slotName(s); if(sn) return sn; }
+  for(const s of Object.values(state.entriesById)) if(cf(s,"bound_instance_id")===id){ const sn=entryName(s); if(sn) return sn; }
   return "";
 }
 // Name a tool instance (a human assertion); pre-fills a suggestion.
@@ -359,20 +329,20 @@ async function setName(id){
 
 // ---- Tools (instances) -----------------------------------------------------
 function renderTools(){
-  if(!state.tools.length) return `<div class="empty">No tool instances yet.<br><span class="muted">They appear as machines report tools and you adopt them, or as clients sync.</span></div>`;
-  const installedAt={};
-  for(const m of state.machines) for(const s of (state.slotsByMachine[rid(m)]||[])){
-    const b=cf(s,"bound_instance_id"); if(b)(installedAt[b]=installedAt[b]||[]).push({m,n:cf(s,"tool_number")}); }
+  if(!state.tools.length) return `<div class="empty">No tool instances yet.<br><span class="muted">They appear as machines report tools and you bind them, or as clients sync.</span></div>`;
+  const boundAt={};
+  for(const m of state.machines) for(const s of (state.entriesByMachine[rid(m)]||[])){
+    const b=cf(s,"bound_instance_id"); if(b)(boundAt[b]=boundAt[b]||[]).push({m,n:cf(s,"tool_number")}); }
   return state.tools.map(t=>{
-    const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(installedAt[rid(t)]||[]);
+    const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(boundAt[rid(t)]||[]);
     return `<div class="card">
       <div class="row"><strong class="link-ish" onclick="showRecord('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
         <span><span class="id">${esc(rid(t).slice(0,8))}</span>
           <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button>
           <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
-      where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">installed</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
-      `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} install(s)</span>
+      where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">bound</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
+      `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} binding(s)</span>
         <button class="unbind" onclick="deleteRecord('${rid(t)}')">Delete tool</button></div>`+
     `</div>`;
   }).join("");
@@ -383,135 +353,23 @@ function renderToolSets(){
   if(!state.toolsets.length) return `<div class="empty">No tool sets yet.</div>`;
   return state.toolsets.map(s=>{
     const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
-    const cov=state.coverageBySet[rid(s)];
-    const absent=(cov&&cov.applicable)?(cov.summary.absent_on_machine||0):0;
     return `<div class="card">
       <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
         <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
-      <div class="muted">${members.length} tool(s)${machine?" &middot; mirrors "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}${absent?` &middot; <span style="color:var(--bad);font-weight:600">${absent} to load</span>`:""}</div>
+      <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
-        <button class="mini link" onclick="showCoverage('${rid(s)}')">Coverage${absent?`<span class="cbadge">${absent}</span>`:""}</button>
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
         <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
   }).join("");
 }
 
-// ---- Coverage: a set vs the machine it mirrors (smooth-core#19) -------------
-// member.status -> [pill class, label]; absent is styled to be unmistakable.
-const MEMBER_STATUS = { in_sync:["ok","in sync"], number_mismatch:["warn","number mismatch"],
-                        absent_on_machine:["bad","absent on machine"] };
-const SLOT_STATUS   = { machine_only:["info","machine only"], unbound_slot:["warn","unbound slot"] };
-function covChip(cls, n, label){ n=n||0; return `<span class="chip ${n&&cls?cls:""}"><b>${n}</b> ${esc(label)}</span>`; }
-function toolLabel(id){ return id?(state.toolNames[id]||id.slice(0,8)):""; }
-
-function closeCoverage(){ $("#coverage").style.display="none"; }
-async function showCoverage(setId){
-  const set=state.toolsets.find(x=>rid(x)===setId);
-  const name=set?(cf(set,"name")||rid(set).slice(0,8)):setId.slice(0,8);
-  $("#covtitle").textContent="Coverage · "+name;
-  $("#covbody").innerHTML=`<div class="muted">Loading…</div>`;
-  $("#coverage").style.display="flex";
-  try { const cov=await api("GET","/tool-set-records/"+setId+"/coverage");
-        $("#covbody").innerHTML=coverageHTML(setId, cov);
-  } catch(e){ $("#covbody").innerHTML=`<div class="muted">Couldn't load coverage: ${esc(e.message)}</div>`; }
-}
-
-function coverageHTML(setId, cov){
-  // Not linked to a machine: explain, and offer to link one (assert machine_id).
-  if(!cov.applicable){
-    const opts = state.machines.length
-      ? state.machines.map(m=>`<button class="mini create" onclick="linkSetToMachine('${setId}','${rid(m)}')">Link to ${esc(state.machineNames[rid(m)])}</button>`).join("")
-      : `<span class="muted">No machines registered yet.</span>`;
-    return `<div class="explain">This set <b>isn't linked to a machine</b>, so there's nothing to mirror.${cov.reason?` <span class="muted">(${esc(cov.reason)})</span>`:""}</div>
-      <div class="muted" style="margin-bottom:.5rem">Link it to a machine to compare its tools against what's loaded:</div>
-      <div class="rowact">${opts}</div>`;
-  }
-  const sm=cov.summary||{}, mname=state.machineNames[cov.machine_id]||(cov.machine_id||"").slice(0,8);
-  let html="";
-  // The headline: tools promised in the set but not yet on the machine.
-  if(sm.absent_on_machine) html+=`<div class="callout"><b>${sm.absent_on_machine} tool(s)</b> in this set ${sm.absent_on_machine===1?"is":"are"} <b>not on ${esc(mname)}</b> yet — the tools to order or load.</div>`;
-  html+=`<div class="muted">Mirroring <b>${esc(mname)}</b> · ${sm.total_members} set tool(s) vs ${sm.total_slots} machine slot(s)</div>`;
-  html+=`<div class="covsum">`+
-    covChip("ok",   sm.in_sync,           "in sync")+
-    covChip("bad",  sm.absent_on_machine, "absent on machine")+
-    covChip("warn", sm.number_mismatch,   "number mismatch")+
-    covChip("bad",  sm.number_collision,  "collision")+
-    covChip("",     sm.machine_only,      "machine only")+
-    covChip("",     sm.unbound_slot,      "unbound slot")+
-    `</div>`;
-
-  // Members: absent first, then mismatches, then in-sync, so problems lead.
-  const rank={absent_on_machine:0, number_mismatch:1, in_sync:2};
-  const members=(cov.members||[]).slice().sort((a,b)=>{
-    const ra=rank[a.status]??3, rb=rank[b.status]??3;
-    if(ra!==rb) return ra-rb;
-    return (b.collides?1:0)-(a.collides?1:0);   // collisions lead within a status
-  });
-  if(members.length){
-    html+=`<table><tr><th>Tool</th><th>Set&nbsp;#</th><th>Machine&nbsp;#</th><th>Status</th></tr>`+
-      members.map(m=>{
-        const st=MEMBER_STATUS[m.status]||["",m.status];
-        const absent=m.status==="absent_on_machine";
-        const machCell=absent?`<span class="muted">not loaded</span>`
-                              :esc(String(m.machine_tool_number ?? "—"));
-        const collide=m.collides
-          ?` <span class="pill bad" title="shares a T-number with: ${esc((m.collides_with||[]).map(toolLabel).join(', '))}">collision</span>`:"";
-        return `<tr class="${absent?'absent':''}">
-          <td>${esc(toolLabel(m.tool_record_id))}</td>
-          <td>${esc(String(m.set_number ?? "—"))}</td>
-          <td>${machCell}</td>
-          <td><span class="pill ${st[0]}">${esc(st[1])}</span>${collide}</td></tr>`;
-      }).join("")+`</table>`;
-  } else {
-    html+=`<div class="muted">This set has no tools yet.</div>`;
-  }
-
-  // Machine slots the set doesn't account for.
-  if((cov.slots||[]).length){
-    html+=`<div class="muted" style="margin-top:1rem">Machine slots not in this set</div>`+
-      `<table><tr><th>Machine&nbsp;#</th><th>Holds</th><th>Status</th></tr>`+
-      cov.slots.map(s=>{
-        const st=SLOT_STATUS[s.status]||["",s.status];
-        const holds=s.bound_instance_id?esc(toolLabel(s.bound_instance_id))
-                                        :`<span class="muted">empty</span>`;
-        return `<tr><td>T${esc(String(s.tool_number ?? "—"))}</td>
-          <td>${holds}</td><td><span class="pill ${st[0]}">${esc(st[1])}</span></td></tr>`;
-      }).join("")+`</table>`;
-  }
-
-  // A clear path to make numbers match when they don't (the reconcile door).
-  if(sm.number_mismatch || sm.machine_only){
-    html+=`<div class="row" style="margin-top:1rem"><span class="muted">Numbers out of step with the machine?</span>
-      <button class="mini link" onclick="reconcileSetCoverage('${setId}')">Reconcile numbers to machine</button></div>`;
-  }
-  return html;
-}
-
-// Link an existing set to a machine (assert only — no reconcile — so coverage
-// shows the true current diff, including mismatches, before any alignment).
-async function linkSetToMachine(setId, machineId){
-  try {
-    await api("POST","/tool-set-records/"+setId+"/assert",{path:"machine_id",value:machineId,actor:"human@web"});
-    toast("Linked to "+(state.machineNames[machineId]||"machine")+".");
-    await refresh();
-    showCoverage(setId);
-  } catch(e){ toast(e.message); }
-}
-async function reconcileSetCoverage(setId){
-  if(!(await confirmDialog("Reconcile this set's tool numbers to match the machine's slots?"))) return;
-  try { await api("POST","/tool-set-records/"+setId+"/reconcile");
-        toast("Reconciled numbers from the machine.");
-        await refresh(); showCoverage(setId);
-  } catch(e){ toast(e.message); }
-}
-
 // ---- Machines (+ tool tables) ----------------------------------------------
 function renderMachines(){
   if(!state.machines.length) return `<div class="empty">No machines yet.<br><span class="muted">They register on first sync from a controller.</span></div>`;
   return state.machines.map(m=>{
-    const slots=(state.slotsByMachine[rid(m)]||[]).slice().sort((a,b)=>(cf(a,"tool_number")||0)-(cf(b,"tool_number")||0));
-    const body = slots.length ? slots.map(s=>slotRow(m,s)).join("") : `<div class="muted">empty tool table</div>`;
+    const entries=(state.entriesByMachine[rid(m)]||[]).slice().sort((a,b)=>(cf(a,"tool_number")||0)-(cf(b,"tool_number")||0));
+    const body = entries.length ? entries.map(s=>entryRow(m,s)).join("") : `<div class="muted">empty tool table</div>`;
     return `<div class="card">
       <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
         <span class="rowact"><span class="muted">${esc(cf(m,"controller_type")||"")}</span>
@@ -520,19 +378,19 @@ function renderMachines(){
       ${body}</div>`;
   }).join("");
 }
-function slotRow(m,s){
+function entryRow(m,s){
   const bound=cf(s,"bound_instance_id"), dia=cf(s,"offsets.diameter");
   return `<div class="trow">
     <div class="tinfo">
-      <span class="tnum link-ish" onclick="showSlot('${rid(s)}')">T${cf(s,"tool_number")}</span>
-      <span>${esc(slotName(s)||"")}</span>
+      <span class="tnum link-ish" onclick="showEntry('${rid(s)}')">T${cf(s,"tool_number")}</span>
+      <span>${esc(entryName(s)||"")}</span>
       <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
       ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
     </div>
     <div class="rowact">${bound
-      ?`<button class="unbind" onclick="unbindSlot('${rid(s)}')">Unbind</button>`
-      :`<button class="mini create" onclick="adopt('${rid(s)}')">Adopt</button>`}
-      <button class="mini del" onclick="deleteSlot('${rid(s)}')">Remove</button></div>
+      ?`<button class="unbind" onclick="unbindEntry('${rid(s)}')">Unbind</button>`
+      :`<button class="mini create" onclick="bindNew('${rid(s)}')">Bind new</button>`}
+      <button class="mini del" onclick="deleteEntry('${rid(s)}')">Remove</button></div>
   </div>`;
 }
 

@@ -28,9 +28,9 @@ way.)
 
 ### 1. Let the control client sync the tool table up
 
-Nothing to type. When the control client runs, each slot in the machine's tool
+Nothing to type. When the control client runs, each row in the machine's tool
 table becomes a **tool-table entry** on the server. These entries arrive
-**unbound**: the server has the slot and its measured values, but no shared
+**unbound**: the server has the entry and its measured values, but no shared
 tool record stands behind it yet.
 
 ### 2. Find the machine
@@ -70,9 +70,9 @@ loobric create-record <machine> 3 --name "3mm ball"
 
 `--name` defaults to the entry's description, so you can omit it.
 
-A note on T-numbers: the slot number stays on the **machine entry**, not on the
+A note on T-numbers: the tool number stays on the **machine entry**, not on the
 record. A tool record is the machine-independent description of a tool; its
-position is a property of the machine slot, never of the record itself. (See
+position is a property of the tool-table entry, never of the record itself. (See
 [TOOL_SCHEMA.md](TOOL_SCHEMA.md) §7.)
 
 ### 5. Confirm the records exist and the entries are bound
@@ -99,7 +99,7 @@ its server record.
 A CAM library that mirrors a specific machine should say so. A tool set carries
 an optional `machine_id` link meaning "this set mirrors this machine's
 tooling." Setting it lets the set's member numbers be inherited from the
-machine's slots later (see the reconcile how-to).
+machine's tool-table entries later (see the reconcile how-to).
 
 Your CAM client may set this link when it creates the set. If not, `loobric`
 links it for you:

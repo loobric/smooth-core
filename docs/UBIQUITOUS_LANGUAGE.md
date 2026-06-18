@@ -5,9 +5,12 @@ docs, UI, marketing, and conversation. When code and this document disagree, fix
 don't let them drift.
 
 Status: **v2 vocabulary settled 2026-06-09** (grill-me session; see `RESEARCH_BRIEF.md` §6);
-**Library purged in favor of ToolSet 2026-06-11**. The "v2 Public Vocabulary" section below is
-normative for the facade API. Deep-schema terms remain internal. Terms marked ⚠️ have known
-ambiguity.
+**Library purged in favor of ToolSet 2026-06-11**. **Reconciled to the sectioned tool schema
+2026-06-18** (reboot decision R3 = ratify the schema; see `REBOOT.md`): the public vocabulary is
+now the sectioned record model defined in `TOOL_SCHEMA.md`. The old v2-flat **`ToolRecord`** facade
+term is **retired** in favor of **`ToolInstanceRecord`** / **`ToolCatalogRecord`**. `TOOL_SCHEMA.md`
+is the authoritative contract; if it and this document disagree, the contract models in
+`smooth/contract/` win and this document is the bug. Terms marked ⚠️ have known ambiguity.
 
 **Language rule — client neutrality.** Smooth is client-application agnostic. The names of
 specific applications (FreeCAD, LinuxCNC, Fusion, …) never appear in the normative vocabulary,
@@ -17,24 +20,61 @@ explicitly client-specific sections such as the reconciliation tables below or a
 repository. Generic domain categories — "CAM application", "controller", "tool table" — are the
 neutral vocabulary.
 
+**Language rule — the gate (reboot 2026-06-18).** No new domain concept or user-facing word
+ships without an entry in this document. A concept that appears in an endpoint path, a response
+field, the OpenAPI schema, the CLI, or a client UI but not here is a bug, not a feature — it gets
+reverted or it gets a glossary entry with founder sign-off, never silently kept. Phase 1 of the
+reboot enforces this in CI (an OpenAPI-vocabulary contract test + a string denylist). This rule
+exists because "Adopt", "Coverage", "Reconcile", and "Needs Attention" all reached the public
+surface without ever passing through here.
+
 ---
 
 ## v2 Public Vocabulary (normative)
 
-The facade API exposes ONLY these concepts. Deep entities never appear in public docs, client
-code, or user-facing prose.
+The public API exposes these concepts. Every tool-domain entity is a **sectioned record**
+(`internal` / `canonical` / `clients`) with provenance-tagged canonical fields, defined in
+`TOOL_SCHEMA.md`. Public paths use the `*-records` / `instance-inbox` naming the schema ratified.
 
 | Term | Definition |
 |------|------------|
-| **ToolRecord** | The facade resource: one user-meaningful tool — geometry + tags + Presets + per-machine ToolTableEntries. Maps internally to the deep chain; its public ID is stable for the record's life. In prose, "tool" stays informal and "record" is acceptable shorthand where the context is unambiguous (e.g. a client's sync journal); use **ToolRecord** whenever precision matters. |
-| **ToolTableEntry** | One machine's table row for a ToolRecord: tool number, pocket, offsets, provenance. Nested as `ToolRecord.machines[]`, scoped to a Machine. Mirrors a controller's tool-table / offset-table row. (Rejected names: `MachineToolInstance` — collides with ToolInstance; `ToolPocket` — names a field; old `ToolPreset` — collides with Preset.) |
-| **Machine** | First-class entity: a CNC machine — identity, controller type, limits (incl. spindle min/max). Clients sync their native machine definitions to it. |
-| **ToolSet** | A named collection of ToolRecords. The public resource and the internal entity share one name — there is no separate facade word. (Supersedes **Library**, purged 2026-06-11: "library" is a client-side term and now appears only when referring to a specific application's artifact.) |
-| **Preset** | A named feeds-and-speeds record on a ToolRecord (`preset_schema: 1`): surface speed (Vc), chipload (Fz), optional vertical-feed ratio, optional material reference, operation type. Engineering values only; raw feed/RPM are derived by the consuming application at use time and never persisted. |
-| **Binding** | The confirmed link between a Machine's ToolTableEntry and a ToolRecord. Server-proposed, user-confirmed once, sticky. What makes the sync loop close. Verb forms are part of the vocabulary: to **bind** / **unbind** an entry; an entry is **bound** or **unbound**. Unbound entries still sync — as unbound. |
-| **Pending review / Inbox** | First-class server state for items awaiting a human: proposed Bindings and frozen Conflicts. Sync never prompts, blocks, or guesses. |
+| **ToolInstanceRecord** | The primary syncable resource: one *physical* tool — canonical identity/geometry/status, an optional `catalog_type_id`, and per-client sections. Binds to at most one tool-table entry at a time (install-once). Public path `/api/v1/tool-instance-records`. This is what the retired v2-flat vocabulary called "ToolRecord"; that term is **gone** (see Naming Tensions §1). In informal prose "tool" stays acceptable where unambiguous; use **ToolInstanceRecord** when precision matters. |
+| **ToolCatalogRecord** | A catalog-level *type*: a reusable, shareable definition (manufacturer, product code, **nominal** geometry) that can exist with zero owned instances. A ToolInstanceRecord optionally references one via `catalog_type_id`. Public path `/api/v1/tool-catalog-records`. |
+| **ToolTableEntry** | One machine's tool-table row: `tool_number` (the CAM↔CNC contract, `observed`), `bound_instance_id` (`asserted:human@inbox` once confirmed), `offsets` (`observed`) — all provenance-tagged; `internal` carries `machine_id`. Mirrors a controller's tool-table / offset-table row. Public path `/api/v1/tool-table-entry-records`. (Rejected names: `MachineToolInstance`; `ToolPocket` — names a field.) |
+| **Machine** | First-class entity: a CNC machine — identity, controller type, definition (axes/spindle/limits/post). Clients sync their native machine definitions to it. Public path `/api/v1/machine-records`. |
+| **ToolSet** | A control/CAM-agnostic named collection of tools, with ordered, provenance-tagged member numbers. Optionally **linked** to a Machine (`machine_id`); when linked, member numbers are inherited (`observed`) from the machine's tool-table entries, otherwise `asserted`. A FreeCAD `.fctl`, a Fusion library, or a shop drawer is one client's representation of a ToolSet, living in `clients.<name>.data`. (Supersedes **Library**, purged 2026-06-11.) |
+| **Preset** | A named feeds-and-speeds record on a tool record (`preset_schema: 1`): surface speed (Vc), chipload (Fz), optional vertical-feed ratio, optional material reference, operation type. Engineering values only; raw feed/RPM are derived by the consuming application at use time and never persisted. *(Facade endpoint not yet implemented — planned for M3.)* |
+| **Binding** | The confirmed link between a ToolTableEntry and a ToolInstanceRecord (`bound_instance_id`). Server-proposed, user-confirmed once, sticky. What makes the sync loop close. Verb forms are part of the vocabulary: to **bind** / **unbind** an entry; an entry is **bound** or **unbound**. Unbound entries still sync — as unbound. **`bind` is the only verb for this relationship** — `adopt` and `install` are retired synonyms (see Rejected terms). |
+| **Pending review / Inbox** | First-class server state for items awaiting a human: proposed Bindings and frozen Conflicts. Public path `/api/v1/instance-inbox`. Sync never prompts, blocks, or guesses. |
 | **Conflict** | Both sides changed the same bound field between syncs. The field freezes (neither side overwritten) until resolved in the Inbox. |
 | **Sync Plan / Apply** | The preview-first sync pattern clients use for interactive sync: **plan** computes what a sync would do — every item classified (in sync, changed here, changed on server, new, deleted, conflict) — touching neither disk nor server; **apply** executes only the user's per-item direction choices. The classification is a suggested default, never a railroad; conflicts and deletions default to "leave unsynced". |
+| **Account reset** | An admin operation that deletes **all** of the caller's tool data — instance/catalog records, tool sets, machines, tool-table entries, binding proposals — while keeping the account and its API keys. Exists to return to a clean slate for testing/demos. Public path `POST /api/v1/account/reset`; admin-gated (the solo user qualifies). |
+
+### How canonical data changes — provenance and the three doors
+
+Public, normative (full detail in `TOOL_SCHEMA.md` §4–5). Every `canonical` leaf is a
+provenance-tagged field `{ value, source }`. `source` kind is one of **`observed`** (a machine
+measured it), **`asserted`** (a human/client declared it), **`derived`** (computed from other
+canonical fields), or **`unknown`** (nobody stated it → `value` MUST be null). Canonical changes
+only through three doors: **sync** (a client writes only its own `clients.<name>` section — the
+only thing most clients do; physically cannot touch `internal`/`canonical`), **observe** (a
+machine reports a measured value), **assert** (an explicit, audited declaration). Routine sync is
+*not* a canonical-mutating door — that is enforced with a `400`, not a convention.
+
+### Rejected / removed terms (do not reintroduce — reboot R2)
+
+These shipped during implementation without entering the language and were removed 2026-06-18.
+They return only through this document with founder sign-off:
+
+| Removed term | Was used for | Use instead |
+|---|---|---|
+| **Adopt / adopted** | minting + binding a new record from an entry | **bind** (a bind may mint the record it binds) |
+| **install / installed** | the *bound* state, presented | **bound** / **unbound** |
+| **Coverage** | a set-vs-machine diff view (+ `absent_on_machine`/`machine_only`/`number_mismatch`) | (removed; no replacement — re-earn via this doc if needed) |
+| **Reconcile** | aligning set numbering to machine tool-table entries | (removed; the schema's number-reconciliation is surfaced through the **Inbox**) |
+| **Needs Attention** | a FreeCAD tab duplicating the Inbox | **Inbox** |
+| **mirror / mirrors** | the ToolSet↔Machine relation | **link / linked** (the one chosen word; provisional pending the user-facing-label pass) |
+| **slot / slots** | undocumented drift for a tool-table row, and the `/sync` wire field `slots` | **ToolTableEntry** / "entry" (and **Pocket** for the magazine position); the wire field is now `entries`. Purged 2026-06-18 (REBOOT R10). |
 
 ---
 
@@ -60,8 +100,8 @@ messages. They never appear in user-facing prose, client UI, or the published AP
 
 | Term | Definition |
 |------|------------|
-| **Facade** | The layer implementing the Public API: the small, stable vocabulary above (ToolRecord, ToolSet, Machine, …) presented over the deep schema. "Facade-only public API" (G3) means clients speak this layer exclusively; facade gaps get fixed, never bypassed. The facade is the API layer ONLY — the Web UI and API reference are surfaces *on top of* it (see Server Surfaces), not parts of it. |
-| **Deep schema** | The private substrate (ToolItem/Assembly/Instance/…): no compat promise, free to change, invisible at the boundary. |
+| **Facade** | The layer implementing the Public API. Under the 2026-06-18 reconciliation (R3) it is **thin**: the public API speaks the sectioned contract models in `smooth/contract/` *directly* — there is no longer a separate "facade vocabulary" translating down to a different deep one. "Facade" remains the name for the API layer (the Web UI and API reference are surfaces *on top of* it, not parts of it), and "facade gaps get fixed, never bypassed" (G3) still holds. |
+| **Legacy deep schema** | The retiring v1 substrate (`ToolItem` / `ToolAssembly` / `ToolInstance` / `ToolPreset` / `ToolUsage` and their routers, mounted `include_in_schema=False`). Superseded by the sectioned records; scheduled for removal (reboot R6); no compat promise; do not build on it. The richness it modeled now lives as **composition** inside the sectioned records (`TOOL_SCHEMA.md` §7.6). |
 
 ---
 
@@ -77,8 +117,14 @@ messages. They never appear in user-facing prose, client UI, or the published AP
 
 ## Domain Concepts — Tools
 
-The word "tool" alone is ⚠️ **overloaded** in machining. Smooth resolves it into four distinct
-entities along the catalog → physical → machine axis. Always use the specific term.
+> **Legacy section (historical).** The table below describes the **retiring** v1 deep entities
+> (`ToolItem` / `ToolAssembly` / `ToolInstance` / `ToolPreset` / `ToolUsage`). The current model
+> is the sectioned records in `TOOL_SCHEMA.md` (`ToolInstanceRecord`, `ToolCatalogRecord`,
+> `ToolTableEntry`, `ToolSet`, `Machine`). Keep this only as a glossary for reading old code until
+> the legacy substrate is removed (reboot R6).
+
+The word "tool" alone is ⚠️ **overloaded** in machining. The legacy schema resolved it into
+distinct entities along the catalog → physical → machine axis. Always use the specific term.
 
 | Term | Definition |
 |------|------------|
@@ -180,7 +226,7 @@ resolved **in FreeCAD's favor** wherever FreeCAD's term is shipping. Proposed re
 
 ## Naming Tensions — status after 2026-06-09 grill
 
-1. ~~Facade resource name~~ **RESOLVED:** the facade resource is **`ToolRecord`** — keeps an unambiguous term available without a prose register rule; bare "tool" remains harmlessly informal.
+1. ~~Facade resource name~~ **RE-RESOLVED 2026-06-18 (R3):** the public resource is **`ToolInstanceRecord`** (a physical tool), with **`ToolCatalogRecord`** for catalog types — the sectioned schema (`TOOL_SCHEMA.md`) is ratified as the public vocabulary and the old flat **`ToolRecord`** term is retired. Bare "tool" remains harmlessly informal.
 2. ~~Library vs ToolSet vs Catalog~~ **RE-RESOLVED 2026-06-11:** **ToolSet** = the one word, public and internal — "Library" purged from the facade as a client-side (FreeCAD) term; **Catalog** = manufacturer-published collections only.
 3. **ToolInstance may point at a ToolItem *or* a ToolAssembly** — now internal-only (facade-only public API), but the schema rule is still needed for phase 2. Open.
 4. ~~`machine_id` string~~ **RESOLVED:** Machine entity (D4); syncs `.fcm`. Pending implementation.

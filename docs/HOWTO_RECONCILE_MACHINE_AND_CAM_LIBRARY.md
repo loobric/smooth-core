@@ -3,10 +3,10 @@
 ## Goal
 
 You have a machine tool table **and** a CAM tool library, built independently.
-Same shop, same physical tools, but the server doesn't yet know which machine
-slot corresponds to which CAM tool. This guide links them.
+Same shop, same physical tools, but the server doesn't yet know which tool-table
+entry corresponds to which CAM tool. This guide links them.
 
-This is an **identity** question: "is this machine slot the same physical tool
+This is an **identity** question: "is this tool-table entry the same physical tool
 as this record?" It is **not** a data merge. If the two sides hold different
 geometry for what turns out to be the same tool, binding changes neither side's
 numbers or measurements. Settling identity and settling a data difference are
@@ -80,7 +80,7 @@ and the record.
 ### 4. Reconcile the set's numbering against the machine
 
 Identity is now settled per tool. The last step lines up the CAM set's member
-numbers with the machine's slot numbers, so the library and the control agree on
+numbers with the machine's tool numbers, so the library and the control agree on
 T-numbers.
 
 This needs the set to be **machine-linked**. The CAM client may have set the
@@ -92,15 +92,15 @@ loobric link-machine <set> <machine> # link it to the machine it mirrors
 ```
 
 Then run **reconcile**. For a machine-linked set, reconcile inherits each
-member's number from the machine slot that holds it — the machine is observed
+member's number from the tool-table entry that holds it — the machine is observed
 fact, the set conforms:
 
 ```bash
 loobric reconcile <set>
 ```
 
-It reports any **unreconciled** members — set members with no matching machine
-slot. The server reports these rather than inventing a number for them. Resolve
+It reports any **unreconciled** members — set members with no matching tool-table
+entry. The server reports these rather than inventing a number for them. Resolve
 each one by binding the corresponding entry (step 3) or by removing the member
 from the set, then reconcile again.
 

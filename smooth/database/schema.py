@@ -169,91 +169,6 @@ class ToolItem(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
-class Machine(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
-    """Machine model - a CNC machine (v2 facade entity, decision D4).
-
-    Assumptions:
-    - name is the human identifier clients reference (e.g. "mill01");
-      unique per owning user
-    - controller_type is informational (e.g. "linuxcnc", "grbl")
-    - definition holds the client's machine-definition JSON (axes, spindle
-      min/max, units, post settings); stored opaquely, round-tripped losslessly
-    - tags is JSON array for access control and organization
-    """
-    __tablename__ = "machines"
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_machine_user_name"),
-        {'extend_existing': True},
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    controller_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    definition: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-
-
-class ToolTableEntry(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
-    """ToolTableEntry model - one machine's tool-table row (v2 facade entity).
-
-    Assumptions:
-    - (machine_id, tool_number) is unique; pushes upsert on that key
-    - tool_record_id is the binding to the facade ToolRecord's backing row;
-      NULL means the entry is unbound (raw material for the binding engine)
-    - offsets is JSON ({"z": -50.0, "z_unit": "mm", ...})
-    - provenance is JSON mapping field paths to source strings
-      (e.g. {"offsets.z": "machine"}); sync must never silently replace
-      user-provenance values (G5)
-    - extra is JSON for lossless client round-trips (raw .tbl params etc.)
-    """
-    __tablename__ = "tool_table_entries"
-    __table_args__ = (
-        UniqueConstraint("machine_id", "tool_number", name="uq_entry_machine_toolnum"),
-        {'extend_existing': True},
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    machine_id: Mapped[str] = mapped_column(String(36), ForeignKey("machines.id"), nullable=False, index=True)
-    tool_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    pocket: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    offsets: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    provenance: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    extra: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    tool_record_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("tool_items.id"), nullable=True, index=True
-    )
-
-
-class BindingProposal(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
-    """BindingProposal model - a heuristic match awaiting human review (v2 #5).
-
-    Assumptions:
-    - Proposes binding ONE ToolTableEntry to ONE ToolRecord backing row
-    - status: open | confirmed | rejected; only open proposals appear in
-      the inbox, and an entry has at most one open proposal at a time
-    - Rejected proposals are kept: the same (entry, record) pair is never
-      proposed again (rejection is a remembered human decision)
-    - confidence in [0, 1]; reason is the human-readable explanation shown
-      in the inbox
-    """
-    __tablename__ = "binding_proposals"
-    __table_args__ = (
-        {'extend_existing': True},
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    entry_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tool_table_entries.id"), nullable=False, index=True
-    )
-    proposed_record_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tool_items.id"), nullable=False, index=True
-    )
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
-
-
 class ManufacturerCatalog(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Manufacturer catalog model - collections of catalog tools.
     
@@ -406,10 +321,10 @@ class ToolCatalogRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin
 
 
 class ToolTableEntryRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
-    """Sectioned tool-schema entity: a machine slot. `bound_instance_id` is
+    """Sectioned tool-schema entity: a machine entry. `bound_instance_id` is
     extracted from canonical with a UNIQUE index — the install-once guarantee
-    (a physical instance is in at most one slot, globally; NULLs are exempt so
-    unbound slots are unconstrained)."""
+    (a physical instance is in at most one entry, globally; NULLs are exempt so
+    unbound entries are unconstrained)."""
     __tablename__ = "tool_table_entry_records"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -423,7 +338,7 @@ class ToolTableEntryRecord(Base, TimestampMixin, VersionMixin, UserAttributionMi
 class ToolSetRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Sectioned tool-schema entity: an agnostic named collection. Optional
     `machine_id` link (extracted) — when set, member numbers are reconciled
-    from that machine's slots (machine wins)."""
+    from that machine's entries (machine wins)."""
     __tablename__ = "tool_set_records"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -442,15 +357,15 @@ class MachineRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
-class SlotProposal(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
-    """A heuristic proposal that an unbound slot holds a particular instance,
-    awaiting human review (the sectioned successor to BindingProposal). status:
-    open | confirmed | rejected; a rejected (slot, instance) pair is never
+class EntryProposal(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
+    """A heuristic proposal that an unbound entry holds a particular instance,
+    awaiting human review (the binding inbox for the sectioned schema). status:
+    open | confirmed | rejected; a rejected (entry, instance) pair is never
     re-proposed."""
-    __tablename__ = "slot_proposals"
+    __tablename__ = "entry_proposals"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    slot_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    entry_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     proposed_instance_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)

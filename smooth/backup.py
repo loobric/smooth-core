@@ -22,8 +22,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import inspect
 
 from smooth.database.schema import (
-    User, ApiKey, ToolItem, ToolAssembly, ToolInstance,
-    ToolPreset, ToolUsage, ToolSet
+    User, ApiKey, MachineRecord, ToolInstanceRecord, ToolCatalogRecord,
+    ToolTableEntryRecord, ToolSetRecord, EntryProposal,
 )
 
 
@@ -37,15 +37,18 @@ class BackupValidationError(Exception):
     pass
 
 
-# Entity order for restore (respects foreign key dependencies)
+# Entity order for restore. These are the v2 sectioned records (the actual tool
+# data, docs/TOOL_SCHEMA.md). The legacy deep tables are retiring (REBOOT R6) and
+# are NOT backed up — backup operates on v2 data (REBOOT R9). No DB-level FKs link
+# the sectioned tables, so this order is logical, not enforced.
 ENTITY_ORDER = [
     ("users", User),
-    ("tool_items", ToolItem),
-    ("tool_assemblies", ToolAssembly),
-    ("tool_instances", ToolInstance),
-    ("tool_presets", ToolPreset),
-    ("tool_usage", ToolUsage),
-    ("tool_sets", ToolSet),
+    ("machine_records", MachineRecord),
+    ("tool_catalog_records", ToolCatalogRecord),
+    ("tool_instance_records", ToolInstanceRecord),
+    ("tool_table_entry_records", ToolTableEntryRecord),
+    ("tool_set_records", ToolSetRecord),
+    ("entry_proposals", EntryProposal),
     ("api_keys", ApiKey),
 ]
 
@@ -103,23 +106,15 @@ def export_backup(session: Session, user_id: str = None, admin: bool = False) ->
         if admin or user_id is None:
             # Admin backup or legacy: get all records
             records = session.query(entity_class).all()
+        elif entity_name == "users":
+            # Only the user's own account
+            records = session.query(entity_class).filter(entity_class.id == user_id).all()
+        elif hasattr(entity_class, "user_id"):
+            # Everything else the user owns (every sectioned record + api_keys
+            # carries user_id)
+            records = session.query(entity_class).filter(entity_class.user_id == user_id).all()
         else:
-            # User backup: filter by user_id
-            if entity_name == "users":
-                # Only include the user's own account
-                records = session.query(entity_class).filter(entity_class.id == user_id).all()
-            elif entity_name == "api_keys":
-                # Only include user's API keys
-                records = session.query(entity_class).filter(entity_class.user_id == user_id).all()
-            elif entity_name in ["tool_items", "tool_assemblies", "tool_instances", 
-                                "tool_presets", "tool_usage", "tool_sets"]:
-                # Only include user's tool data (filter by user_id field)
-                if hasattr(entity_class, 'user_id'):
-                    records = session.query(entity_class).filter(entity_class.user_id == user_id).all()
-                else:
-                    records = []
-            else:
-                records = []
+            records = []
         
         entities[entity_name] = [_serialize_entity(record) for record in records]
         counts[entity_name] = len(records)
@@ -252,18 +247,16 @@ def _clear_user_data(session: Session, user_id: str) -> None:
         session: Database session
         user_id: User ID to clear data for
     """
-    from smooth.database.schema import ApiKey, ToolItem, ToolAssembly, ToolInstance
-    from smooth.database.schema import ToolPreset, ToolUsage, ToolSet, User
-    
-    # Delete in reverse dependency order
+    from smooth.database.schema import (
+        ApiKey, User, MachineRecord, ToolInstanceRecord, ToolCatalogRecord,
+        ToolTableEntryRecord, ToolSetRecord, EntryProposal,
+    )
+
     session.query(ApiKey).filter(ApiKey.user_id == user_id).delete()
-    
-    # Delete tool data
-    for entity_class in [ToolUsage, ToolSet, ToolPreset, ToolInstance, ToolAssembly, ToolItem]:
-        if hasattr(entity_class, 'user_id'):
-            session.query(entity_class).filter(entity_class.user_id == user_id).delete()
-    
-    # Delete user account last
+    for entity_class in [EntryProposal, ToolTableEntryRecord, ToolSetRecord,
+                         ToolInstanceRecord, ToolCatalogRecord, MachineRecord]:
+        session.query(entity_class).filter(entity_class.user_id == user_id).delete()
+    # Delete the user account last
     session.query(User).filter(User.id == user_id).delete()
 
 
@@ -274,18 +267,17 @@ def _clear_all_data(session: Session) -> None:
         session: Database session
     """
     from smooth.database.schema import (
-        ApiKey, ToolItem, ToolAssembly, ToolInstance,
-        ToolPreset, ToolUsage, ToolSet, User
+        ApiKey, User, MachineRecord, ToolInstanceRecord, ToolCatalogRecord,
+        ToolTableEntryRecord, ToolSetRecord, EntryProposal,
     )
-    
-    # Delete in reverse dependency order
+
     session.query(ApiKey).delete()
-    session.query(ToolUsage).delete()
-    session.query(ToolSet).delete()
-    session.query(ToolPreset).delete()
-    session.query(ToolInstance).delete()
-    session.query(ToolAssembly).delete()
-    session.query(ToolItem).delete()
+    session.query(EntryProposal).delete()
+    session.query(ToolTableEntryRecord).delete()
+    session.query(ToolSetRecord).delete()
+    session.query(ToolInstanceRecord).delete()
+    session.query(ToolCatalogRecord).delete()
+    session.query(MachineRecord).delete()
     session.query(User).delete()
 
 

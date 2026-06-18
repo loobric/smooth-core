@@ -11,10 +11,7 @@ This page has two parts:
 - [Walkthrough: from touch-off to a bound tool](#walkthrough-from-touch-off-to-a-bound-tool)
   — the core workflow, end to end.
 
-For goal-oriented walkthroughs that span a CNC control and a CAM library, see
-the how-to guides:
-[Mirror your machine's tools into CAM](HOWTO_MIRROR_MACHINE_TOOLS_TO_CAM.md) and
-[Reconcile a machine and a CAM library you built separately](HOWTO_RECONCILE_MACHINE_AND_CAM_LIBRARY.md).
+Goal-oriented walkthroughs that span a CNC control and a CAM library are TBD.
 
 ## Installing the command
 
@@ -71,9 +68,10 @@ Environment variables:
 
 ## Command reference
 
-Many commands accept **id prefixes**: like a git short SHA, you can pass the
-first few characters of a machine, record, or inbox-item id as long as the
-prefix is unique. An ambiguous prefix prints the candidates and exits.
+Many commands resolve a machine, record, or tool set by its **id, its name, or
+a unique id-prefix**: like a git short SHA, you can pass the first few characters
+of an id as long as the prefix is unique, or pass the full name. An ambiguous
+value prints the candidates and exits.
 
 ### Account and session
 
@@ -117,6 +115,16 @@ Check that the server is reachable and healthy (calls `/api/health`, no auth
 required). Prints status, version (if reported), and the URL. Exits non-zero if
 the server is unreachable or unhealthy.
 
+#### `whoami`
+
+```
+loobric whoami
+```
+
+Show the authenticated account: email, role, admin flag, and id. This needs a
+session (or an API key), so it reports "not authenticated" under solo mode,
+which has no session.
+
 ### API keys
 
 #### `create-key`
@@ -155,7 +163,16 @@ loobric revoke-key KEY_ID
 
 Revoke (delete) an API key by its id. Prints a confirmation.
 
-### Inspecting machines and tools
+### Machines and tools
+
+#### `create-machine`
+
+```
+loobric create-machine NAME [--controller TYPE]
+```
+
+Create a machine and assert its name. `--controller` records the controller type
+(e.g. `linuxcnc`). Prints the new machine's name and short id.
 
 #### `list-machines`
 
@@ -190,15 +207,37 @@ loobric tool-table MACHINE
 ```
 
 Show one machine's tool-table entries — the tools the controller has reported.
-`MACHINE` is a machine id or unique prefix. Each line shows the tool number,
-description, diameter (when reported), and bind state: either `unbound` or
-`bound -> <record-prefix>`.
+`MACHINE` is a machine id, name, or unique prefix. Each line shows the tool
+number, description, diameter (when reported), and bind state: either `unbound`
+or `bound -> <record-prefix>`.
 
-### Tool sets and coverage
+#### `push`
 
-A tool set can carry an optional link to a machine, meaning "this set mirrors
-this machine's tool table." Once linked, you can inherit member numbers from the
-machine and diff the set against the machine's slots.
+```
+loobric push MACHINE --entry "N[:DESC[:DIA]]" [--entry ...] [--client NAME] [--snapshot]
+```
+
+The controller-side tool-table sync: upsert tool-table entries on a machine by
+tool number. `MACHINE` is a machine id, name, or unique prefix. Each `--entry`
+is a tool number with an optional description and diameter (mm), e.g.
+`--entry "3:1/4 downcut:6.35"`; the flag is repeatable. `--client` stamps the
+client name on the push (default `loobric`). `--snapshot` makes the push
+authoritative — entries absent from it are removed — and the removed tool
+numbers are printed. Prints how many entries were pushed.
+
+### Tool sets
+
+A tool set is a named collection of tool records. It can optionally be **linked**
+to a machine (see `link-machine`); once linked, its member numbers are inherited
+from that machine's tool-table entries.
+
+#### `create-set`
+
+```
+loobric create-set NAME
+```
+
+Create a tool set and assert its name. Prints the new set's name and short id.
 
 #### `link-machine`
 
@@ -206,36 +245,10 @@ machine and diff the set against the machine's slots.
 loobric link-machine SET MACHINE
 ```
 
-Link a tool set to a machine: record that the set mirrors that machine's tool
-table. `SET` and `MACHINE` accept id prefixes. This asserts the set's
-`machine_id` and is what enables `reconcile` and `coverage`. Prints a
-confirmation naming the set and the machine it now mirrors.
-
-#### `reconcile`
-
-```
-loobric reconcile SET
-```
-
-For a machine-linked set, set each member's tool number from the machine slot
-that holds it — the machine is observed fact, so the set conforms. Prints a
-confirmation. Members with no matching machine slot are reported (a count and
-their short ids) and left with an unknown number, never silently renumbered.
-
-#### `coverage`
-
-```
-loobric coverage SET
-```
-
-Read-only diff of a machine-linked set against the machine's tool table. For
-each member it prints a status — `in sync`, `NUMBER MISMATCH` (with the number
-the machine has it at), or `NOT ON MACHINE` — and flags any number collisions
-between members. It then lists machine-only pockets (on the machine, not in the
-set) and empty pockets, and ends with a summary line. When some tools are in the
-set but not yet on the machine, it calls them out as "the tools to order/load."
-If the set isn't linked to a machine, it says so and points you to
-`link-machine`.
+Link a tool set to a machine so its member numbers are inherited from that
+machine's tool-table entries. `SET` and `MACHINE` accept an id, name, or unique
+prefix. This asserts the set's `machine_id`. Prints a confirmation naming the set
+and the machine it is now linked to.
 
 ### Resolving the inbox
 
@@ -272,7 +285,7 @@ while a wrong `confirm` is currently hard to undo.
 
 ### Managing bindings
 
-A machine *entry* (a slot in a tool table, `T<n>`) can be linked to a *tool
+A machine *entry* (a row in a tool table, `T<n>`) can be linked to a *tool
 record*. Binding never overwrites either side; it just routes future changes
 between them.
 
@@ -282,8 +295,8 @@ between them.
 loobric bind MACHINE TOOL_NUMBER RECORD
 ```
 
-Link an entry to an existing tool record. `MACHINE` and `RECORD` accept id
-prefixes; `TOOL_NUMBER` is the integer slot (e.g. `3`).
+Link an entry to an existing tool record. `MACHINE` and `RECORD` accept an id,
+name, or unique prefix; `TOOL_NUMBER` is the integer tool number (e.g. `3`).
 
 #### `unbind`
 
@@ -300,11 +313,10 @@ suggestions again.
 loobric create-record MACHINE TOOL_NUMBER [--name NAME]
 ```
 
-Adopt a machine entry: create a brand-new tool record seeded from the entry's
-observed values and bind it, in one step. Use this when the machine has a tool
-the server has never seen and you want to promote it to a record. `--name`
-defaults to the entry's description. (This is the `adopt` operation; there is no
-separate `adopt` command.)
+Create a brand-new tool record seeded from a machine entry's observed values and
+bind it, in one step. Use this when the machine has a tool the server has never
+seen and you want to promote it to a record. `--name` defaults to the entry's
+description.
 
 ### Removing data
 
@@ -336,6 +348,64 @@ loobric delete-machine MACHINE [--yes]
 ```
 
 Delete a machine and its tool-table entries. Tool records are not affected.
+
+### The canonical assert door
+
+#### `assert`
+
+```
+loobric assert RESOURCE RECORD_ID PATH VALUE
+```
+
+Set a canonical field directly — the canonical "assert" door. `RESOURCE` is a
+record collection (e.g. `tool-set-records`, `machine-records`), `RECORD_ID` is
+the record id, `PATH` is the canonical path (e.g. `name`), and `VALUE` is the
+new value. `VALUE` is JSON-parsed when possible (so numbers, booleans, and JSON
+objects work), otherwise it is treated as a plain string. For example:
+
+```bash
+loobric assert tool-set-records <id> name "Aluminum job"
+```
+
+### Admin and housekeeping
+
+#### `audit`
+
+```
+loobric audit [--limit N]
+```
+
+Show recent audit-log entries — operation, entity type, short entity id, and
+time, one per line. `--limit` caps how many are shown (default 50).
+
+#### `reset`
+
+```
+loobric reset [--yes]
+```
+
+Wipe **all** tool data for the account — records, sets, machines, and
+tool-table entries — keeping the login and API keys. Admin operation. Prompts
+for confirmation; pass `--yes`/`-y` to skip it (required in a non-interactive
+shell). Prints how many items were deleted.
+
+#### `backup-export`
+
+```
+loobric backup-export [--out FILE]
+```
+
+Export a full account backup as JSON (admin). Writes to `--out FILE` when given,
+otherwise to stdout.
+
+#### `backup-import`
+
+```
+loobric backup-import FILE
+```
+
+Restore an account backup from a JSON file (admin). `FILE` is the path to a
+backup produced by `backup-export`.
 
 ## Walkthrough: from touch-off to a bound tool
 
@@ -393,7 +463,7 @@ If it is wrong (or you are unsure), reject it. T3 stays unbound:
 loobric resolve 4f2a reject
 ```
 
-### 5. No proposal? Bind or adopt by hand
+### 5. No proposal? Bind or create a record by hand
 
 The inbox only holds cases the server could guess at. For an unbound entry with
 no proposal, you have two choices.
@@ -420,3 +490,30 @@ loobric tool-table <machine>
 T3 now reads `bound -> <record>`. From here, changes on either side route
 between the entry and the record. If you ever got it wrong, `unbind <machine> 3`
 puts the entry back to `unbound` without losing its data.
+
+## Using loobric as a library
+
+`loobric.py` is MIT-licensed and importable. The same `Client` class the CLI
+uses is the reference implementation other Python clients (FreeCAD, etc.) reuse,
+so you don't have to write your own HTTP client:
+
+```python
+from loobric import Client, NotFound, LoobricError
+
+c = Client(base_url="http://nas:8000", api_key="…")   # solo mode: api_key optional
+
+for s in c.list_tool_sets():
+    ...
+
+c.create_machine("millstone", controller_type="linuxcnc")
+
+try:
+    c.get_machine(machine_id)
+except NotFound:
+    ...
+```
+
+Client methods return parsed data and raise `LoobricError` subclasses on
+failure — `NotFound`, `AuthRequired`, `HTTPError`, and `ConnectionFailed` — so
+callers handle errors instead of parsing printed output. The module is
+single-file and stdlib-only, so clients can vendor `loobric.py` directly.

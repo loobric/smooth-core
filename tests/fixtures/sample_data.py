@@ -41,40 +41,42 @@ def create_sample_users(count=2):
     return users
 
 
-def create_sample_tool_items(user_id, count=5):
-    """Create sample tool items for a user.
-    
+def create_sample_tool_instance_records(user_id, count=5):
+    """Create sample v2 tool instance records for a user.
+
+    Each record only contains real ToolInstanceRecord columns. Any
+    human-readable sample content lives inside ``canonical`` (provenance-tagged
+    per docs/TOOL_SCHEMA.md), not as top-level legacy fields.
+
     Args:
         user_id: User ID who owns the tools
-        count: Number of tool items to create
-        
+        count: Number of tool instance records to create
+
     Returns:
-        list: ToolItem entity dicts
+        list: ToolInstanceRecord entity dicts
     """
     tool_types = ["cutting_tool", "holder", "insert", "adapter"]
     manufacturers = ["Kennametal", "Sandvik", "Iscar", "Mitsubishi"]
-    
-    tools = []
+
+    records = []
     for i in range(count):
         tool_type = tool_types[i % len(tool_types)]
         manufacturer = manufacturers[i % len(manufacturers)]
-        
-        tools.append({
+
+        canonical = {
+            "name": {
+                "value": f"Sample {tool_type} #{i+1}",
+                "source": "asserted:test",
+            },
+            "type": {"value": tool_type, "source": "asserted:test"},
+            "manufacturer": {"value": manufacturer, "source": "asserted:test"},
+        }
+
+        records.append({
             "id": str(uuid4()),
-            "type": tool_type,
-            "manufacturer": manufacturer,
-            "product_code": f"{manufacturer.upper()}-{tool_type.upper()}-{i+1:03d}",
-            "description": f"Sample {tool_type} #{i+1}",
-            "geometry": {
-                "diameter": 10.0 + i * 2,
-                "length": 50.0 + i * 10,
-                "flutes": 4
-            } if tool_type == "cutting_tool" else None,
-            "material": {
-                "grade": "HC",
-                "coating": "TiAlN"
-            } if tool_type == "cutting_tool" else None,
-            "iso_13399_reference": None,
+            "canonical": canonical,
+            "clients": {},
+            "catalog_type_id": None,
             "user_id": user_id,
             "created_by": user_id,
             "updated_by": user_id,
@@ -82,8 +84,8 @@ def create_sample_tool_items(user_id, count=5):
             "updated_at": datetime.now(UTC).isoformat(),
             "version": 1
         })
-    
-    return tools
+
+    return records
 
 
 def create_sample_api_keys(user_id, count=2):
@@ -151,23 +153,23 @@ def create_minimal_backup():
             "counts": {
                 "users": 1,
                 "api_keys": 0,
-                "tool_items": 0,
-                "tool_assemblies": 0,
-                "tool_instances": 0,
-                "tool_presets": 0,
-                "tool_usage": 0,
-                "tool_sets": 0
+                "machine_records": 0,
+                "tool_catalog_records": 0,
+                "tool_instance_records": 0,
+                "tool_table_entry_records": 0,
+                "tool_set_records": 0,
+                "entry_proposals": 0
             }
         },
         "entities": {
             "users": users,
             "api_keys": [],
-            "tool_items": [],
-            "tool_assemblies": [],
-            "tool_instances": [],
-            "tool_presets": [],
-            "tool_usage": [],
-            "tool_sets": []
+            "machine_records": [],
+            "tool_catalog_records": [],
+            "tool_instance_records": [],
+            "tool_table_entry_records": [],
+            "tool_set_records": [],
+            "entry_proposals": []
         }
     }
 
@@ -182,8 +184,8 @@ def create_single_user_backup():
     user_id = users[0]["id"]
     
     api_keys = create_sample_api_keys(user_id, count=2)
-    tool_items = create_sample_tool_items(user_id, count=10)
-    
+    tool_instance_records = create_sample_tool_instance_records(user_id, count=10)
+
     return {
         "metadata": {
             "version": "0.1.0",
@@ -193,23 +195,23 @@ def create_single_user_backup():
             "counts": {
                 "users": 1,
                 "api_keys": len(api_keys),
-                "tool_items": len(tool_items),
-                "tool_assemblies": 0,
-                "tool_instances": 0,
-                "tool_presets": 0,
-                "tool_usage": 0,
-                "tool_sets": 0
+                "machine_records": 0,
+                "tool_catalog_records": 0,
+                "tool_instance_records": len(tool_instance_records),
+                "tool_table_entry_records": 0,
+                "tool_set_records": 0,
+                "entry_proposals": 0
             }
         },
         "entities": {
             "users": users,
             "api_keys": api_keys,
-            "tool_items": tool_items,
-            "tool_assemblies": [],
-            "tool_instances": [],
-            "tool_presets": [],
-            "tool_usage": [],
-            "tool_sets": []
+            "machine_records": [],
+            "tool_catalog_records": [],
+            "tool_instance_records": tool_instance_records,
+            "tool_table_entry_records": [],
+            "tool_set_records": [],
+            "entry_proposals": []
         }
     }
 
@@ -223,13 +225,14 @@ def create_multi_user_backup():
     users = create_sample_users(count=3)
     
     all_api_keys = []
-    all_tool_items = []
-    
+    all_tool_instance_records = []
+
     for user in users:
         user_id = user["id"]
         all_api_keys.extend(create_sample_api_keys(user_id, count=2))
-        all_tool_items.extend(create_sample_tool_items(user_id, count=5))
-    
+        all_tool_instance_records.extend(
+            create_sample_tool_instance_records(user_id, count=5))
+
     return {
         "metadata": {
             "version": "0.1.0",
@@ -238,22 +241,22 @@ def create_multi_user_backup():
             "counts": {
                 "users": len(users),
                 "api_keys": len(all_api_keys),
-                "tool_items": len(all_tool_items),
-                "tool_assemblies": 0,
-                "tool_instances": 0,
-                "tool_presets": 0,
-                "tool_usage": 0,
-                "tool_sets": 0
+                "machine_records": 0,
+                "tool_catalog_records": 0,
+                "tool_instance_records": len(all_tool_instance_records),
+                "tool_table_entry_records": 0,
+                "tool_set_records": 0,
+                "entry_proposals": 0
             }
         },
         "entities": {
             "users": users,
             "api_keys": all_api_keys,
-            "tool_items": all_tool_items,
-            "tool_assemblies": [],
-            "tool_instances": [],
-            "tool_presets": [],
-            "tool_usage": [],
-            "tool_sets": []
+            "machine_records": [],
+            "tool_catalog_records": [],
+            "tool_instance_records": all_tool_instance_records,
+            "tool_table_entry_records": [],
+            "tool_set_records": [],
+            "entry_proposals": []
         }
     }

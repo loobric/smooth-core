@@ -42,7 +42,7 @@ failure). Provenance makes a guess inexpressible.
 ## 2. Why (the principles)
 
 1. **Observation is not assertion.** A machine can only *observe* what it
-   physically measures — a tool's slot number and a touched-off diameter. It
+   physically measures — a tool's tool number and a touched-off diameter. It
    can never know a tool is a "probe" vs an "endmill"; that is a human/CAM
    *assertion*. The schema encodes this distinction in every field's `source`.
 2. **Unknown is a first-class, honest state.** The absence of an assertion is
@@ -54,8 +54,8 @@ failure). Provenance makes a guess inexpressible.
    catalog types, instances, entries, sets, and machines alike.
 5. **Position belongs to the thing that has positions.** A tool number is never
    a client's private copy (that's how CAM and CNC drift apart). It is
-   canonical and owned by the entity that models the position: the machine slot
-   (`ToolTableEntry`) or the set membership (`ToolSet`).
+   canonical and owned by the entity that models the position: the tool-table
+   entry (`ToolTableEntry`) or the set membership (`ToolSet`).
 
 ---
 
@@ -184,7 +184,7 @@ of them**:
    most clients ever do. *(This alone makes the endmill bug impossible: a
    FreeCAD import sync physically cannot write `geometry.shape`.)*
 2. **Observe**: a machine client reports a measured value for an *observable*
-   canonical field (diameter, length, slot number). The server records it with
+   canonical field (diameter, length, tool number). The server records it with
    `source = observed:<client>@<machine>`. Relatively free — it's reality.
    Gated by the client's declared scope: a machine may observe a measurement;
    it may never observe (let alone assert) a `shape`.
@@ -207,8 +207,8 @@ Two independent links, by design:
   file. This is the client's private bookkeeping, *not* part of the wire
   sections. It is how the client knows UPDATE vs CREATE next time.
 - **Client → its own item (`client_item_id`, fallback).** The envelope carries
-  the client's *own* stable handle (FreeCAD's `.fctb` id; a slot identity for a
-  machine entry). When the client loses the server back-reference (FreeCAD's
+  the client's *own* stable handle (FreeCAD's `.fctb` id; a tool-number identity
+  for a machine entry). When the client loses the server back-reference (FreeCAD's
   editor drops unknown keys on save — a real, observed failure), the server
   re-adopts the link by matching `client_item_id` against the section it
   already holds for that client. Never by name.
@@ -237,18 +237,18 @@ spec, never `observed`.
 
 ### 7.2 `ToolInstanceRecord` — a *physical* tool
 The syncable, installable thing. References an optional catalog type. **Binds
-to at most one machine slot at a time** (the install-once invariant, §8).
+to at most one tool-table entry at a time** (the install-once invariant, §8).
 
 `canonical`: `name`, `catalog_type_id` (optional, provenance-tagged —
 `unknown` until someone asserts it), `status` (installed/in-drawer/…),
 **measured** `geometry` (`observed` per machine). The measured diameter here is
 the per-instance reality; the nominal lives on the type.
 
-### 7.3 `ToolTableEntry` — a machine slot
+### 7.3 `ToolTableEntry` — a row of a machine's tool table
 One row of a machine's tool table.
 
-`canonical`: `tool_number` (`observed:<client>@<machine>` — THE slot, the
-CAM↔CNC contract), `bound_instance_id` (the physical tool in the slot;
+`canonical`: `tool_number` (`observed:<client>@<machine>` — THE tool number, the
+CAM↔CNC contract), `bound_instance_id` (the physical tool bound to the entry;
 `asserted:human@inbox` when confirmed), `offsets` (`observed`). `internal`
 additionally carries `machine_id`.
 
@@ -265,7 +265,7 @@ client's representation* of a ToolSet, living in that set's
 - `members` — an ordered list of `{ tool_record_id, number }`, where `number`
   is a **canonical, provenance-tagged** position. The position is unique within
   the set. When the set is `machine_id`-bound, member numbers are
-  **`observed`** (inherited from the machine's slots — the machine is fact, the
+  **`observed`** (inherited from the machine's tool-table entries — the machine is fact, the
   set conforms). When unbound, they are `asserted:<client>`.
 
 The per-client library numbers that used to live in `extra.freecad.numbers` are
@@ -281,7 +281,7 @@ A real CNC tool is not one object — it is a **stack of items that couple
 through standardized interfaces** (ISO 13399): a cutting item (the edge), a
 tool item (the body), adaptive items (collets, extensions), and an assembly
 item (the holder / spindle interface, e.g. HSK63, BT40, Capto C6). The
-*assembly* — the stack — is the thing that actually installs in a machine slot
+*assembly* — the stack — is the thing that actually installs in the machine
 and the thing CAM reasons about, because its **gauge/functional length is
 emergent from the whole stack** and exists on no single component.
 
@@ -294,7 +294,7 @@ a separate entity — keeping the two-record model and uniform sections:
 - A record that is an assembly carries an ordered **`components`** field whose
   value is a list of `{ component_id, role, connection }` — each a reference to
   another record (catalog→catalog parts; instance→instance parts), the ISO role
-  it plays, and a flexible `connection` slot for the coupling/interface, gauge
+  it plays, and a flexible `connection` field for the coupling/interface, gauge
   offset, and stick-out. `components` is itself a provenance-tagged Field (who
   asserted this composition).
 - Assembly **geometry is emergent**: `cutting_diameter` comes from the cutting
@@ -323,7 +323,7 @@ See `tests/fixtures/schema/tool_assembly_record.json` for a worked example.
   Enforced by a **unique index** on `ToolTableEntry.canonical.bound_instance_id`
   (NULLs exempt → many unbound entries fine) as the hard guarantee, **plus** a
   bind endpoint that returns a friendly `409` ("Probe is installed in *millstone*
-  slot 1 — unbind there first, or use *move*") and offers an atomic **move**
+  entry T1 — unbind there first, or use *move*") and offers an atomic **move**
   (unbind old + bind new).
 - **`ToolRecord` is an instance**, not a type. One `ToolInstanceRecord` per
   physical tool. Catalog types are separate, referenced, and may have zero
@@ -333,9 +333,9 @@ See `tests/fixtures/schema/tool_assembly_record.json` for a worked example.
   cannot be live in two installed assemblies at once. The schema permits this
   (composition is explicit); the enforcement lands with the assembly work.
 - **Number reconciliation.** For a `machine_id`-bound `ToolSet`, the machine's
-  slots are the source of truth (observation > assertion): member numbers are
-  inherited (`number = slot`). Cases the server cannot infer — a set member
-  with no machine slot, or two members claiming one slot — are surfaced to a
+  tool-table entries are the source of truth (observation > assertion): member
+  numbers are inherited (`number = tool_number`). Cases the server cannot infer —
+  a set member with no machine entry, or two members claiming one entry — are surfaced to a
   human (like the binding inbox), never silently renumbered.
 
 ---
@@ -397,7 +397,7 @@ non-Python client appears.
 
 See `tests/fixtures/schema/*.json` — those files are simultaneously the
 canonical examples, the documentation, and the conformance test data. They
-cover a catalog record, a physical instance (the Probe), a machine slot entry,
+cover a catalog record, a physical instance (the Probe), a machine tool-table entry,
 and a machine-bound tool set. They are validated by
 `tests/contract/test_schema_contract.py` on every test run, so they cannot
 drift from the models.

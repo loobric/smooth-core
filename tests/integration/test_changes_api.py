@@ -16,7 +16,7 @@ Assumptions:
 import pytest
 from fastapi.testclient import TestClient
 from smooth.main import app
-from smooth.database.schema import Base, ToolItem, User
+from smooth.database.schema import Base, ToolInstanceRecord, User
 from smooth.api.auth import get_db
 from smooth.auth.user import create_user
 from smooth.config import settings
@@ -81,37 +81,37 @@ def login_user(client, email, password):
 
 @pytest.fixture
 def sample_tool_items(test_db, regular_user, other_user):
-    """Create sample tool items with different versions."""
+    """Create sample v2 tool instance records with different versions."""
     db = next(get_db())
-    
-    # Items for regular_user
+
+    # Records for regular_user
     for i in range(3):
-        item = ToolItem(
+        record = ToolInstanceRecord(
             id=f"item-user-{i}",
-            type="cutting_tool",
+            canonical={"manufacturer": f"Manufacturer {i}"},
+            clients={},
             version=i + 2,  # versions 2, 3, 4
             user_id=regular_user.id,
             created_by=regular_user.id,
             updated_by=regular_user.id,
-            manufacturer=f"Manufacturer {i}",
             updated_at=datetime.now(UTC) - timedelta(minutes=30 - i * 10)
         )
-        db.add(item)
-    
-    # Items for other_user
+        db.add(record)
+
+    # Records for other_user
     for i in range(2):
-        item = ToolItem(
+        record = ToolInstanceRecord(
             id=f"item-other-{i}",
-            type="holder",
+            canonical={"manufacturer": f"Other Manufacturer {i}"},
+            clients={},
             version=i + 2,
             user_id=other_user.id,
             created_by=other_user.id,
             updated_by=other_user.id,
-            manufacturer=f"Other Manufacturer {i}",
             updated_at=datetime.now(UTC) - timedelta(minutes=20 - i * 10)
         )
-        db.add(item)
-    
+        db.add(record)
+
     db.commit()
     db.close()
 
@@ -124,14 +124,14 @@ class TestChangesByVersion:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=2",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=2",
             cookies={"session": session}
         )
         
         assert response.status_code == 200
         data = response.json()
         
-        assert data["entity_type"] == "tool_items"
+        assert data["entity_type"] == "tool_instance_records"
         assert data["sync_method"] == "version"
         assert data["count"] == 2  # versions 3 and 4
         assert len(data["changes"]) == 2
@@ -145,7 +145,7 @@ class TestChangesByVersion:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0",
             cookies={"session": session}
         )
         
@@ -160,7 +160,7 @@ class TestChangesByVersion:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0",
             cookies={"session": session}
         )
         
@@ -177,7 +177,7 @@ class TestChangesByVersion:
         session = login_user(client, "admin@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0",
             cookies={"session": session}
         )
         
@@ -192,7 +192,7 @@ class TestChangesByVersion:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0",
             cookies={"session": session}
         )
         
@@ -207,7 +207,7 @@ class TestChangesByVersion:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0&limit=2",
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0&limit=2",
             cookies={"session": session}
         )
         
@@ -230,7 +230,7 @@ class TestChangesByTimestamp:
         encoded_time = quote(since_time)
         
         response = client.get(
-            f"/api/v1/changes/tool_items/since-timestamp?since_timestamp={encoded_time}",
+            f"/api/v1/changes/tool_instance_records/since-timestamp?since_timestamp={encoded_time}",
             cookies={"session": session}
         )
         
@@ -239,7 +239,7 @@ class TestChangesByTimestamp:
         assert response.status_code == 200
         data = response.json()
         
-        assert data["entity_type"] == "tool_items"
+        assert data["entity_type"] == "tool_instance_records"
         assert data["sync_method"] == "timestamp"
         assert data["count"] >= 1  # At least some recent changes
     
@@ -251,7 +251,7 @@ class TestChangesByTimestamp:
         encoded_time = quote(since_time)
         
         response = client.get(
-            f"/api/v1/changes/tool_items/since-timestamp?since_timestamp={encoded_time}",
+            f"/api/v1/changes/tool_instance_records/since-timestamp?since_timestamp={encoded_time}",
             cookies={"session": session}
         )
         
@@ -274,14 +274,14 @@ class TestMaxVersionEndpoint:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/max-version",
+            "/api/v1/changes/tool_instance_records/max-version",
             cookies={"session": session}
         )
         
         assert response.status_code == 200
         data = response.json()
         
-        assert data["entity_type"] == "tool_items"
+        assert data["entity_type"] == "tool_instance_records"
         assert data["max_version"] == 4
     
     def test_max_version_returns_zero_when_empty(self, client, regular_user, test_db):
@@ -289,7 +289,7 @@ class TestMaxVersionEndpoint:
         session = login_user(client, "user@example.com", "password123")
         
         response = client.get(
-            "/api/v1/changes/tool_items/max-version",
+            "/api/v1/changes/tool_instance_records/max-version",
             cookies={"session": session}
         )
         
@@ -317,7 +317,7 @@ class TestInvalidRequests:
     def test_unauthenticated_request_fails(self, client, test_db):
         """Test that unauthenticated requests are rejected."""
         response = client.get(
-            "/api/v1/changes/tool_items/since-version?since_version=0"
+            "/api/v1/changes/tool_instance_records/since-version?since_version=0"
         )
         
         assert response.status_code == 401
@@ -331,12 +331,11 @@ class TestMultipleEntityTypes:
         session = login_user(client, "user@example.com", "password123")
         
         entity_types = [
-            "tool_items",
-            "tool_assemblies",
-            "tool_instances",
-            "tool_presets",
-            "tool_sets",
-            "tool_usage"
+            "machine_records",
+            "tool_instance_records",
+            "tool_catalog_records",
+            "tool_table_entry_records",
+            "tool_set_records",
         ]
         
         for entity_type in entity_types:

@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """
-ToolTableEntryRecord facade — a machine slot, sectioned (docs/TOOL_SCHEMA.md).
+ToolTableEntryRecord facade — a machine entry, sectioned (docs/TOOL_SCHEMA.md).
 
 Like the instance tracer, plus the install-once invariant: a physical instance
-is in at most one slot, globally. The hard guarantee is the UNIQUE index on the
+is in at most one entry, globally. The hard guarantee is the UNIQUE index on the
 `bound_instance_id` column; the bind endpoint adds the friendly experience —
 a 409 naming where the tool already lives, and an atomic `move`.
 """
@@ -32,7 +32,7 @@ from smooth.contract import (
 
 router = APIRouter(prefix="/api/v1/tool-table-entry-records", tags=["tool-table-entries"])
 
-# A machine may only OBSERVE these slot facts; the binding is set via /bind.
+# A machine may only OBSERVE these entry facts; the binding is set via /bind.
 # `description` is the table comment the machine reports (observed table state).
 OBSERVABLE_PATHS = {"tool_number", "description",
                     "offsets.diameter", "offsets.z", "offsets.x", "offsets.y"}
@@ -88,9 +88,9 @@ def _set_path(canonical: dict, path: str, field: dict) -> dict:
     return out
 
 
-def _slot_label(row: Row) -> str:
+def _entry_label(row: Row) -> str:
     n = (row.canonical.get("tool_number") or {}).get("value")
-    return "machine %s slot %s" % (row.machine_id[:8], n if n is not None else "?")
+    return "machine %s entry %s" % (row.machine_id[:8], n if n is not None else "?")
 
 
 # -- requests -----------------------------------------------------------------
@@ -112,9 +112,10 @@ class ObserveRequest(BaseModel):
 
 
 class BindRequest(BaseModel):
-    instance_id: str
+    instance_id: Optional[str] = None   # None => mint a new instance from this entry
     actor: str = "human@inbox"
     move: bool = False      # if the instance is installed elsewhere, relocate it
+    name: Optional[str] = None          # caller-supplied name when minting (the UI's parsed label)
 
 
 # -- endpoints ----------------------------------------------------------------
@@ -140,7 +141,7 @@ def create_entry(payload: CreateRequest, db: Session = Depends(get_db),
     return _response(row)
 
 
-class SlotIn(BaseModel):
+class EntryIn(BaseModel):
     tool_number: int
     description: Optional[str] = None  # the tool-table comment (the machine's label)
     offsets: dict = {}          # plain values + optional <key>_unit, e.g. {"diameter": 6.35, "diameter_unit": "mm"}
@@ -148,24 +149,24 @@ class SlotIn(BaseModel):
     client_item_id: Optional[str] = None
 
 
-class SlotSyncRequest(BaseModel):
+class EntrySyncRequest(BaseModel):
     machine_id: str
     client: str                 # e.g. "linuxcnc"
     machine_name: str           # observation source: observed:<client>@<machine_name>
     client_version: str = ""
     mode: Literal["merge", "snapshot"] = "merge"
     force: bool = False
-    slots: List[SlotIn]
+    entries: List[EntryIn]
 
 
 @router.post("/sync")
-def sync_slots(req: SlotSyncRequest, db: Session = Depends(get_db),
+def sync_entries(req: EntrySyncRequest, db: Session = Depends(get_db),
                user: User = Depends(get_authenticated_user)):
-    """The machine-table push: upsert a machine's slots by tool_number in one
-    call. Each slot's number+offsets are OBSERVED (the machine measured them)
-    and the client section is written. mode=snapshot reconciles away slots
+    """The machine-table push: upsert a machine's entries by tool_number in one
+    call. Each entry's number+offsets are OBSERVED (the machine measured them)
+    and the client section is written. mode=snapshot reconciles away entries
     absent from the payload (the controller is authoritative), guarded against a
-    mass-wipe. Bindings survive an update; a removed slot's proposals are dropped.
+    mass-wipe. Bindings survive an update; a removed entry's proposals are dropped.
     """
     existing = {}
     for r in db.query(Row).filter(Row.user_id == user.id,
@@ -176,17 +177,17 @@ def sync_slots(req: SlotSyncRequest, db: Session = Depends(get_db),
     src = Provenance.observed(req.client, req.machine_name)
 
     if req.mode == "snapshot" and not req.force and existing:
-        present = {s.tool_number for s in req.slots}
+        present = {s.tool_number for s in req.entries}
         doomed = [tn for tn in existing if tn not in present]
-        if doomed and (not req.slots or len(doomed) * 2 > len(existing)):
+        if doomed and (not req.entries or len(doomed) * 2 > len(existing)):
             raise HTTPException(status_code=409,
-                detail="snapshot would remove %d of %d slots — refusing as a likely "
+                detail="snapshot would remove %d of %d entries — refusing as a likely "
                        "partial read; resend with force=true if intended"
                        % (len(doomed), len(existing)))
 
     items = []
     present = set()
-    for s in req.slots:
+    for s in req.entries:
         present.add(s.tool_number)
         row = existing.get(s.tool_number)
         if row is None:
@@ -225,17 +226,17 @@ def sync_slots(req: SlotSyncRequest, db: Session = Depends(get_db),
 
     removed = []
     if req.mode == "snapshot":
-        from smooth.database.schema import SlotProposal
+        from smooth.database.schema import EntryProposal
         for tn, row in existing.items():
             if tn in present:
                 continue
-            db.query(SlotProposal).filter(SlotProposal.slot_id == row.id).delete()
+            db.query(EntryProposal).filter(EntryProposal.entry_id == row.id).delete()
             db.delete(row)
             removed.append(tn)
 
     create_audit_log(session=db, user_id=user.id, operation="SYNC_TABLE",
                      entity_type="tool_table_entry_record", entity_id=req.machine_id,
-                     changes={"client": req.client, "count": len(req.slots),
+                     changes={"client": req.client, "count": len(req.entries),
                               "removed": removed})
     db.commit()
     return {"items": [_response(r) for r in items], "removed_tool_numbers": removed}
@@ -297,7 +298,7 @@ def observe_canonical(record_id: str, req: ObserveRequest,
         raise HTTPException(status_code=404, detail="not found")
     if req.path not in OBSERVABLE_PATHS:
         raise HTTPException(status_code=400,
-                            detail="%r is not observable on a slot" % req.path)
+                            detail="%r is not observable on a entry" % req.path)
     field = {"value": req.value, "source": Provenance.observed(req.client, req.machine)}
     if req.unit is not None:
         field["unit"] = req.unit
@@ -321,109 +322,96 @@ def _set_binding(row: Row, instance_id: Optional[str], actor: str) -> None:
     row.version += 1
 
 
-@router.post("/{record_id}/bind")
-def bind_instance(record_id: str, req: BindRequest, db: Session = Depends(get_db),
-                  user: User = Depends(get_authenticated_user)):
-    """Install a physical instance in this slot. Install-once: if the instance
-    is already in another slot, 409 (with where) unless move=true, which
-    relocates it atomically."""
-    row = _owned(db, user, record_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="not found")
-
-    other = db.query(Row).filter(
-        Row.user_id == user.id,
-        Row.bound_instance_id == req.instance_id,
-        Row.id != record_id,
-    ).first()
-    if other is not None:
-        if not req.move:
-            raise HTTPException(
-                status_code=409,
-                detail="instance %s is already installed in %s — unbind it "
-                       "there first, or bind with move=true"
-                       % (req.instance_id[:8], _slot_label(other)))
-        _set_binding(other, None, req.actor)     # vacate the old slot
-        other.updated_by = user.id
-        create_audit_log(session=db, user_id=user.id, operation="UNBIND",
-                         entity_type="tool_table_entry_record", entity_id=other.id,
-                         changes={"reason": "moved", "to": record_id})
-
-    _set_binding(row, req.instance_id, req.actor)
-    row.updated_by = user.id
-    close_open_proposal_on_bind(db, user, row.id, req.instance_id)
-    create_audit_log(session=db, user_id=user.id, operation="BIND",
-                     entity_type="tool_table_entry_record", entity_id=row.id,
-                     changes={"instance_id": req.instance_id})
-    try:
-        db.commit()
-    except IntegrityError:                        # unique index is the backstop
-        db.rollback()
-        raise HTTPException(status_code=409,
-                            detail="instance %s is already installed elsewhere"
-                                   % req.instance_id[:8])
-    return _response(row)
-
-
-class AdoptRequest(BaseModel):
-    actor: str = "human@inbox"
-    name: Optional[str] = None      # caller-supplied name (e.g. the UI's parsed label)
-
-
-@router.post("/{record_id}/adopt")
-def adopt_new_instance(record_id: str, req: AdoptRequest, db: Session = Depends(get_db),
-                       user: User = Depends(get_authenticated_user)):
-    """The slot holds a tool the catalog doesn't know yet: mint a new instance
-    seeded from the slot's observations (its measured diameter carries through
-    with its provenance) and install it. The 'new tool' path of the inbox."""
-    row = _owned(db, user, record_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="not found")
-    if row.bound_instance_id is not None:
-        raise HTTPException(status_code=409, detail="slot is already bound")
-
+def _mint_instance_from_entry(db: Session, user: User, row: Row, req: "BindRequest") -> str:
+    """Mint a new ToolInstanceRecord seeded from this entry's observations and
+    return its id — the inbox 'new tool' path, for a entry holding a tool the
+    catalog doesn't know yet. The entry's measured diameter carries through with
+    its provenance; the name is the human endorsing the entry's label, so it is
+    asserted, not observed."""
     canonical = {
         "name": {"value": None, "source": UNKNOWN},
         "catalog_type_id": {"value": None, "source": UNKNOWN},
         "geometry": {},
     }
-    # Seed the name from the caller's label or the slot's reported comment — the
-    # only human-readable identity the machine has. Adopting it is the human
-    # endorsing that label, so it is asserted (human@web), not observed.
     name = req.name or (row.canonical.get("description") or {}).get("value")
     if name:
         canonical["name"] = {"value": name, "source": Provenance.asserted(req.actor)}
-    slot_dia = (row.canonical.get("offsets") or {}).get("diameter")
-    if slot_dia and slot_dia.get("value") is not None:
-        canonical["geometry"]["diameter"] = dict(slot_dia)   # measured, with provenance
+    entry_dia = (row.canonical.get("offsets") or {}).get("diameter")
+    if entry_dia and entry_dia.get("value") is not None:
+        canonical["geometry"]["diameter"] = dict(entry_dia)   # measured, with provenance
     inst = InstanceRow(canonical=canonical, clients={}, catalog_type_id=None,
                        user_id=user.id, created_by=user.id, updated_by=user.id)
     db.add(inst)
     db.flush()
     create_audit_log(session=db, user_id=user.id, operation="CREATE",
                      entity_type="tool_instance_record", entity_id=inst.id,
-                     changes={"adopted_from_slot": row.id})
-
-    _set_binding(row, inst.id, req.actor)
-    row.updated_by = user.id
-    close_open_proposal_on_bind(db, user, row.id, inst.id)
-    create_audit_log(session=db, user_id=user.id, operation="BIND",
-                     entity_type="tool_table_entry_record", entity_id=row.id,
-                     changes={"instance_id": inst.id, "adopted": True})
-    db.commit()
-    return {"instance_id": inst.id, "slot": _response(row)}
+                     changes={"minted_from_entry": row.id})
+    return inst.id
 
 
-@router.delete("/{record_id}")
-def delete_slot(record_id: str, db: Session = Depends(get_db),
-                user: User = Depends(get_authenticated_user)):
-    """Remove a machine-reported slot (and its open proposals). The instance it
-    held, if any, is not deleted. If the controller re-pushes, the slot returns."""
+@router.post("/{record_id}/bind")
+def bind_instance(record_id: str, req: BindRequest, db: Session = Depends(get_db),
+                  user: User = Depends(get_authenticated_user)):
+    """Bind a physical instance into this entry. Pass an `instance_id` to bind an
+    existing instance; omit it to mint a new instance from the entry's own
+    observations (the 'new tool' path of the inbox) and bind that. Install-once:
+    if the instance is already in another entry, 409 (with where) unless
+    move=true, which relocates it atomically."""
     row = _owned(db, user, record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not found")
-    from smooth.database.schema import SlotProposal
-    db.query(SlotProposal).filter(SlotProposal.slot_id == record_id).delete()
+
+    minting = req.instance_id is None
+    if minting:
+        if row.bound_instance_id is not None:
+            raise HTTPException(status_code=409, detail="entry is already bound")
+        instance_id = _mint_instance_from_entry(db, user, row, req)
+    else:
+        instance_id = req.instance_id
+        other = db.query(Row).filter(
+            Row.user_id == user.id,
+            Row.bound_instance_id == instance_id,
+            Row.id != record_id,
+        ).first()
+        if other is not None:
+            if not req.move:
+                raise HTTPException(
+                    status_code=409,
+                    detail="instance %s is already installed in %s — unbind it "
+                           "there first, or bind with move=true"
+                           % (instance_id[:8], _entry_label(other)))
+            _set_binding(other, None, req.actor)     # vacate the old entry
+            other.updated_by = user.id
+            create_audit_log(session=db, user_id=user.id, operation="UNBIND",
+                             entity_type="tool_table_entry_record", entity_id=other.id,
+                             changes={"reason": "moved", "to": record_id})
+
+    _set_binding(row, instance_id, req.actor)
+    row.updated_by = user.id
+    close_open_proposal_on_bind(db, user, row.id, instance_id)
+    create_audit_log(session=db, user_id=user.id, operation="BIND",
+                     entity_type="tool_table_entry_record", entity_id=row.id,
+                     changes={"instance_id": instance_id, "minted": minting})
+    try:
+        db.commit()
+    except IntegrityError:                        # unique index is the backstop
+        db.rollback()
+        raise HTTPException(status_code=409,
+                            detail="instance %s is already installed elsewhere"
+                                   % instance_id[:8])
+    return _response(row)
+
+
+@router.delete("/{record_id}")
+def delete_entry(record_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_authenticated_user)):
+    """Remove a machine-reported entry (and its open proposals). The instance it
+    held, if any, is not deleted. If the controller re-pushes, the entry returns."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    from smooth.database.schema import EntryProposal
+    db.query(EntryProposal).filter(EntryProposal.entry_id == record_id).delete()
     db.delete(row)
     create_audit_log(session=db, user_id=user.id, operation="DELETE",
                      entity_type="tool_table_entry_record", entity_id=record_id)

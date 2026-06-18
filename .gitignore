@@ -52,3 +52,6 @@ htmlcov/
 OPEN_CORE.md
 
 
+
+# Claude Code local tooling/memory
+.claude/

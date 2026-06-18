@@ -88,30 +88,9 @@ INBOX_ITEM = {
     "id": "proposalid000000000000000000000000000",
     "confidence": 0.91,
     "reason": "diameter and description match",
-    "slot": {"id": "slotid1", "machine_id": "machineid1", "tool_number": 3},
+    "entry": {"id": "slotid1", "machine_id": "machineid1", "tool_number": 3},
     "proposed_instance": {"id": "instanceid1", "name": "1/4 downcut",
                           "diameter": 6.35},
-}
-
-COVERAGE = {
-    "set_id": "setid1",
-    "machine_id": "machineid1",
-    "applicable": True,
-    "members": [
-        {"tool_record_id": "instanceid1", "set_number": 3,
-         "machine_tool_number": 3, "slot_id": "slotid1", "status": "in_sync",
-         "collides": False, "collides_with": []},
-        {"tool_record_id": "instanceid9", "set_number": 9,
-         "machine_tool_number": None, "slot_id": None,
-         "status": "absent_on_machine", "collides": False, "collides_with": []},
-    ],
-    "slots": [
-        {"slot_id": "slotid7", "tool_number": 7, "bound_instance_id": "instanceX",
-         "status": "machine_only"},
-    ],
-    "summary": {"total_members": 2, "total_slots": 2, "in_sync": 1,
-                "number_mismatch": 0, "absent_on_machine": 1,
-                "number_collision": 0, "machine_only": 1, "unbound_slot": 0},
 }
 
 # Paths from the retired flat facade. Any call whose path begins with one of
@@ -127,37 +106,56 @@ class Recorder:
         self.calls = []
 
     def __call__(self, method, endpoint, body=None, extra_headers=None,
-                 require_auth=False):
+                 require_auth=False, **kwargs):
+        # **kwargs absorbs the per-call config (base_url/api_key/session_cookie)
+        # the Client passes through make_request.
         self.calls.append({"method": method, "endpoint": endpoint, "body": body})
         if method == "GET":
             if endpoint.startswith("/machine-records"):
                 return {"items": [MACHINE]}
             if endpoint.startswith("/tool-instance-records"):
                 return {"items": [INSTANCE]}
-            if endpoint.endswith("/coverage"):
-                return COVERAGE
             if endpoint.startswith("/tool-set-records"):
                 return {"items": [TOOLSET]}
             if endpoint.startswith("/tool-table-entry-records"):
                 return {"items": [ENTRY]}
             if endpoint.startswith("/instance-inbox"):
                 return {"items": [INBOX_ITEM]}
+            if endpoint.startswith("/audit-logs"):
+                return {"logs": [{"operation": "BIND", "created_at": "t",
+                                  "entity_type": "tool_table_entry_record",
+                                  "entity_id": "slotid1"}], "total_count": 1}
         if method == "POST":
             if endpoint.endswith("/confirm"):
-                return {"status": "confirmed", "slot_id": "slotid1",
+                return {"status": "confirmed", "entry_id": "slotid1",
                         "instance_id": "instanceid1"}
             if endpoint.endswith("/reject"):
                 return {"status": "rejected"}
             if endpoint.endswith("/bind"):
-                return {"internal": ENTRY["internal"]}
+                # bind mints+binds when no instance_id is given; the response is
+                # the slot record with the (possibly newly minted) instance id.
+                return {**ENTRY, "canonical": {
+                    **ENTRY["canonical"],
+                    "bound_instance_id": {"value": "instanceid1",
+                                          "source": "asserted:human@web"}}}
             if endpoint.endswith("/unbind"):
                 return ENTRY
-            if endpoint.endswith("/adopt"):
-                return {"instance_id": "instanceid1", "slot": ENTRY}
+            if endpoint.endswith("/sync"):
+                return {"items": [ENTRY], "removed_tool_numbers": []}
             if endpoint.endswith("/assert"):
+                if endpoint.startswith("/machine-records"):
+                    return MACHINE
+                if endpoint.startswith("/tool-instance-records"):
+                    return INSTANCE
                 return TOOLSET
-            if endpoint.endswith("/reconcile"):
-                return {**TOOLSET, "unreconciled": ["instanceid9"]}
+            if endpoint == "/machine-records":
+                return MACHINE
+            if endpoint == "/tool-set-records":
+                return TOOLSET
+            if endpoint == "/tool-instance-records":
+                return INSTANCE
+            if endpoint == "/tool-table-entry-records":
+                return ENTRY
         if method == "DELETE":
             return {"deleted": endpoint.rsplit("/", 1)[-1]}
         return {}
@@ -270,7 +268,7 @@ def test_delete_entry_resolves_slot_then_deletes_by_record_id(api):
 
 
 # ---------------------------------------------------------------------------
-# Bind / unbind / adopt: key off the slot's own record id.
+# Bind / unbind / create-record: key off the slot's own record id.
 # ---------------------------------------------------------------------------
 
 def test_bind_targets_slot_record_with_instance_id(api):
@@ -285,17 +283,18 @@ def test_unbind_targets_slot_record(api):
     assert api.last("POST")["endpoint"] == "/tool-table-entry-records/slotid1/unbind"
 
 
-def test_create_record_uses_adopt(api, capsys):
+def test_create_record_uses_bind(api, capsys):
     loobric.create_record_from_entry("machineid1", 3, name="quarter inch")
     post = api.last("POST")
-    assert post["endpoint"] == "/tool-table-entry-records/slotid1/adopt"
+    assert post["endpoint"] == "/tool-table-entry-records/slotid1/bind"
     assert post["body"] == {"name": "quarter inch"}
     assert "instanceid1"[:8] in capsys.readouterr().out
 
 
-def test_create_record_without_name_sends_no_body(api):
+def test_create_record_without_name_sends_empty_body(api):
+    # mint-on-bind needs a JSON body; with no name it is an empty object, not None
     loobric.create_record_from_entry("machineid1", 3)
-    assert api.last("POST")["body"] is None
+    assert api.last("POST")["body"] == {}
 
 
 def test_resolve_slot_errors_when_tool_number_absent(api, capsys):
@@ -305,7 +304,7 @@ def test_resolve_slot_errors_when_tool_number_absent(api, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Tool-set ↔ machine: link-machine / reconcile / coverage.
+# Tool-set ↔ machine: link-machine.
 # ---------------------------------------------------------------------------
 
 def test_link_machine_asserts_machine_id_on_the_set(api, capsys):
@@ -314,35 +313,72 @@ def test_link_machine_asserts_machine_id_on_the_set(api, capsys):
     assert post["endpoint"] == "/tool-set-records/setid1/assert"
     assert post["body"]["path"] == "machine_id"
     assert post["body"]["value"] == "machineid1"
-    assert "mirrors machine" in capsys.readouterr().out
+    assert "linked to machine" in capsys.readouterr().out
 
 
-def test_reconcile_posts_and_reports_unreconciled(api, capsys):
-    loobric.reconcile_set("setid1")
-    assert api.last("POST")["endpoint"] == "/tool-set-records/setid1/reconcile"
-    out = capsys.readouterr().out
-    assert "reconciled" in out
-    assert "instanceid9"[:8] in out          # the member with no machine slot
+# ---------------------------------------------------------------------------
+# Stand up a machine and push a tool table (the start of the sync loop).
+# ---------------------------------------------------------------------------
+
+def test_create_machine_creates_then_asserts_name_and_controller(api, capsys):
+    loobric.create_machine("millstone", controller="linuxcnc")
+    posts = api.of("POST")
+    assert posts[0]["endpoint"] == "/machine-records"            # create first
+    asserted = {(c["endpoint"], c["body"]["path"], c["body"]["value"])
+                for c in posts if c["endpoint"].endswith("/assert")}
+    assert ("/machine-records/machineid1/assert", "name", "millstone") in asserted
+    assert ("/machine-records/machineid1/assert", "controller_type", "linuxcnc") in asserted
+    assert "Created machine 'millstone'" in capsys.readouterr().out
 
 
-def test_coverage_hits_endpoint_and_surfaces_absent_tools(api, capsys):
-    loobric.show_coverage("setid1")
-    assert api.last("GET")["endpoint"] == "/tool-set-records/setid1/coverage"
-    out = capsys.readouterr().out
-    assert "in sync" in out                  # the in_sync member
-    assert "NOT ON MACHINE" in out           # the absent_on_machine member
-    assert "not yet set up on the machine" in out   # the call-to-action summary
+def test_create_set_creates_then_asserts_name(api):
+    loobric.create_set("Drawer A")
+    posts = api.of("POST")
+    assert posts[0]["endpoint"] == "/tool-set-records"
+    assert posts[1]["endpoint"] == "/tool-set-records/setid1/assert"
+    assert posts[1]["body"]["path"] == "name"
+    assert posts[1]["body"]["value"] == "Drawer A"
 
 
-def test_coverage_explains_when_set_is_unlinked(api, capsys, monkeypatch):
-    def rec(method, endpoint, body=None, extra_headers=None, require_auth=False):
-        if endpoint.endswith("/coverage"):
-            return {"set_id": "setid1", "machine_id": None, "applicable": False,
-                    "reason": "set is not linked to a machine (machine_id unknown)"}
-        return {"items": [TOOLSET]}
-    monkeypatch.setattr(loobric, "make_request", rec)
-    loobric.show_coverage("setid1")
-    assert "not linked to a machine" in capsys.readouterr().out
+def test_push_syncs_slots_with_parsed_fields(api):
+    loobric.push_table("machineid1", ["3:1/4 downcut:6.35", "7:chamfer"])
+    sync = api.last("POST")
+    assert sync["endpoint"] == "/tool-table-entry-records/sync"
+    body = sync["body"]
+    assert body["machine_id"] == "machineid1"
+    assert {s["tool_number"] for s in body["entries"]} == {3, 7}
+    s3 = next(s for s in body["entries"] if s["tool_number"] == 3)
+    assert s3["description"] == "1/4 downcut"
+    assert s3["offsets"]["diameter"] == 6.35
+    s7 = next(s for s in body["entries"] if s["tool_number"] == 7)
+    assert s7["description"] == "chamfer"
+    assert "offsets" not in s7              # no diameter given -> no offsets
+
+
+def test_push_snapshot_mode_is_explicit(api):
+    loobric.push_table("machineid1", ["3"], snapshot=True)
+    assert api.last("POST")["body"]["mode"] == "snapshot"
+
+
+def test_audit_reads_logs_list(api, capsys):
+    # the /audit-logs response nests rows under "logs" (not "items")
+    loobric.list_audit()
+    assert api.last("GET")["endpoint"] == "/audit-logs"
+    assert "BIND" in capsys.readouterr().out
+
+
+def test_reset_hits_account_reset(api, capsys):
+    loobric.reset_account(assume_yes=True)
+    assert api.last("POST")["endpoint"] == "/account/reset"
+    assert "reset" in capsys.readouterr().out.lower()
+
+
+def test_list_keys_shows_revoked_state(monkeypatch, capsys):
+    # Regression for the dogfood finding: a revoked key must not read as active.
+    monkeypatch.setattr(loobric, "make_request", lambda *a, **k: [
+        {"id": "k1", "name": "old", "scopes": [], "is_active": False}])
+    loobric.list_keys()
+    assert "REVOKED" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +399,9 @@ def test_coverage_explains_when_set_is_unlinked(api, capsys, monkeypatch):
     lambda: loobric.unbind_entry("machineid1", 3),
     lambda: loobric.create_record_from_entry("machineid1", 3, name="x"),
     lambda: loobric.link_machine("setid1", "machineid1"),
-    lambda: loobric.reconcile_set("setid1"),
-    lambda: loobric.show_coverage("setid1"),
+    lambda: loobric.create_machine("millstone", controller="linuxcnc"),
+    lambda: loobric.create_set("Drawer A"),
+    lambda: loobric.push_table("machineid1", ["3:1/4 downcut:6.35"]),
 ])
 def test_no_command_touches_the_retired_flat_facade(api, invoke):
     invoke()

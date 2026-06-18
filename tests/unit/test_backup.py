@@ -39,10 +39,18 @@ def test_export_empty_database(db_session):
     assert "timestamp" in backup["metadata"]
     assert "entities" in backup
     
-    # Should have arrays for each entity type
-    assert "users" in backup["entities"]
-    assert "api_keys" in backup["entities"]
-    assert "tool_items" in backup["entities"]
+    # Should have arrays for each entity type (v2 sectioned records)
+    expected_entities = {
+        "users",
+        "machine_records",
+        "tool_catalog_records",
+        "tool_instance_records",
+        "tool_table_entry_records",
+        "tool_set_records",
+        "entry_proposals",
+        "api_keys",
+    }
+    assert set(backup["entities"].keys()) == expected_entities
     assert isinstance(backup["entities"]["users"], list)
 
 
@@ -432,91 +440,91 @@ def test_admin_backup_includes_all_users(db_session):
 @pytest.mark.unit
 def test_user_backup_filters_tool_data_by_user(db_session):
     """Test that user-level backup filters tool entities by user_id.
-    
+
     Assumptions:
-    - Tool entities have user_id or created_by field
+    - Tool entities (v2 sectioned records) have user_id field
     - Only entities owned by user are included
     - Enforces multi-tenant data isolation
     """
     from smooth.auth.user import create_user
     from smooth.backup import export_backup
-    from smooth.database.schema import ToolItem
-    
+    from smooth.database.schema import ToolInstanceRecord
+
     # Create two users
     user1 = create_user(db_session, "user1@example.com", "Password123")
     user2 = create_user(db_session, "user2@example.com", "Password123")
-    
-    # Create tool items for each user
-    item1 = ToolItem(
-        type="cutting_tool",
-        product_code="USER1-TOOL-001",
-        description="User1 Tool",
+
+    # Create a v2 sectioned tool instance record for each user
+    instance1 = ToolInstanceRecord(
+        canonical={"product_code": "USER1-TOOL-001"},
+        clients={},
         user_id=user1.id,
         created_by=user1.id,
         updated_by=user1.id
     )
-    item2 = ToolItem(
-        type="cutting_tool",
-        product_code="USER2-TOOL-001",
-        description="User2 Tool",
+    instance2 = ToolInstanceRecord(
+        canonical={"product_code": "USER2-TOOL-001"},
+        clients={},
         user_id=user2.id,
         created_by=user2.id,
         updated_by=user2.id
     )
-    db_session.add_all([item1, item2])
+    db_session.add_all([instance1, instance2])
     db_session.commit()
-    
+
     # Export backup for user1 only
     backup = export_backup(db_session, user_id=user1.id, admin=False)
-    
-    # Should only include user1's tool items
-    assert len(backup["entities"]["tool_items"]) == 1
-    assert backup["entities"]["tool_items"][0]["product_code"] == "USER1-TOOL-001"
-    assert backup["entities"]["tool_items"][0]["user_id"] == user1.id
+
+    # Should only include user1's tool instance records
+    assert len(backup["entities"]["tool_instance_records"]) == 1
+    record = backup["entities"]["tool_instance_records"][0]
+    assert record["canonical"]["product_code"] == "USER1-TOOL-001"
+    assert record["user_id"] == user1.id
 
 
 @pytest.mark.unit
 def test_admin_backup_includes_all_tool_data(db_session):
     """Test that admin backup includes all users' tool data.
-    
+
     Assumptions:
     - Admin backup is not filtered by user_id
-    - Includes all tool entities from all users
+    - Includes all tool entities (v2 sectioned records) from all users
     """
     from smooth.auth.user import create_user
     from smooth.backup import export_backup
-    from smooth.database.schema import ToolItem
-    
+    from smooth.database.schema import ToolInstanceRecord
+
     # Create two users
     user1 = create_user(db_session, "user1@example.com", "Password123")
     user2 = create_user(db_session, "user2@example.com", "Password123")
-    
-    # Create tool items for each user
-    item1 = ToolItem(
-        type="cutting_tool",
-        product_code="USER1-TOOL-001",
-        description="User1 Tool",
+
+    # Create a v2 sectioned tool instance record for each user
+    instance1 = ToolInstanceRecord(
+        canonical={"product_code": "USER1-TOOL-001"},
+        clients={},
         user_id=user1.id,
         created_by=user1.id,
         updated_by=user1.id
     )
-    item2 = ToolItem(
-        type="cutting_tool",
-        product_code="USER2-TOOL-001",
-        description="User2 Tool",
+    instance2 = ToolInstanceRecord(
+        canonical={"product_code": "USER2-TOOL-001"},
+        clients={},
         user_id=user2.id,
         created_by=user2.id,
         updated_by=user2.id
     )
-    db_session.add_all([item1, item2])
+    db_session.add_all([instance1, instance2])
     db_session.commit()
-    
+
     # Export admin backup
     backup = export_backup(db_session, user_id=user1.id, admin=True)
-    
-    # Should include all tool items
-    assert len(backup["entities"]["tool_items"]) == 2
-    tool_codes = {item["product_code"] for item in backup["entities"]["tool_items"]}
+
+    # Should include all tool instance records
+    assert len(backup["entities"]["tool_instance_records"]) == 2
+    tool_codes = {
+        record["canonical"]["product_code"]
+        for record in backup["entities"]["tool_instance_records"]
+    }
     assert "USER1-TOOL-001" in tool_codes
     assert "USER2-TOOL-001" in tool_codes
 

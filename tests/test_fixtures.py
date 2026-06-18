@@ -28,7 +28,7 @@ def test_minimal_backup_fixture(minimal_backup):
     assert minimal_backup["metadata"]["backup_type"] == "admin"
     assert len(minimal_backup["entities"]["users"]) == 1
     assert minimal_backup["entities"]["users"][0]["is_admin"] is True
-    assert len(minimal_backup["entities"]["tool_items"]) == 0
+    assert len(minimal_backup["entities"]["tool_instance_records"]) == 0
 
 
 @pytest.mark.unit
@@ -45,7 +45,7 @@ def test_single_user_backup_fixture(single_user_backup):
     assert single_user_backup["metadata"]["backup_type"] == "user"
     assert len(single_user_backup["entities"]["users"]) == 1
     assert len(single_user_backup["entities"]["api_keys"]) >= 1
-    assert len(single_user_backup["entities"]["tool_items"]) >= 1
+    assert len(single_user_backup["entities"]["tool_instance_records"]) >= 1
 
 
 @pytest.mark.unit
@@ -76,15 +76,15 @@ def test_db_with_sample_data_fixture(db_with_sample_data):
     - Database has been populated via backup restore
     - Contains user and tool items
     """
-    from smooth.database.schema import User, ToolItem, ApiKey
-    
+    from smooth.database.schema import User, ToolInstanceRecord, ApiKey
+
     # Verify data was loaded
     users = db_with_sample_data.query(User).all()
     assert len(users) >= 1
-    
-    tool_items = db_with_sample_data.query(ToolItem).all()
-    assert len(tool_items) >= 1
-    
+
+    tool_records = db_with_sample_data.query(ToolInstanceRecord).all()
+    assert len(tool_records) >= 1
+
     api_keys = db_with_sample_data.query(ApiKey).all()
     assert len(api_keys) >= 1
 
@@ -95,14 +95,14 @@ def test_fixture_data_consistency(single_user_backup):
     
     Assumptions:
     - All API keys reference valid user
-    - All tool items reference valid user
+    - All tool instance records reference valid user
     """
     user_id = single_user_backup["entities"]["users"][0]["id"]
-    
+
     # All API keys should belong to this user
     for key in single_user_backup["entities"]["api_keys"]:
         assert key["user_id"] == user_id
-    
-    # All tool items should belong to this user
-    for item in single_user_backup["entities"]["tool_items"]:
+
+    # All tool instance records should belong to this user
+    for item in single_user_backup["entities"]["tool_instance_records"]:
         assert item["user_id"] == user_id

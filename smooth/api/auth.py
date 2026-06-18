@@ -531,20 +531,22 @@ def list_keys(db: Session = Depends(get_db), user: User = Depends(get_authentica
 
 @router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_key(key_id: str, db: Session = Depends(get_db), user: User = Depends(get_authenticated_user)):
-    """Revoke an API key.
-    
+    """Revoke an API key (soft delete; the key must belong to the caller).
+
     Args:
         key_id: API key ID to revoke
         db: Database session
         user: Authenticated user
-        
+
     Returns:
         None: 204 No Content on success
-        
-    Assumptions:
-    - Soft delete (sets is_active=False)
-    - TODO: Verify user owns the key
     """
+    from smooth.database.schema import ApiKey
+    api_key = db.get(ApiKey, key_id)
+    # 404 (not 403) for a missing OR non-owned key, so a caller cannot probe
+    # which key ids exist for other users.
+    if api_key is None or api_key.user_id != user.id:
+        raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
     try:
         revoke_api_key(db, key_id)
     except ValueError as e:

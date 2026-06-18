@@ -10,7 +10,7 @@ Provides REST API for database backup and restore operations.
 Assumptions:
 - Backup downloads as JSON file
 - Restore accepts uploaded JSON file
-- Requires admin:backup scope
+- Requires an authenticated administrator (solo user qualifies)
 - Returns metadata and validation results
 """
 from typing import Annotated
@@ -22,28 +22,35 @@ from smooth.backup import (
     export_backup_json, restore_backup_json,
     BackupVersionError, BackupValidationError
 )
-from smooth.api.auth import get_db
+from smooth.api.auth import get_db, get_authenticated_user
+from smooth.database.schema import User
 
 # Router
 router = APIRouter(prefix="/api/v1/backup", tags=["backup"])
 
 
+def require_admin(user: User = Depends(get_authenticated_user)) -> User:
+    """Gate full-database backup/restore to administrators. In solo mode the
+    built-in solo user is the first user and therefore an admin, so solo
+    deployments still work with no auth ceremony."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Backup requires an administrator")
+    return user
+
+
 @router.get("/export")
 def export_database(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
-    """Export full database backup as JSON.
-    
+    """Export full database backup as JSON. Admin-only.
+
     Args:
         db: Database session
-        
+        admin: Authenticated administrator (enforced)
+
     Returns:
         JSON response with backup data
-        
-    Assumptions:
-    - Returns application/json
-    - Includes all entities and metadata
-    - TODO: Requires admin:backup scope
     """
     try:
         backup_json = export_backup_json(db)
@@ -62,25 +69,26 @@ def export_database(
 @router.post("/import")
 async def import_database(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
-    """Import database from backup JSON file.
-    
+    """Import database from backup JSON file. Admin-only.
+
     Args:
         file: Uploaded JSON backup file
         db: Database session
-        
+        admin: Authenticated administrator (enforced)
+
     Returns:
         dict: Import result with success status and counts
-        
+
     Raises:
         HTTPException: If import fails
-        
+
     Assumptions:
     - Accepts JSON file upload
     - Validates before importing
     - Atomic operation (all or nothing)
-    - TODO: Requires admin:backup scope
     """
     try:
         # Read file content

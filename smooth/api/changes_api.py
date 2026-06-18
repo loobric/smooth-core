@@ -20,7 +20,8 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from smooth.database.schema import (
-    ToolItem, ToolAssembly, ToolInstance, ToolPreset, ToolSet, ToolUsage
+    MachineRecord, ToolInstanceRecord, ToolCatalogRecord,
+    ToolTableEntryRecord, ToolSetRecord,
 )
 from smooth.api.auth import get_db, require_auth
 from smooth.change_detection import (
@@ -30,14 +31,15 @@ from smooth.auth.authorization import log_authorization_decision
 
 router = APIRouter(prefix="/api/v1/changes", tags=["changes"])
 
-# Entity type mapping
+# Entity type mapping — the v2 sectioned records (docs/TOOL_SCHEMA.md). Names
+# match the table names. The legacy deep tables are retiring (REBOOT R6) and are
+# no longer change-detectable here — change detection operates on v2 data (R12).
 ENTITY_TYPES = {
-    "tool_items": ToolItem,
-    "tool_assemblies": ToolAssembly,
-    "tool_instances": ToolInstance,
-    "tool_presets": ToolPreset,
-    "tool_sets": ToolSet,
-    "tool_usage": ToolUsage
+    "machine_records": MachineRecord,
+    "tool_instance_records": ToolInstanceRecord,
+    "tool_catalog_records": ToolCatalogRecord,
+    "tool_table_entry_records": ToolTableEntryRecord,
+    "tool_set_records": ToolSetRecord,
 }
 
 

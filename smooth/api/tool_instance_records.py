@@ -232,22 +232,22 @@ def assert_canonical(record_id: str, req: AssertRequest,
 @router.delete("/{record_id}")
 def delete_instance(record_id: str, db: Session = Depends(get_db),
                     user: User = Depends(get_authenticated_user)):
-    """Delete a tool instance. Any slot holding it is UNBOUND first (the slot
+    """Delete a tool instance. Any entry holding it is UNBOUND first (the entry
     keeps its observed data; only the install link dies) — never orphaned."""
     row = _owned(db, user, record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not found")
-    from smooth.database.schema import ToolTableEntryRecord as SlotRow
-    for slot in db.query(SlotRow).filter(
-            SlotRow.user_id == user.id, SlotRow.bound_instance_id == record_id).all():
-        canon = dict(slot.canonical)
+    from smooth.database.schema import ToolTableEntryRecord as EntryRow
+    for entry in db.query(EntryRow).filter(
+            EntryRow.user_id == user.id, EntryRow.bound_instance_id == record_id).all():
+        canon = dict(entry.canonical)
         canon["bound_instance_id"] = {"value": None, "source": UNKNOWN}
-        slot.canonical = canon
-        slot.bound_instance_id = None
-        slot.version += 1
-        slot.updated_by = user.id
+        entry.canonical = canon
+        entry.bound_instance_id = None
+        entry.version += 1
+        entry.updated_by = user.id
         create_audit_log(session=db, user_id=user.id, operation="UNBIND",
-                         entity_type="tool_table_entry_record", entity_id=slot.id,
+                         entity_type="tool_table_entry_record", entity_id=entry.id,
                          changes={"reason": "bound instance deleted"})
     db.delete(row)
     create_audit_log(session=db, user_id=user.id, operation="DELETE",

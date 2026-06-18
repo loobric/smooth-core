@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Contract tests for the sectioned ToolTableEntryRecord facade — the machine
-slot, with the install-once invariant (bind / 409 / move)."""
+entry, with the install-once invariant (bind / 409 / move)."""
 import pytest
 from smooth.contract import ToolTableEntry, Provenance, UNKNOWN
 
@@ -40,11 +40,11 @@ def test_observe_slot_number_and_offset(solo_client):
 def test_bind_then_install_once_409_then_move(solo_client):
     a = solo_client.post(BASE, json={"machine_id": "m-mill"}).json()["internal"]["id"]
     b = solo_client.post(BASE, json={"machine_id": "m-lathe"}).json()["internal"]["id"]  # different machine
-    # install instance into slot A
+    # install instance into entry A
     r = solo_client.post(f"{BASE}/{a}/bind", json={"instance_id": "inst-X", "actor": "human@inbox"})
     assert r.status_code == 200, r.text
     assert conforms(r.json())["canonical"]["bound_instance_id"]["value"] == "inst-X"
-    # cannot install the same physical tool in a second slot
+    # cannot install the same physical tool in a second entry
     r = solo_client.post(f"{BASE}/{b}/bind", json={"instance_id": "inst-X", "actor": "human@inbox"})
     assert r.status_code == 409, r.text
     # move relocates it: A is vacated, B holds it
@@ -85,10 +85,10 @@ def test_a_machine_cannot_observe_the_binding(solo_client):
 
 # -- snapshot table sync (the linuxcnc-facing push) ---------------------------
 
-def _sync(client, machine, slots, mode="snapshot", force=False):
+def _sync(client, machine, entries, mode="snapshot", force=False):
     return client.post(f"{BASE}/sync", json={
         "machine_id": machine, "client": "linuxcnc", "machine_name": "millstone",
-        "client_version": "0.2", "mode": mode, "force": force, "slots": slots})
+        "client_version": "0.2", "mode": mode, "force": force, "entries": entries})
 
 
 @pytest.mark.contract
@@ -131,35 +131,39 @@ def test_snapshot_mass_wipe_guarded_unless_forced(solo_client):
 
 
 @pytest.mark.contract
-def test_sync_observes_description_and_adopt_seeds_the_name(solo_client):
-    """The machine reports a table comment ('Probe'); it becomes the slot's
-    observed description, and adopting the slot names the new instance from it."""
+def test_sync_observes_description_and_bind_seeds_the_name(solo_client):
+    """The machine reports a table comment ('Probe'); it becomes the entry's
+    observed description, and binding the entry with no instance_id mints a new
+    instance named from it."""
     r = _sync(solo_client, "m-name", [
         {"tool_number": 1, "description": "Probe",
          "offsets": {"diameter": 2.9972, "diameter_unit": "mm"},
          "data": {"raw": "T1 P0 D+2.997200 ;Probe"}}])
-    slot = r.json()["items"][0]
-    assert slot["canonical"]["description"]["value"] == "Probe"
-    assert slot["canonical"]["description"]["source"] == "observed:linuxcnc@millstone"
-    # adopt -> a new instance whose NAME is the slot's label (asserted)
-    sid = slot["internal"]["id"]
-    out = solo_client.post(f"{BASE}/{sid}/adopt", json={"actor": "human@web"}).json()
-    inst = solo_client.get(f"/api/v1/tool-instance-records/{out['instance_id']}").json()
+    entry = r.json()["items"][0]
+    assert entry["canonical"]["description"]["value"] == "Probe"
+    assert entry["canonical"]["description"]["source"] == "observed:linuxcnc@millstone"
+    # bind (no instance_id) -> mints a new instance whose NAME is the entry's label
+    sid = entry["internal"]["id"]
+    out = conforms(solo_client.post(f"{BASE}/{sid}/bind", json={"actor": "human@web"}).json())
+    iid = out["canonical"]["bound_instance_id"]["value"]
+    inst = solo_client.get(f"/api/v1/tool-instance-records/{iid}").json()
     assert inst["canonical"]["name"]["value"] == "Probe"
     assert inst["canonical"]["name"]["source"] == "asserted:human@web"
     assert inst["canonical"]["geometry"]["diameter"]["value"] == 2.9972
 
 
 @pytest.mark.contract
-def test_adopt_uses_caller_supplied_name(solo_client):
-    """A slot synced before `description` flowed (no canonical.description): the
-    UI parses the label from the raw line and passes it to adopt, which names
-    the instance even though canonical.description is absent."""
+def test_bind_mint_uses_caller_supplied_name(solo_client):
+    """A entry synced before `description` flowed (no canonical.description): the
+    UI parses the label from the raw line and passes it to bind, which names
+    the minted instance even though canonical.description is absent."""
     sid = solo_client.post(BASE, json={"machine_id": "m-legacy"}).json()["internal"]["id"]
     solo_client.post(f"{BASE}/{sid}/observe", json={"path": "tool_number", "value": 1,
                      "client": "linuxcnc", "machine": "millstone"})
     assert "description" not in solo_client.get(f"{BASE}/{sid}").json()["canonical"]
-    out = solo_client.post(f"{BASE}/{sid}/adopt", json={"actor": "human@web", "name": "Probe"}).json()
-    inst = solo_client.get(f"/api/v1/tool-instance-records/{out['instance_id']}").json()
+    out = conforms(solo_client.post(f"{BASE}/{sid}/bind",
+                   json={"actor": "human@web", "name": "Probe"}).json())
+    iid = out["canonical"]["bound_instance_id"]["value"]
+    inst = solo_client.get(f"/api/v1/tool-instance-records/{iid}").json()
     assert inst["canonical"]["name"]["value"] == "Probe"
     assert inst["canonical"]["name"]["source"] == "asserted:human@web"
