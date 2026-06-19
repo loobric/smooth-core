@@ -152,8 +152,10 @@
 
 <script>
 "use strict";
-const TABS = [["inbox","Inbox"],["tools","Tools"],["toolsets","Tool Sets"],["machines","Machines"],["audit","Audit"]];
-let state = { tab:"inbox", inbox:[], tools:[], toolsets:[], machines:[], audit:[],
+// Machines is the ONE binding surface — proposals (the old Inbox) are folded in
+// as a "pending review" band/filter on the entries themselves.
+const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["audit","Audit"]];
+let state = { tab:"machines", pendingOnly:false, inbox:[], tools:[], toolsets:[], machines:[], audit:[],
               machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
 
 const $ = (s) => document.querySelector(s);
@@ -228,13 +230,21 @@ function unboundEntries(){
     if(cf(s,"bound_instance_id")==null) out.push({entry:s, machine:m});
   return out;
 }
+// "Pending review": unbound entries the server has a proposed match for, awaiting
+// a Same tool / Different decision. (Unbound entries with no guess just bind new.)
+function hasProposal(entry){
+  const p=state.proposalByEntry[rid(entry)];
+  return !!(p && p.proposed_instance && p.proposed_instance.id);
+}
+function pendingEntries(){ return unboundEntries().filter(({entry})=>hasProposal(entry)); }
+function togglePending(){ state.pendingOnly=!state.pendingOnly; render(); }
 
 function render(){
-  const needs = unboundEntries().length;
+  const pending = pendingEntries().length;
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
-    (id==="inbox"&&needs?`<span class="n">${needs}</span>`:"")+`</button>`).join("");
-  $("#view").innerHTML = {inbox:renderInbox,tools:renderTools,toolsets:renderToolSets,machines:renderMachines,audit:renderAudit}[state.tab]();
+    (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
+  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,audit:renderAudit}[state.tab]();
 }
 function setTab(t){ state.tab=t; render(); refresh(); }
 
@@ -244,27 +254,7 @@ function showRecord(id){ const t=state.tools.find(x=>rid(x)===id); if(t) showSch
 function showEntry(id){ const s=state.entriesById[id]; if(s) showSchema("Entry · T"+cf(s,"tool_number"), s); }
 function showSet(id){ const s=state.toolsets.find(x=>rid(x)===id); if(s) showSchema("Tool set · "+(cf(s,"name")||id.slice(0,8)), s); }
 
-// ---- Inbox: unbound entries needing identity -------------------------------
-function renderInbox(){
-  const items = unboundEntries();
-  if(!items.length) return `<div class="empty">Nothing needs you.<br><span class="muted">Every entry your machines reported is linked to a tool instance.</span></div>`;
-  return `<div class="explain">These are <b>entries your machines reported that aren't linked to a tool instance yet</b>. Where the server has a guess, <b>Same tool</b> binds it and <b>Different</b> drops the guess. Otherwise <b>Bind new</b> mints a new instance from the entry's measured diameter.</div>`+
-  items.map(({entry,machine})=>{
-    const p=state.proposalByEntry[rid(entry)]; const dia=cf(entry,"offsets.diameter");
-    return `<div class="card">
-      <div class="row"><strong>${esc(state.machineNames[rid(machine)])} · T${cf(entry,"tool_number")}${entryName(entry)?" · "+esc(entryName(entry)):""}</strong>
-        <span class="id link-ish" onclick="showEntry('${rid(entry)}')">${esc(rid(entry).slice(0,8))}</span></div>
-      <div class="muted">${dia!=null?"&#x2300;"+dia:"no diameter reported"}</div>`+
-      (p?`<div class="vs">is this the same tool as <b>${esc(p.proposed_instance.name||p.proposed_instance.id.slice(0,8))}</b>? (&#x2300;${p.proposed_instance.diameter} · ${Math.round(p.confidence*100)}%)</div>
-        <div class="rowact" style="margin-top:.6rem">
-          <button class="mini confirm" onclick="confirmProp('${p.id}')">Same tool</button>
-          <button class="mini reject" onclick="rejectProp('${p.id}')">Different</button>
-          <button class="mini create" onclick="bindNew('${rid(entry)}')">Bind new</button></div>`
-       :`<div class="rowact" style="margin-top:.6rem">
-          <button class="mini create" onclick="bindNew('${rid(entry)}')">Bind new</button></div>`)+
-    `</div>`;
-  }).join("");
-}
+// ---- Binding lives on the Machines tab (proposals folded in) ----------------
 async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Bound. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
 async function rejectProp(id){ try{ await api("POST","/instance-inbox/"+id+"/reject"); toast("Dismissed - won't be suggested again."); refresh(); }catch(e){ toast(e.message); } }
 async function bindNew(entryId){ const s=state.entriesById[entryId], name=s?entryName(s):null;
@@ -367,9 +357,16 @@ function renderToolSets(){
 // ---- Machines (+ tool tables) ----------------------------------------------
 function renderMachines(){
   if(!state.machines.length) return `<div class="empty">No machines yet.<br><span class="muted">They register on first sync from a controller.</span></div>`;
-  return state.machines.map(m=>{
-    const entries=(state.entriesByMachine[rid(m)]||[]).slice().sort((a,b)=>(cf(a,"tool_number")||0)-(cf(b,"tool_number")||0));
-    const body = entries.length ? entries.map(s=>entryRow(m,s)).join("") : `<div class="muted">empty tool table</div>`;
+  const pending = pendingEntries().length;
+  const banner = pending
+    ? `<div class="explain">&#x26A0; <b>${pending}</b> tool-table entr${pending===1?"y has":"ies have"} a proposed tool awaiting your decision &mdash; <b>Same tool</b> binds the server's guess, <b>Different</b> rejects it, <b>Bind new</b> mints a fresh instance. <label style="margin-left:.5rem;white-space:nowrap"><input type="checkbox" ${state.pendingOnly?"checked":""} onclick="togglePending()"> only pending review</label></div>`
+    : (state.pendingOnly ? `<div class="explain">Nothing pending review. <label style="margin-left:.5rem"><input type="checkbox" checked onclick="togglePending()"> only pending review</label></div>` : "");
+  const cards = state.machines.map(m=>{
+    let entries=(state.entriesByMachine[rid(m)]||[]).slice().sort((a,b)=>(cf(a,"tool_number")||0)-(cf(b,"tool_number")||0));
+    if(state.pendingOnly) entries=entries.filter(s=>hasProposal(s));
+    if(state.pendingOnly && !entries.length) return "";
+    const body = entries.length ? entries.map(s=>entryRow(m,s)).join("")
+      : `<div class="muted">${state.pendingOnly?"nothing pending on this machine":"empty tool table"}</div>`;
     return `<div class="card">
       <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
         <span class="rowact"><span class="muted">${esc(cf(m,"controller_type")||"")}</span>
@@ -377,19 +374,39 @@ function renderMachines(){
           <button class="unbind" onclick="deleteMachine('${rid(m)}')">Delete machine</button></span></div>
       ${body}</div>`;
   }).join("");
+  return banner + cards;
 }
+// One row per tool-table entry. Binding lives here (the single binding surface):
+// an unbound entry the server proposed a match for offers Same tool / Different /
+// Bind new — the SAME options the old Inbox had — so you can confirm the server's
+// guess instead of being funnelled into minting a duplicate. An unbound entry
+// with no proposed match just offers Bind new.
 function entryRow(m,s){
   const bound=cf(s,"bound_instance_id"), dia=cf(s,"offsets.diameter");
+  const p = bound ? null : state.proposalByEntry[rid(s)];
+  const matched = p && p.proposed_instance && p.proposed_instance.id;
+  const guess = matched
+    ? `<span class="muted"> &#x2192; same as <b>${esc(p.proposed_instance.name||p.proposed_instance.id.slice(0,8))}</b>${p.proposed_instance.diameter!=null?" &#x2300;"+p.proposed_instance.diameter:""}${typeof p.confidence==="number"?" &middot; "+Math.round(p.confidence*100)+"%":""}</span>`
+    : "";
+  let actions;
+  if(bound){
+    actions = `<button class="unbind" onclick="unbindEntry('${rid(s)}')">Unbind</button>`;
+  } else if(matched){
+    actions = `<button class="mini confirm" onclick="confirmProp('${p.id}')">Same tool</button>`+
+              `<button class="mini reject" onclick="rejectProp('${p.id}')">Different</button>`+
+              `<button class="mini create" onclick="bindNew('${rid(s)}')">Bind new</button>`;
+  } else {
+    actions = `<button class="mini create" onclick="bindNew('${rid(s)}')">Bind new</button>`;
+  }
   return `<div class="trow">
     <div class="tinfo">
       <span class="tnum link-ish" onclick="showEntry('${rid(s)}')">T${cf(s,"tool_number")}</span>
       <span>${esc(entryName(s)||"")}</span>
       <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
       ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
+      ${guess}
     </div>
-    <div class="rowact">${bound
-      ?`<button class="unbind" onclick="unbindEntry('${rid(s)}')">Unbind</button>`
-      :`<button class="mini create" onclick="bindNew('${rid(s)}')">Bind new</button>`}
+    <div class="rowact">${actions}
       <button class="mini del" onclick="deleteEntry('${rid(s)}')">Remove</button></div>
   </div>`;
 }
