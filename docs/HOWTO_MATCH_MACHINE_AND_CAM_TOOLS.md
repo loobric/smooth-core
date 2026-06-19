@@ -1,8 +1,8 @@
-# How-to: Reconcile a machine and a CAM library you built separately
+# How-to: Match a machine and a CAM tool set you built separately
 
 ## Goal
 
-You have a machine tool table **and** a CAM tool library, built independently.
+You have a machine tool table **and** a CAM tool set, built independently.
 Same shop, same physical tools, but the server doesn't yet know which tool-table
 entry corresponds to which CAM tool. This guide links them.
 
@@ -16,7 +16,7 @@ numbering) only. See [the note below](#a-note-on-data-differences).
 Direction: **both sides already populated**.
 
 "Control client" means the integration that syncs a CNC control's tool table;
-"CAM client" means the integration that manages a CAM tool library. (Reference
+"CAM client" means the integration that manages a CAM tool set. (Reference
 implementations: smooth-linuxcnc and smooth-freecad. The steps assume any
 control and CAM client behave the same way.)
 
@@ -24,7 +24,7 @@ control and CAM client behave the same way.)
 
 - Server running, logged in with `loobric` (see [CLI.md](CLI.md)).
 - The control client has synced the machine's tool table up — entries exist.
-- The CAM client has synced its library up — tool records and a tool set exist.
+- The CAM client has synced its tools up — tool records and a tool set exist.
   Confirm with `loobric list-tools` and `loobric list-tool-sets`.
 
 ## Steps
@@ -77,49 +77,37 @@ loobric bind <machine> 5 <record>
 Binding never overwrites either side; it routes future changes between the entry
 and the record.
 
-### 4. Reconcile the set's numbering against the machine
+### 4. Link the set so it inherits the machine's numbering
 
 Identity is now settled per tool. The last step lines up the CAM set's member
-numbers with the machine's tool numbers, so the library and the control agree on
+numbers with the machine's tool numbers, so the set and the control agree on
 T-numbers.
 
-This needs the set to be **machine-linked**. The CAM client may have set the
-link already; if not, `loobric link-machine` sets it:
+**Link the set to the machine.** When a set is machine-linked, its member
+numbers are inherited from the machine's tool-table entries — the machine is
+observed fact, the set conforms. There is no separate step: linking *is* the
+alignment.
 
 ```bash
 loobric list-tool-sets               # find the set id
-loobric link-machine <set> <machine> # link it to the machine it mirrors
+loobric link-machine <set> <machine> # link it to the machine
 ```
 
-Then run **reconcile**. For a machine-linked set, reconcile inherits each
-member's number from the tool-table entry that holds it — the machine is observed
-fact, the set conforms:
+A set member with no matching tool-table entry keeps its own asserted number —
+nothing on the machine to inherit from. Resolve those by binding the
+corresponding entry (step 3) so the machine reports it.
+
+### 5. Confirm the result
 
 ```bash
-loobric reconcile <set>
+loobric tool-table <machine>   # entries you linked read bound -> <record>
+loobric pending                # empty, or only items you deliberately left
+loobric list-tool-sets         # the set is present and machine-linked
 ```
-
-It reports any **unreconciled** members — set members with no matching tool-table
-entry. The server reports these rather than inventing a number for them. Resolve
-each one by binding the corresponding entry (step 3) or by removing the member
-from the set, then reconcile again.
-
-### 5. Confirm with coverage
-
-`coverage` is a read-only diff of the set against the machine's table. Use it to
-check the reconcile took and to see what, if anything, is still unbound:
-
-```bash
-loobric coverage <set>
-```
-
-Every member should read `in sync`. A member that still reads `NUMBER MISMATCH`
-or `NOT ON MACHINE` points to a tool whose identity or numbering isn't settled
-yet — go back to step 3 to bind it, then reconcile and check coverage again.
 
 ### A note on data differences
 
-Binding and reconciling answer **identity** and **numbering**. They do not merge
+Binding and linking answer **identity** and **numbering**. They do not merge
 **measurements**. If the machine measured a 6.35 mm diameter and the CAM record
 says 6.30 mm for the same tool, binding leaves both values exactly as they were.
 
@@ -132,17 +120,13 @@ bind to "fix" a geometry mismatch — it answers "same tool?", nothing more.
 - `loobric tool-table <machine>` — every entry you intended to link reads
   `bound -> <record>`.
 - `loobric pending` — empty, or only items you deliberately left.
-- `loobric reconcile <set>` reports no unreconciled members.
-- `loobric coverage <set>` — every member reads `in sync`.
 - `loobric list-tool-sets` — the set is present and machine-linked.
 
 ## Related
 
 - [CLI.md](CLI.md) — `pending`, `resolve`, `bind`, `tool-table`, `list-tools`,
-  `link-machine`, `reconcile`, `coverage`.
-- [HOWTO_MIRROR_MACHINE_TOOLS_TO_CAM.md](HOWTO_MIRROR_MACHINE_TOOLS_TO_CAM.md)
+  `link-machine`.
+- [HOWTO_BUILD_CAM_SET_FROM_MACHINE.md](HOWTO_BUILD_CAM_SET_FROM_MACHINE.md)
   — when the machine has the tools and CAM is empty (control → CAM).
-- [TOOL_SCHEMA.md](TOOL_SCHEMA.md) §8 — install-once and number-reconciliation
+- [TOOL_SCHEMA.md](TOOL_SCHEMA.md) §8 — install-once and number-inheritance
   invariants.
-- **Coming soon:** the CAM → control direction, once the coverage view ships
-  (issue #18).

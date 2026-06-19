@@ -1,17 +1,17 @@
-# How-to: Mirror your machine's tools into CAM
+# How-to: Build a CAM tool set from your machine's tools
 
 ## Goal
 
 Your machine already has a tool table. You want those same tools in your CAM
-library so you can program against them, without re-entering anything by hand.
+tool set so you can program against them, without re-entering anything by hand.
 This guide takes you from "the tools exist on the machine" to "the tools are a
-CAM library that mirrors the machine."
+CAM tool set linked to the machine."
 
 Direction: **control → CAM**.
 
 Throughout, "control client" means the integration that syncs a CNC control's
 tool table up to the server, and "CAM client" means the integration that
-manages a CAM tool library. (Reference implementations: smooth-linuxcnc and
+manages a CAM tool set. (Reference implementations: smooth-linuxcnc and
 smooth-freecad. The steps assume any control and CAM client behave the same
 way.)
 
@@ -56,11 +56,10 @@ T2: 1/4" downcut      ⌀6.35  [unbound]
 T3: 3mm ball          ⌀3.00  [unbound]
 ```
 
-### 4. Promote each entry to a tool record
+### 4. Create a tool record from each entry
 
-`create-record` adopts an entry: it creates a brand-new tool record from the
-entry's observed values and binds the entry to it, in one step. Do this for
-each tool you want in CAM.
+`create-record` mints a brand-new tool record from an entry's observed values
+and binds the entry to it, in one step. Do this for each tool you want in CAM.
 
 ```bash
 loobric create-record <machine> 1 --name "6mm flat endmill"
@@ -83,23 +82,24 @@ loobric tool-table <machine>
 ```
 
 `list-tools` shows one record per tool. The table now reads `bound -> <record>`
-for each entry you adopted.
+for each entry you turned into a record.
 
-### 6. Import the records into your CAM library
+### 6. Import the records into your CAM tool set
 
 This is the CAM client's job, not `loobric`. Point your CAM client at the
 server and import (or refresh). It reads the tool records and represents them as
-a CAM library — that representation lives in the set's own client section, so
-the library is just *one client's view* of a shared tool set (see
+a tool set — that representation lives in the set's own client section, so the
+CAM library is just *one client's view* of a shared tool set (see
 [TOOL_SCHEMA.md](TOOL_SCHEMA.md) §7.4). Each imported tool keeps a link back to
 its server record.
 
-### 7. Record that this set mirrors the machine
+### 7. Link the set to the machine
 
-A CAM library that mirrors a specific machine should say so. A tool set carries
-an optional `machine_id` link meaning "this set mirrors this machine's
-tooling." Setting it lets the set's member numbers be inherited from the
-machine's tool-table entries later (see the reconcile how-to).
+A tool set built from a specific machine should record where it came from. A
+tool set carries an optional `machine_id` link to the Machine it belongs to.
+**When a set is linked to a machine, its member numbers are inherited from the
+machine's tool-table entries** — so the set and the control agree on T-numbers
+without any extra step.
 
 Your CAM client may set this link when it creates the set. If not, `loobric`
 links it for you:
@@ -108,39 +108,35 @@ links it for you:
 # find the set id
 loobric list-tool-sets
 
-# link the set to the machine it mirrors
+# link the set to the machine
 loobric link-machine <set> <machine>
 ```
 
-### 8. Confirm the set mirrors the machine
-
-With the link in place, `coverage` shows how the set lines up against the
-machine's tool table. Since you adopted these tools straight from the machine,
-every member should read `in sync`:
+### 8. Confirm the result
 
 ```bash
-loobric coverage <set>
+loobric tool-table <machine>   # every entry reads bound -> <record>
+loobric list-tool-sets         # the set is present and machine-linked
 ```
 
-The summary line confirms it — every tool in sync, nothing left to order or
-load. If a tool reads `NOT ON MACHINE`, it exists in the set but the machine
-hasn't reported it; if it reads `NUMBER MISMATCH`, run `loobric reconcile <set>`
-to inherit the machine's numbering (see the reconcile how-to).
+Because the set is linked to the machine, its member numbers follow the
+machine's tool-table entries. In your CAM client, the imported tools should
+match the machine's tools, T-number for T-number.
 
 ## Confirm success
 
-- `loobric tool-table <machine>` — every adopted entry reads `bound -> <record>`.
+- `loobric tool-table <machine>` — every entry you turned into a record reads
+  `bound -> <record>`.
 - `loobric list-tools` — one record per machine tool.
-- `loobric list-tool-sets` — the CAM library shows up as a set with the
+- `loobric list-tool-sets` — the CAM tool set shows up, machine-linked, with the
   expected member count.
-- `loobric coverage <set>` — every member reads `in sync`, nothing left to load.
-- In your CAM client, the imported library matches the machine's tools.
+- In your CAM client, the imported tool set matches the machine's tools.
 
 ## Related
 
 - [CLI.md](CLI.md) — every command used here, plus the touch-off-to-bound
   walkthrough.
-- [HOWTO_RECONCILE_MACHINE_AND_CAM_LIBRARY.md](HOWTO_RECONCILE_MACHINE_AND_CAM_LIBRARY.md)
-  — when the machine and the CAM library were built separately and need linking.
-- **Coming soon:** the reverse direction (CAM → control — push a CAM library
-  down to a machine) lands once the coverage view ships (issue #18).
+- [HOWTO_MATCH_MACHINE_AND_CAM_TOOLS.md](HOWTO_MATCH_MACHINE_AND_CAM_TOOLS.md)
+  — when the machine and the CAM tool set were built separately and need linking.
+- **Coming soon:** the reverse direction — push a CAM tool set down to a machine
+  (CAM → control).

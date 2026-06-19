@@ -54,14 +54,14 @@ the wrong offsets. That is a scrapped part on a good day.
 the system.** The wear-offset loop everyone notices is built on top of it: an
 offset is only worth syncing because the number it hangs on means the same thing
 on both ends. Smooth's contribution is to make both halves of the assumption
-*explicit, recorded, and comparable through a shared ToolRecord*:
+*explicit, recorded, and comparable through a shared ToolInstanceRecord*:
 
 ```
-CAM side:        nr 3  →  ToolRecord "1/4″ downcut"     (tool number in the CAM library)
-machine side:    T3 on millstone  →  ToolRecord "1/4″ downcut"   (the Binding)
+CAM side:        nr 3  →  ToolInstanceRecord "1/4″ downcut"     (tool number in the CAM library)
+machine side:    T3 on millstone  →  ToolInstanceRecord "1/4″ downcut"   (the Binding)
 ```
 
-When both arrows point at the **same ToolRecord**, the mapping is verified:
+When both arrows point at the **same ToolInstanceRecord**, the mapping is verified:
 CAM's "T3" and millstone's "T3" provably mean the same tool. When they point at
 different records — or one arrow is missing — the system can *see* that, which is
 something no part of the toolchain could do before, because half the mapping
@@ -86,12 +86,12 @@ assertion.
 
 | Noun | What it is | One-line test |
 |------|-----------|---------------|
-| **ToolRecord** | A tool's *identity and canonical data*: geometry, tags, presets. | "Which tool are we talking about?" |
-| **ToolSet** | A *named grouping* of ToolRecords. Pure membership, nothing else. | "Which tools belong together?" |
-| **Machine** + its **ToolTableEntries** | A *mirror of one controller's current state*: numbered rows with pockets and offsets. | "What does the machine say is loaded, right now?" |
-| **Binding** | The confirmed link between one ToolTableEntry and one ToolRecord. | "Is row T3 on millstone the 1/4″ downcut?" |
+| **ToolInstanceRecord** | A tool's *identity and canonical data*: geometry, tags, presets. | "Which tool are we talking about?" |
+| **ToolSet** | A *named grouping* of ToolInstanceRecords. Pure membership, nothing else. | "Which tools belong together?" |
+| **Machine** + its **ToolTableEntries** | A *reflection of one controller's current state*: numbered rows with pockets and offsets. | "What does the machine say is loaded, right now?" |
+| **Binding** | The confirmed link between one ToolTableEntry and one ToolInstanceRecord. | "Is row T3 on millstone the 1/4″ downcut?" |
 
-Two of these are things *you curate* (ToolRecord, ToolSet). One is a thing the
+Two of these are things *you curate* (ToolInstanceRecord, ToolSet). One is a thing the
 *machine reports* (the tool table). The last is the *join* between those two
 worlds — and the join is the product, because the join is what makes the tool
 number's meaning verifiable (see "The tool number" above).
@@ -103,17 +103,17 @@ number's meaning verifiable (see "The tool number" above).
 This is the most important distinction in the model.
 
 A **ToolSet is intent.** A human decided "these tools go together" — a drawer, a
-job kit, the contents of a CAM tool library. Its members are ToolRecord ids. It
+job kit, the contents of a CAM tool library. Its members are ToolInstanceRecord ids. It
 carries no numbers, no offsets, no machine. You can have as many as you like, and
-one ToolRecord can belong to many of them.
+one ToolInstanceRecord can belong to many of them.
 
 A **tool table is observation.** It is what one physical controller actually
 reports: "T3 is in pocket 3 with Z−48.25." Its rows are keyed by
 `(machine, tool_number)`, they carry offsets and provenance, and — critically —
-they exist *whether or not anyone knows which ToolRecord they correspond to*. An
+they exist *whether or not anyone knows which ToolInstanceRecord they correspond to*. An
 unbound entry is a perfectly valid fact about the machine. A ToolSet could never
-represent that: ToolSet membership is made of ToolRecord ids, and an anonymous
-`T7 P7 Z-12.1` has no ToolRecord id. The two collections aren't different sizes
+represent that: ToolSet membership is made of ToolInstanceRecord ids, and an anonymous
+`T7 P7 Z-12.1` has no ToolInstanceRecord id. The two collections aren't different sizes
 of the same thing; they're different *kinds* of thing.
 
 That's also why offsets live on the entry and not the record: a wear offset is
@@ -146,7 +146,7 @@ rule of thumb: core *understands* number, pocket, offsets, and provenance; core
 
 ### Why exactly one tool table per machine
 
-Because there is exactly one machine. The table mirrors the controller's current
+Because there is exactly one machine. The table reflects the controller's current
 truth; the controller has one active table; so the server holds one per Machine.
 The server never invents rows — clients push what the controller reports, and
 rows upsert on `(machine, tool_number)`.
@@ -160,7 +160,7 @@ That is precisely a client feature built from the two existing primitives:
 1. You curate ToolSets on the server ("aluminum job", "wood job").
 2. A client (or future feature) writes the chosen set's tools into the
    controller's table.
-3. The next sync reports the new reality, and the server's tool table mirrors it.
+3. The next sync reports the new reality, and the server's tool table reflects it.
 
 Your instinct is the design: which set is *loaded* is machine-side state, and how
 loading happens is controller-specific — best handled by a client. The core's job
@@ -173,7 +173,7 @@ single home when setup B is loaded.
 
 ## Binding — the identity problem, and why it lives in core
 
-Every client must answer the same question: **"which server ToolRecord does this
+Every client must answer the same question: **"which server ToolInstanceRecord does this
 local thing correspond to?"** The clients differ only in *where the answer can be
 stored*.
 
@@ -198,7 +198,7 @@ format has no extension mechanism. The local representation **cannot carry
 identity**. So the identity link must live somewhere else — and the only
 "somewhere else" both sides can see is the server. That link is the **Binding**:
 a server-side, human-confirmed assertion that entry `(millstone, T3)` *is*
-ToolRecord "1/4″ downcut".
+ToolInstanceRecord "1/4″ downcut".
 
 This is the user-stated principle, confirmed: **binding is the universal concept
 — confirmation that a server tool maps to a client representation — instantiated
@@ -228,8 +228,8 @@ Three reasons, and the first is decisive:
 
 - **Before binding:** the entry's offsets are recorded and versioned, but no one
   else can use them. CAM shows nothing.
-- **After binding:** the entry appears nested under its ToolRecord
-  (`ToolRecord.machines[]`); CAM displays "Z−48.007 on millstone, measured at
+- **After binding:** the entry appears nested under its ToolInstanceRecord
+  (`ToolInstanceRecord.machines[]`); CAM displays "Z−48.007 on millstone, measured at
   the machine"; a server-side offset edit flows back into the controller's
   `.tbl` (surgically, with a backup, comments preserved). The loop is closed.
 - **Conflict protection applies only to bound entries:** if both sides change a
@@ -242,7 +242,7 @@ Three reasons, and the first is decisive:
 ## The loop, end to end (concrete)
 
 1. You design with a 1/4″ downcut in CAM, numbered **3** in your CAM tool
-   library. Export → a ToolRecord exists; the `.fctb` carries its id
+   library. Export → a ToolInstanceRecord exists; the `.fctb` carries its id
    (identity-carrying client: bound by construction), and the library's
    numbering — *CAM's half of the "what is T3" assumption* — is stored with the
    ToolSet on the server.
@@ -258,7 +258,7 @@ Three reasons, and the first is decisive:
    calls T3 *is* the 1/4″ downcut."
 4. From your phone, you confirm. `(millstone, T3)` ⇄ "1/4″ downcut" — forever.
    **This is the moment the T3 contract closes:** CAM's `nr 3 → downcut` and
-   millstone's `T3 → downcut` now point at the same ToolRecord, on the record,
+   millstone's `T3 → downcut` now point at the same ToolInstanceRecord, on the record,
    verifiable by anything that can read the API. The single most important fact
    in the shop — "the program and the machine agree about what T3 is" — has
    stopped living in your head.
@@ -289,20 +289,20 @@ Nothing *guarantees* it — a human still has to put the right tool in the right
 pocket. What Smooth does is make the assumption on each side explicit and
 comparable: CAM's numbering is recorded with the ToolSet, the machine's reality
 is the synced tool table, and the confirmed Binding asserts they refer to the
-same ToolRecord. Agreement is then a checkable fact instead of tribal knowledge,
+same ToolInstanceRecord. Agreement is then a checkable fact instead of tribal knowledge,
 and *disagreement is detectable* — which is the property no prior toolchain had.
 Verifying this mapping is the system's most important job; the offset loop is
 built on top of it.
 
 **Is the machine's tool list a ToolSet?**
-No. ToolSet members are ToolRecord ids (intent); tool-table rows are
+No. ToolSet members are ToolInstanceRecord ids (intent); tool-table rows are
 number+offset facts that exist even when unbound (observation). See
 "Intent vs. observation."
 
 **Can a machine have several tool sets and switch between them?**
 You can have any number of ToolSets, and a client may implement "load this set
 into the machine." The *server* still keeps one table per machine, because the
-table mirrors what the one physical controller currently reports. Which set is
+table reflects what the one physical controller currently reports. Which set is
 loaded is exactly the kind of controller-specific workflow that belongs in a
 client — the core only guarantees no facts are lost across the swap.
 

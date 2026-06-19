@@ -8,9 +8,9 @@ match the code. Sequencing follows the v2 milestones; epics track the detail:
 The wear-offset round trip: a tool touched off at the machine shows up in CAM, with
 provenance and an audit trail.
 
-- Public facade API (`ToolRecord`, `Machine`, `ToolTableEntry`, `ToolSet`) — #3, #4
+- Public API (`ToolInstanceRecord`, `ToolCatalogRecord`, `Machine`, `ToolTableEntry`, `ToolSet`) — #3, #4
 - Identity binding between controller tool tables and tool records, with a review inbox — #5, #6
-- Tool-set ↔ machine coverage: a read-only diff showing which library tools are promised but not yet on the machine — #18 (clients: #19, freecad#8)
+- A read-only view of which tool-set members are not yet present on the linked machine — #18 (clients: #19, freecad#8). Pulled from M1 scope in the 2026-06 reboot; it returns only if it re-earns a place in the ubiquitous language (see `docs/UBIQUITOUS_LANGUAGE.md`).
 - Conflict freeze and resolution (no silent overwrites) — #7
 - Docker packaging (x86 + ARM) and a sub-30-minute quickstart — #8
 

@@ -260,7 +260,7 @@ client's representation* of a ToolSet, living in that set's
 
 `canonical`:
 - `name`.
-- `machine_id` — optional link: "this set mirrors this machine's tooling."
+- `machine_id` — optional link: "this set is linked to this machine's tooling."
   Null = a general/drawer set that makes no CAM↔CNC numbering claim.
 - `members` — an ordered list of `{ tool_record_id, number }`, where `number`
   is a **canonical, provenance-tagged** position. The position is unique within

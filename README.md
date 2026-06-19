@@ -27,14 +27,14 @@ Planned work (standards import, more clients, hosted offering) lives in [ROADMAP
 
 ## How-to guides
 
-Task-oriented walkthroughs for linking a CNC control and a CAM library:
+Task-oriented walkthroughs for linking a CNC control and a CAM tool set:
 
-- [Mirror your machine's tools into CAM](docs/HOWTO_MIRROR_MACHINE_TOOLS_TO_CAM.md)
-  — the machine has the tools; get them into your CAM library (control → CAM).
-- [Reconcile a machine and a CAM library you built separately](docs/HOWTO_RECONCILE_MACHINE_AND_CAM_LIBRARY.md)
-  — both sides exist; link them by identity, then reconcile numbering.
-- Coming soon: the reverse direction (CAM → control), once the coverage view
-  ships ([issue #18](https://github.com/loobric/smooth-core/issues/18)).
+- [Build a CAM tool set from your machine's tools](docs/HOWTO_BUILD_CAM_SET_FROM_MACHINE.md)
+  — the machine has the tools; get them into your CAM tool set (control → CAM).
+- [Match a machine and a CAM tool set you built separately](docs/HOWTO_MATCH_MACHINE_AND_CAM_TOOLS.md)
+  — both sides exist; link them by identity and inherit the machine's numbering.
+- Coming soon: the reverse direction (CAM → control) — push a CAM tool set down
+  to a machine.
 
 ## Getting Help
 
