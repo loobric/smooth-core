@@ -490,6 +490,19 @@ class Client:
         return self._call("POST", "/tool-catalog-records",
                           body={"actor": source, **(fields or {})})
 
+    def create_instance_from_catalog(self, catalog_id: str,
+                                     name: Optional[str] = None) -> Dict[str, Any]:
+        """Create a new physical instance from a catalog type via the catalog->
+        instance door. The server stamps the catalog_type_id link as
+        asserted:<requester> and leaves the instance UNBOUND (a catalog is not a
+        machine position). `name` overrides the copied catalog name when given."""
+        body: Dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        return self._call("POST",
+                          f"/tool-catalog-records/{catalog_id}/create-instance",
+                          body=body)
+
     def create_entry(self, machine_id: str, **section) -> Dict[str, Any]:
         return self._call("POST", "/tool-table-entry-records",
                           body={"machine_id": machine_id, **section})
@@ -1089,6 +1102,24 @@ def unbind_entry(machine_id: str, tool_number: int):
     print(f"✓ Unbound T{tool_number} @ {m_name}. The entry keeps its data.")
 
 
+def create_record(args):
+    """Context-aware create-record: from a machine entry (-> BOUND instance) or
+    from a catalog record (-> UNBOUND instance). The two paths are mutually
+    exclusive; the outcome message names which one ran."""
+    if getattr(args, "from_catalog", None):
+        if args.machine or args.tool_number is not None:
+            print("Error: --from-catalog cannot be combined with MACHINE/TOOL_NUMBER",
+                  file=sys.stderr)
+            sys.exit(1)
+        create_record_from_catalog(args.from_catalog, args.name)
+    else:
+        if not args.machine or args.tool_number is None:
+            print("Error: create-record needs MACHINE TOOL_NUMBER (entry form) "
+                  "or --from-catalog CATALOG", file=sys.stderr)
+            sys.exit(1)
+        create_record_from_entry(args.machine, args.tool_number, args.name)
+
+
 def create_record_from_entry(machine_id: str, tool_number: int, name: str = None):
     """Mint a new instance record from a entry's observations and bind it, in one
     step. The bind endpoint mints a new instance when no instance_id is given."""
@@ -1100,6 +1131,19 @@ def create_record_from_entry(machine_id: str, tool_number: int, name: str = None
     rec_id = str(bound or "")[:8]
     print(f"✓ Created a record from T{tool_number} @ {m_name} and bound it "
           f"(record {rec_id}).")
+
+
+def create_record_from_catalog(catalog_handle: str, name: str = None):
+    """Create a new UNBOUND instance from a catalog record (the catalog->instance
+    door). The server stamps the catalog_type_id link as asserted:<requester>;
+    the instance is left unbound (it sits in no machine entry). The name defaults
+    to the catalog record's name unless --name overrides it."""
+    catalog = _resolve_catalog(catalog_handle)
+    cat_name = _cval(catalog, "name")
+    rec = _client().create_instance_from_catalog(_rid(catalog), name=name)
+    inst_id = str(_rid(rec) or "")[:8]
+    print(f"✓ Created instance {inst_id} from {cat_name} — unbound "
+          f"(no machine entry yet).")
 
 
 def create_machine(name, controller=None):
@@ -1425,6 +1469,10 @@ def main():
   loobric bind millstone 7 <record>     # or bind an existing record
   loobric unbind millstone 7
 
+  # Catalog records -> a physical instance (unbound: not in any machine yet)
+  loobric create-record --from-catalog B201            # by product code
+  loobric create-record --from-catalog B201 --name "1/4 downcut, lot 7"
+
   # Inspect
   loobric list-machines
   loobric list-tools
@@ -1639,16 +1687,29 @@ Environment Variables:
 
     create_record_parser = subparsers.add_parser(
         "create-record",
-        help="Create a tool record from an entry and bind it in one step",
+        help="Create a tool instance — from an entry (bound) or a catalog (unbound)",
+        description="Two context-aware forms. MACHINE TOOL_NUMBER creates an "
+                    "instance from a machine entry and BINDS it to that position. "
+                    "--from-catalog creates an instance from a catalog record and "
+                    "leaves it UNBOUND (a catalog is not a machine position).",
     )
-    create_record_parser.add_argument("machine", help="Machine id or unique prefix")
-    create_record_parser.add_argument("tool_number", type=int, help="Tool number (e.g. 3)")
     create_record_parser.add_argument(
-        "--name", help="Name for the new record (defaults to the entry description)"
+        "machine", nargs="?", help="Machine id or unique prefix (entry form)"
     )
-    create_record_parser.set_defaults(
-        func=lambda args: create_record_from_entry(args.machine, args.tool_number, args.name)
+    create_record_parser.add_argument(
+        "tool_number", nargs="?", type=int, help="Tool number, e.g. 3 (entry form)"
     )
+    create_record_parser.add_argument(
+        "--from-catalog", metavar="CATALOG",
+        help="Create an UNBOUND instance from a catalog record "
+             "(id/prefix/name/product_code)",
+    )
+    create_record_parser.add_argument(
+        "--name",
+        help="Name for the new instance (entry form: defaults to the entry "
+             "description; catalog form: defaults to the catalog record's name)",
+    )
+    create_record_parser.set_defaults(func=create_record)
 
     # === create-machine ===
     create_machine_parser = subparsers.add_parser(

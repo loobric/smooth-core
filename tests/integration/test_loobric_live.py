@@ -243,6 +243,46 @@ def test_catalog_resolver_by_product_code_and_ambiguity(cli, capsys):
 
 
 @pytest.mark.integration
+def test_create_record_from_catalog_makes_an_unbound_linked_instance(cli, capsys):
+    """End to end (M2 #26): author a catalog record, then create-record
+    --from-catalog -> a new UNBOUND instance that links the catalog type with
+    requester-asserted provenance, measured geometry and status unknown."""
+    cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
+    capsys.readouterr()
+
+    loobric.create_record_from_catalog("B201")          # resolve by product code
+    out = capsys.readouterr().out
+    assert "unbound" in out and "1/4in 2FL Endmill" in out
+
+    instances = cli.list_tool_records()
+    assert len(instances) == 1
+    inst = instances[0]
+    link = inst["canonical"]["catalog_type_id"]
+    assert link["value"] and link["source"].startswith("asserted:")
+    assert inst["canonical"]["geometry"] == {}          # measured geometry unknown
+    # Unbound: no machine entry references it.
+    assert cli.list_entries() == []
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_twice_yields_two_instances(cli, capsys):
+    """No dedup: each --from-catalog call mints a new, distinct instance."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Spot Drill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "SD-90"}})
+    capsys.readouterr()
+    loobric.create_record_from_catalog("SD-90")
+    loobric.create_record_from_catalog("SD-90")
+    ids = {i["internal"]["id"] for i in cli.list_tool_records()}
+    assert len(ids) == 2
+
+
+@pytest.mark.integration
 def test_changes_works_for_v2_records(cli):
     """Change-detection now operates on the v2 sectioned records (R12 fixed);
     the retired legacy entity types are no longer accepted."""

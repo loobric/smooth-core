@@ -155,6 +155,9 @@ class Recorder:
                     **ENTRY["canonical"],
                     "bound_instance_id": {"value": "instanceid1",
                                           "source": "asserted:human@web"}}}
+            if endpoint.endswith("/create-instance"):
+                # the catalog->instance door returns the new (unbound) instance
+                return INSTANCE
             if endpoint.endswith("/unbind"):
                 return ENTRY
             if endpoint.endswith("/sync"):
@@ -314,6 +317,60 @@ def test_create_record_without_name_sends_empty_body(api):
     # mint-on-bind needs a JSON body; with no name it is an empty object, not None
     loobric.create_record_from_entry("machineid1", 3)
     assert api.last("POST")["body"] == {}
+
+
+def test_create_record_entry_form_routes_to_bind_and_binds(api, capsys):
+    """The dispatcher's entry branch: MACHINE TOOL_NUMBER -> the bind door, and
+    the outcome message names the BOUND result (unchanged from before)."""
+    import types
+    args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                 from_catalog=None, name="quarter inch")
+    loobric.create_record(args)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-table-entry-records/slotid1/bind"
+    assert post["body"] == {"name": "quarter inch"}
+    assert "bound it" in capsys.readouterr().out
+
+
+def test_create_record_catalog_form_routes_to_create_instance_unbound(api, capsys):
+    """The dispatcher's catalog branch: --from-catalog -> the create-instance
+    door, and the outcome message names the UNBOUND result."""
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog="catalogid1", name=None)
+    loobric.create_record(args)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-catalog-records/catalogid1/create-instance"
+    assert post["body"] == {}
+    out = capsys.readouterr().out
+    assert "unbound" in out                     # names the unbound outcome
+    assert "1/4in 2FL Endmill" in out          # catalog name in the message
+
+
+def test_create_record_catalog_form_passes_name_override(api):
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog="catalogid1", name="relabel")
+    loobric.create_record(args)
+    assert api.last("POST")["body"] == {"name": "relabel"}
+
+
+def test_create_record_rejects_mixing_entry_and_catalog_forms(api, capsys):
+    import types
+    args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                 from_catalog="catalogid1", name=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(args)
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_create_record_requires_a_source(api, capsys):
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog=None, name=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(args)
+    assert "create-record needs" in capsys.readouterr().err
 
 
 def test_resolve_slot_errors_when_tool_number_absent(api, capsys):
@@ -483,6 +540,7 @@ def test_list_keys_shows_revoked_state(monkeypatch, capsys):
     lambda: loobric.bind_entry("machineid1", 3, "instanceid1"),
     lambda: loobric.unbind_entry("machineid1", 3),
     lambda: loobric.create_record_from_entry("machineid1", 3, name="x"),
+    lambda: loobric.create_record_from_catalog("catalogid1"),
     lambda: loobric.link_machine("setid1", "machineid1"),
     lambda: loobric.create_machine("millstone", controller="linuxcnc"),
     lambda: loobric.create_set("Drawer A"),

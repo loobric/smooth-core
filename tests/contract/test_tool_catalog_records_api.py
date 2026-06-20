@@ -19,11 +19,13 @@ product_code are required; spec fields stay honest-sparse.
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from smooth.contract import ToolCatalogRecord
+from smooth.contract import ToolCatalogRecord, ToolInstanceRecord
 from smooth.database.schema import AuditLog
 from smooth.database.schema import ToolCatalogRecord as Row
 
 BASE = "/api/v1/tool-catalog-records"
+INSTANCE_BASE = "/api/v1/tool-instance-records"
+ENTRY_BASE = "/api/v1/tool-table-entry-records"
 
 
 def conforms(doc):
@@ -267,6 +269,87 @@ def test_natural_key_is_scoped_per_account(db_session):
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# The catalog -> instance door (M2, issue #26): a deliberate, audited create
+# that links the catalog type and leaves the instance UNBOUND. No "mint" wording.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.contract
+def test_create_instance_links_catalog_with_asserted_requester_provenance(solo_client):
+    """The link is the requester's own first-party act: the new instance asserts
+    catalog_type_id = the catalog id, source asserted:<requester> — the actor
+    defaults to the requesting context, never a client field. The name is copied
+    from the catalog and is likewise requester-asserted."""
+    rid = seed(solo_client)["internal"]["id"]
+    r = solo_client.post(f"{BASE}/{rid}/create-instance", json={})
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    ToolInstanceRecord.model_validate(doc)          # conforms to the instance contract
+    link = doc["canonical"]["catalog_type_id"]
+    assert link["value"] == rid
+    assert link["source"].startswith("asserted:")   # requester-asserted, not unknown
+    name = doc["canonical"]["name"]
+    assert name["value"] == "1/4in 2FL Endmill"      # copied from the catalog
+    assert name["source"].startswith("asserted:")
+
+
+@pytest.mark.contract
+def test_create_instance_is_unbound_with_unknown_geometry_and_status(solo_client):
+    """The post-condition: no QA (measured geometry unknown), status unknown, and
+    bound to no machine entry — a catalog is not a machine position."""
+    rid = seed(solo_client)["internal"]["id"]
+    doc = solo_client.post(f"{BASE}/{rid}/create-instance", json={}).json()
+    iid = doc["internal"]["id"]
+    assert doc["canonical"]["geometry"] == {}        # no measured geometry (no QA)
+    status = doc["canonical"].get("status")
+    assert status is None or status["value"] is None  # status unknown
+    # Bound to no entry: no tool-table entry references this instance.
+    entries = solo_client.get(ENTRY_BASE).json()["items"]
+    assert all((e["canonical"].get("bound_instance_id") or {}).get("value") != iid
+               for e in entries)
+
+
+@pytest.mark.contract
+def test_create_instance_name_override(solo_client):
+    """A request name overrides the copied catalog name (still requester-asserted)."""
+    rid = seed(solo_client)["internal"]["id"]
+    doc = solo_client.post(f"{BASE}/{rid}/create-instance",
+                           json={"name": "shop relabel"}).json()
+    assert doc["canonical"]["name"]["value"] == "shop relabel"
+    assert doc["canonical"]["name"]["source"].startswith("asserted:")
+
+
+@pytest.mark.contract
+def test_each_call_yields_a_distinct_instance(solo_client):
+    """Two identical tools = two instances pointing at one type. No dedup: calling
+    twice on the same catalog yields two different instance ids."""
+    rid = seed(solo_client)["internal"]["id"]
+    a = solo_client.post(f"{BASE}/{rid}/create-instance", json={}).json()
+    b = solo_client.post(f"{BASE}/{rid}/create-instance", json={}).json()
+    assert a["internal"]["id"] != b["internal"]["id"]
+    assert a["canonical"]["catalog_type_id"]["value"] == rid
+    assert b["canonical"]["catalog_type_id"]["value"] == rid
+    # both are real, distinct instances on the instance resource
+    ids = {i["internal"]["id"] for i in solo_client.get(INSTANCE_BASE).json()["items"]}
+    assert {a["internal"]["id"], b["internal"]["id"]} <= ids
+
+
+@pytest.mark.contract
+def test_create_instance_404_when_catalog_absent(solo_client):
+    """A catalog id that isn't found/owned is a 404."""
+    r = solo_client.post(f"{BASE}/does-not-exist/create-instance", json={})
+    assert r.status_code == 404, r.text
+
+
+def test_create_instance_endpoint_introduces_no_mint_wording():
+    """The catalog->instance flow uses neutral 'create instance' language — no
+    'mint' anywhere in the endpoint or its docstring (the entry-adopt flow
+    elsewhere legitimately still mints; this door does not)."""
+    import inspect
+    from smooth.api import tool_catalog_records as mod
+    assert "mint" not in inspect.getsource(mod.create_instance_from_catalog).lower()
 
 
 @pytest.mark.contract

@@ -311,12 +311,22 @@ suggestions again.
 
 ```
 loobric create-record MACHINE TOOL_NUMBER [--name NAME]
+loobric create-record --from-catalog CATALOG [--name NAME]
 ```
 
-Create a brand-new tool record seeded from a machine entry's observed values and
-bind it, in one step. Use this when the machine has a tool the server has never
-seen and you want to promote it to a record. `--name` defaults to the entry's
-description.
+Context-aware: it creates a tool instance from one of two sources, and the
+outcome differs by bind state.
+
+- **Entry form** (`MACHINE TOOL_NUMBER`): seed a brand-new instance from a
+  machine entry's observed values and **bind** it to that tool-table position,
+  in one step. Use this when the machine has a tool the server has never seen.
+  `--name` defaults to the entry's description.
+- **Catalog form** (`--from-catalog CATALOG`): create an instance from a catalog
+  record (resolved by id / unique prefix / name / product code) and leave it
+  **unbound** — a catalog is a type, not a machine position. The new instance
+  links the catalog via `catalog_type_id`; measured geometry and status stay
+  unknown (nominal geometry is reachable through the link). `--name` defaults to
+  the catalog record's name. Each call yields a new, distinct instance.
 
 ### Removing data
 

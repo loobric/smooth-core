@@ -26,10 +26,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
-from smooth.database.schema import User, ToolCatalogRecord as Row
+from smooth.api.tool_instance_records import _response as _instance_response
+from smooth.database.schema import (
+    User, ToolCatalogRecord as Row, ToolInstanceRecord as InstanceRow,
+)
 from smooth.audit import create_audit_log
 from smooth.contract import (
-    ToolCatalogRecord, CatalogCanonical, Provenance,
+    ToolCatalogRecord, CatalogCanonical, Provenance, UNKNOWN,
     LaneViolation, reject_out_of_lane,
 )
 
@@ -174,6 +177,17 @@ class AssertRequest(BaseModel):
     value: Any = None
     unit: Optional[str] = None
     actor: str          # e.g. "catalog-import" or "human@inbox"
+
+
+class CreateInstanceRequest(BaseModel):
+    """Create a physical instance from this catalog type. The link-actor is NOT
+    a client field — it defaults to the requesting context (the requester's own
+    first-party act). The only knob is an optional `name` override; absent it,
+    the new instance copies the catalog record's name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = None          # override; defaults to the catalog name
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +342,42 @@ def assert_canonical(record_id: str, req: AssertRequest,
                      changes={"path": req.path, "source": field["source"]})
     db.commit()
     return _response(row)
+
+
+@router.post("/{record_id}/create-instance")
+def create_instance_from_catalog(record_id: str, req: CreateInstanceRequest,
+                                 db: Session = Depends(get_db),
+                                 user: User = Depends(get_authenticated_user)):
+    """Create a new physical ToolInstanceRecord from this catalog type — a
+    deliberate, audited door (parallel to an entry bind, but sourced from a
+    catalog type and left UNBOUND: a catalog is not a machine position).
+
+    The new instance asserts `catalog_type_id` = this record's id with source
+    `asserted:<requester>` — the link is the requester's own first-party act, so
+    the actor defaults to the requesting context (the client never declares it).
+    `name` is the request override, else copied from the catalog record's name
+    (also requester-asserted). Measured geometry stays `unknown` (no QA in this
+    slice — nominal geometry is reachable through the catalog link, not copied
+    onto the instance) and `status` stays `unknown`. Every call produces a new,
+    distinct instance — no dedup. 404 if the catalog id isn't found/owned."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    actor = user.email          # the requesting context — its own first-party act
+    name = req.name or (row.canonical.get("name") or {}).get("value")
+    canonical = {
+        "name": ({"value": name, "source": Provenance.asserted(actor)}
+                 if name else {"value": None, "source": UNKNOWN}),
+        "catalog_type_id": {"value": row.id, "source": Provenance.asserted(actor)},
+        "status": {"value": None, "source": UNKNOWN},   # status vocabulary deferred
+        "geometry": {},                                  # measured geometry unknown (no QA)
+    }
+    inst = InstanceRow(canonical=canonical, clients={}, catalog_type_id=row.id,
+                       user_id=user.id, created_by=user.id, updated_by=user.id)
+    db.add(inst)
+    db.flush()
+    create_audit_log(session=db, user_id=user.id, operation="CREATE",
+                     entity_type="tool_instance_record", entity_id=inst.id,
+                     changes={"created_from_catalog": row.id})
+    db.commit()
+    return _instance_response(inst)
