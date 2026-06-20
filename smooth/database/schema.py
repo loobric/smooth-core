@@ -312,12 +312,28 @@ class ToolInstanceRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixi
 
 class ToolCatalogRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):
     """Sectioned tool-schema entity: a catalog TYPE (docs/TOOL_SCHEMA.md). May
-    exist with zero instances. Nominal, asserted geometry."""
+    exist with zero instances. Nominal, asserted geometry.
+
+    `manufacturer_norm`/`product_code_norm` are server-maintained, extracted from
+    canonical (trim + casefold) — they exist only to back the natural-key unique
+    index. Like the entry's install-once `bound_instance_id` column, they are the
+    race-safe enforcement point, not a check-then-insert. The original display
+    values stay untouched in canonical; the client never sets these columns.
+    Scope is per-account: the key carries `user_id`, so two accounts may each
+    hold the same `(manufacturer, product_code)` (M2, issue #25)."""
     __tablename__ = "tool_catalog_records"
+    __table_args__ = (
+        UniqueConstraint("user_id", "manufacturer_norm", "product_code_norm",
+                         name="uq_catalog_record_natural_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     canonical: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     clients: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Extracted, normalized natural key (server-maintained on every canonical
+    # write); the unique index above is per-account.
+    manufacturer_norm: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    product_code_norm: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
 
 class ToolTableEntryRecord(Base, TimestampMixin, VersionMixin, UserAttributionMixin):

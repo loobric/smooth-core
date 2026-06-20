@@ -17,6 +17,7 @@ nominal {value, unit} fields, and the server stamps `asserted:<actor>` on each
 product_code are required; spec fields stay honest-sparse.
 """
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from smooth.contract import ToolCatalogRecord
 from smooth.database.schema import AuditLog
@@ -166,6 +167,106 @@ def test_sync_cannot_touch_internal_or_canonical(solo_client, forbidden):
     body[forbidden] = "x" if forbidden == "client" else {"name": "endmill"}
     r = solo_client.put(f"{BASE}/{rid}/clients/catalog-import", json=body)
     assert r.status_code == 400, r.text
+
+
+# ---------------------------------------------------------------------------
+# Natural-key uniqueness — the 409 reuse funnel (M2, issue #25).
+# Key: (user_id, manufacturer, product_code), per-account, trim+casefold.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.contract
+def test_duplicate_create_is_409_naming_the_existing_record(solo_client):
+    """A second record on the same natural key for one account is refused — and
+    the 409 names the existing record's id, inviting reuse, not a bare dup error."""
+    first = seed(solo_client)                       # Kennametal / B201
+    eid = first["internal"]["id"]
+    r = solo_client.post(BASE, json={
+        "actor": "human@cli", "name": {"value": "another label"},
+        "manufacturer": {"value": "Kennametal"}, "product_code": {"value": "B201"}})
+    assert r.status_code == 409, r.text
+    assert eid in r.text                            # names the existing record
+    assert "create an instance from it" in r.text   # the funnel, not a dead end
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("manufacturer,product_code", [
+    ("kennametal", "B201"),        # lowercase manufacturer
+    ("KENNAMETAL", "b201"),        # uppercase manufacturer, lowercase code
+    ("  Kennametal  ", " B201 "),  # surrounding whitespace on both
+])
+def test_casing_and_whitespace_variants_collide(solo_client, manufacturer, product_code):
+    """trim + casefold: every variant of (Kennametal, B201) is the SAME key."""
+    seed(solo_client)                               # canonical Kennametal / B201
+    r = solo_client.post(BASE, json={
+        "actor": "human@cli", "name": {"value": "x"},
+        "manufacturer": {"value": manufacturer},
+        "product_code": {"value": product_code}})
+    assert r.status_code == 409, r.text
+
+
+@pytest.mark.contract
+def test_create_preserves_the_unnormalized_display_value(solo_client):
+    """Normalization is for comparison only — the original display value is stored
+    unchanged (whitespace and casing as the author typed them)."""
+    doc = seed(solo_client,
+               manufacturer={"value": "  Kennametal  "},
+               product_code={"value": " B-77 "})
+    assert doc["canonical"]["manufacturer"]["value"] == "  Kennametal  "
+    assert doc["canonical"]["product_code"]["value"] == " B-77 "
+
+
+@pytest.mark.contract
+def test_assert_into_a_collision_is_rejected_by_the_same_index(solo_client):
+    """The assert door shares the create door's enforcement: editing a record's
+    manufacturer/product_code into another record's key is a 409 naming it."""
+    a = seed(solo_client, manufacturer={"value": "Acme"},
+             product_code={"value": "P1"})["internal"]["id"]
+    b = seed(solo_client, manufacturer={"value": "Beta"},
+             product_code={"value": "P2"})["internal"]["id"]
+    # Step b toward a's key: manufacturer first (Acme/P2 — not yet a collision).
+    r1 = solo_client.post(f"{BASE}/{b}/assert",
+                          json={"path": "manufacturer", "value": "Acme",
+                                "actor": "human@cli"})
+    assert r1.status_code == 200, r1.text
+    # Now the product_code edit lands b on Acme/P1 — collision with a.
+    r2 = solo_client.post(f"{BASE}/{b}/assert",
+                          json={"path": "product_code", "value": "P1",
+                                "actor": "human@cli"})
+    assert r2.status_code == 409, r2.text
+    assert a in r2.text
+    # The edit was rolled back: b still has its prior product_code.
+    after = conforms(solo_client.get(f"{BASE}/{b}").json())
+    assert after["canonical"]["product_code"]["value"] == "P2"
+
+
+def test_natural_key_is_scoped_per_account(db_session):
+    """Two accounts may each hold the same (manufacturer, product_code); a second
+    record on one account's key violates the unique index. Exercised at the DB
+    layer because the index — not a query — is the enforcement (solo mode is a
+    single account)."""
+    def mk(uid):
+        canonical = {
+            "name": {"value": "x", "source": "asserted:t"},
+            "manufacturer": {"value": "Kennametal", "source": "asserted:t"},
+            "product_code": {"value": "B201", "source": "asserted:t"},
+            "geometry": {},
+        }
+        row = Row(canonical=canonical, clients={},
+                  user_id=uid, created_by=uid, updated_by=uid)
+        row.manufacturer_norm = "kennametal"     # trim+casefold of "Kennametal"
+        row.product_code_norm = "b201"
+        return row
+
+    db_session.add(mk("acct-a"))
+    db_session.commit()
+    db_session.add(mk("acct-b"))     # different account, same key: allowed
+    db_session.commit()
+    assert db_session.query(Row).count() == 2
+
+    db_session.add(mk("acct-a"))                          # same account: refused
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
 
 
 @pytest.mark.contract

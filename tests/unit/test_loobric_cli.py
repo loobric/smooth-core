@@ -403,6 +403,27 @@ def test_create_catalog_record_posts_actor_and_fields(api, capsys, monkeypatch):
     assert "asserted:manufacturer:kennametal" in capsys.readouterr().out
 
 
+def test_create_catalog_record_surfaces_the_409_reuse_funnel(capsys, monkeypatch):
+    """A natural-key collision (HTTP 409) reaches the user as the server's funnel
+    message — naming the existing record and inviting reuse — not a stack trace."""
+    import io
+    funnel = ("Kennametal B201 already exists as abc123 — create an instance "
+              "from it, or edit that record.")
+
+    def boom(*a, **k):
+        raise loobric.HTTPError(409, funnel)
+
+    monkeypatch.setattr(loobric, "make_request", boom)
+    monkeypatch.setattr(loobric.sys, "stdin", io.StringIO(""))
+    with pytest.raises(SystemExit):
+        loobric._run(loobric.create_catalog_record,
+                     source="manufacturer:kennametal", name="x",
+                     manufacturer="Kennametal", product_code="B201")
+    err = capsys.readouterr().err
+    assert "already exists as abc123" in err
+    assert "create an instance from it" in err
+
+
 def test_list_catalog_records_hits_endpoint_and_shows_identity(api, capsys):
     loobric.list_catalog_records()
     assert api.last("GET")["endpoint"] == "/tool-catalog-records"

@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
@@ -67,6 +68,48 @@ def _validate_canonical(canonical: dict) -> None:
         CatalogCanonical.model_validate(canonical)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="invalid canonical: %s" % exc)
+
+
+def _norm(value) -> Optional[str]:
+    """Comparison form of an identity field: trim + casefold. Without it the
+    natural-key constraint is illusory ("Kennametal" vs "kennametal ")."""
+    if value is None:
+        return None
+    return str(value).strip().casefold()
+
+
+def _natural_key(canonical: dict) -> tuple:
+    """Extract the normalized (manufacturer, product_code) from canonical — the
+    values that back the per-account unique index."""
+    man = (canonical.get("manufacturer") or {}).get("value")
+    pc = (canonical.get("product_code") or {}).get("value")
+    return _norm(man), _norm(pc)
+
+
+def _stamp_natural_key(row: Row, canonical: dict) -> None:
+    """Server-maintain the extracted, normalized natural-key columns. Mirrors the
+    entry tracer stamping its install-once `bound_instance_id` column — one
+    enforcement point shared by every canonical write (create and assert)."""
+    row.manufacturer_norm, row.product_code_norm = _natural_key(canonical)
+
+
+def _collision_409(db: Session, user: User, canonical: dict) -> HTTPException:
+    """Turn a unique-index violation into the reuse funnel: name the existing
+    record and invite reuse, never a bare 'duplicate'. The lookup is only for the
+    friendly message — the DB index, not this query, is what enforces uniqueness."""
+    man_norm, pc_norm = _natural_key(canonical)
+    existing = db.query(Row).filter(
+        Row.user_id == user.id,
+        Row.manufacturer_norm == man_norm,
+        Row.product_code_norm == pc_norm,
+    ).first()
+    man = (canonical.get("manufacturer") or {}).get("value")
+    pc = (canonical.get("product_code") or {}).get("value")
+    where = existing.id if existing is not None else "an existing record"
+    return HTTPException(
+        status_code=409,
+        detail="%s %s already exists as %s — create an instance from it, or "
+               "edit that record." % (man, pc, where))
 
 
 def _set_path(canonical: dict, path: str, field: dict) -> dict:
@@ -192,8 +235,13 @@ def create_catalog_record(req: CreateRequest, db: Session = Depends(get_db),
         }
     row = Row(canonical=canonical, clients=clients,
               user_id=user.id, created_by=user.id, updated_by=user.id)
+    _stamp_natural_key(row, canonical)   # server-maintained; feeds the unique index
     db.add(row)
-    db.flush()
+    try:
+        db.flush()                        # the unique index fires here, race-safe
+    except IntegrityError:
+        db.rollback()
+        raise _collision_409(db, user, canonical)
     create_audit_log(session=db, user_id=user.id, operation="CREATE",
                      entity_type="tool_catalog_record", entity_id=row.id)
     db.commit()
@@ -267,8 +315,14 @@ def assert_canonical(record_id: str, req: AssertRequest,
     canonical = _set_path(row.canonical, req.path, field)
     _validate_canonical(canonical)
     row.canonical = canonical
+    _stamp_natural_key(row, canonical)   # same enforcement point as create
     row.version += 1
     row.updated_by = user.id
+    try:
+        db.flush()                        # editing into a collision is a 409 too
+    except IntegrityError:
+        db.rollback()
+        raise _collision_409(db, user, canonical)
     create_audit_log(session=db, user_id=user.id, operation="ASSERT",
                      entity_type="tool_catalog_record", entity_id=row.id,
                      changes={"path": req.path, "source": field["source"]})
