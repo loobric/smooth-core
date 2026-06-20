@@ -352,6 +352,103 @@ def test_create_instance_endpoint_introduces_no_mint_wording():
     assert "mint" not in inspect.getsource(mod.create_instance_from_catalog).lower()
 
 
+# ---------------------------------------------------------------------------
+# Manufacturer QA at instance creation (M2, issue #27): the middle rung of the
+# provenance gradient. The audited catalog->instance door is permitted to stamp a
+# third-party observed:manufacturer@<cert> on measured geometry; the routine
+# observe door is unchanged and only ever stamps the client's OWN identity.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.contract
+def test_create_instance_qa_stamps_observed_manufacturer_provenance(solo_client):
+    """QA payload + cert -> each measured-geometry field carries
+    observed:manufacturer@<serial>. The WHO is the generic 'manufacturer' role; the
+    WHERE/serial is the tail of cert after the last '@', so 'kennametal@SN12345'
+    yields observed:manufacturer@SN12345. The client sends only values+units+cert;
+    the SERVER composes the source (lane discipline)."""
+    rid = seed(solo_client)["internal"]["id"]
+    r = solo_client.post(f"{BASE}/{rid}/create-instance", json={
+        "qa": {"diameter": {"value": 6.34, "unit": "mm"},
+               "length": {"value": 50.0, "unit": "mm"}},
+        "cert": "kennametal@SN12345",
+    })
+    assert r.status_code == 200, r.text
+    doc = r.json()
+    ToolInstanceRecord.model_validate(doc)
+    geo = doc["canonical"]["geometry"]
+    assert geo["diameter"]["value"] == 6.34 and geo["diameter"]["unit"] == "mm"
+    assert geo["diameter"]["source"] == "observed:manufacturer@SN12345"
+    assert geo["length"]["source"] == "observed:manufacturer@SN12345"
+
+
+@pytest.mark.contract
+def test_create_instance_qa_cert_serial_only_also_works(solo_client):
+    """A bare serial cert (no vendor prefix) yields the same who=manufacturer
+    source — the serial tail is taken after the last '@', and absent any '@' the
+    whole cert is the serial."""
+    rid = seed(solo_client)["internal"]["id"]
+    doc = solo_client.post(f"{BASE}/{rid}/create-instance", json={
+        "qa": {"diameter": {"value": 6.34, "unit": "mm"}},
+        "cert": "SN999",
+    }).json()
+    assert doc["canonical"]["geometry"]["diameter"]["source"] == \
+        "observed:manufacturer@SN999"
+
+
+@pytest.mark.contract
+def test_create_instance_qa_without_cert_is_rejected(solo_client):
+    """cert is REQUIRED when QA geometry is present (a measurement with no
+    certificate to record it against is rejected, not silently un-sourced)."""
+    rid = seed(solo_client)["internal"]["id"]
+    r = solo_client.post(f"{BASE}/{rid}/create-instance", json={
+        "qa": {"diameter": {"value": 6.34, "unit": "mm"}}})
+    assert r.status_code == 400, r.text
+    assert "cert" in r.json()["detail"]
+
+
+@pytest.mark.contract
+def test_create_instance_cert_without_qa_is_rejected(solo_client):
+    """The documented decision: a cert with no QA to certify is a 400 (symmetric
+    with qa-without-cert), never a silent no-op."""
+    rid = seed(solo_client)["internal"]["id"]
+    r = solo_client.post(f"{BASE}/{rid}/create-instance", json={
+        "cert": "kennametal@SN12345"})
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.contract
+def test_create_instance_no_qa_leaves_measured_geometry_unknown(solo_client):
+    """#26 regression: with no QA the instance's measured geometry is empty
+    (unknown) — QA is strictly additive."""
+    rid = seed(solo_client)["internal"]["id"]
+    doc = solo_client.post(f"{BASE}/{rid}/create-instance", json={}).json()
+    assert doc["canonical"]["geometry"] == {}
+
+
+@pytest.mark.contract
+def test_third_party_manufacturer_provenance_is_a_catalog_door_carveout(solo_client):
+    """The carve-out: the audited catalog->instance door CAN stamp a third-party
+    observed:manufacturer@<serial>. The routine observe door is the contrast — it
+    composes the source from the client's OWN declared (client, machine) envelope,
+    so it can only ever stamp the client's own identity, never a foreign
+    'manufacturer' who. (observe is unchanged; see
+    test_tool_instance_records_api.test_observe_sets_a_measured_field_from_a_machine.)"""
+    rid = seed(solo_client)["internal"]["id"]
+    # Audited door: a third-party 'manufacturer' who is permitted here.
+    inst = solo_client.post(f"{BASE}/{rid}/create-instance", json={
+        "qa": {"diameter": {"value": 6.34, "unit": "mm"}},
+        "cert": "kennametal@SN12345"}).json()
+    iid = inst["internal"]["id"]
+    assert inst["canonical"]["geometry"]["diameter"]["source"] == \
+        "observed:manufacturer@SN12345"
+    # Routine observe door: source is the client's OWN identity, not a third party.
+    obs = solo_client.post(f"{INSTANCE_BASE}/{iid}/observe", json={
+        "path": "geometry.diameter", "value": 6.35, "unit": "mm",
+        "client": "linuxcnc", "machine": "millstone"}).json()
+    assert obs["canonical"]["geometry"]["diameter"]["source"] == \
+        "observed:linuxcnc@millstone"
+
+
 @pytest.mark.contract
 def test_assert_sets_nominal_fields_with_asserted_provenance(solo_client):
     """A catalog type's nominal spec is a deliberate assertion — there is no

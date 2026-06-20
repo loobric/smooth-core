@@ -270,6 +270,51 @@ def test_create_record_from_catalog_makes_an_unbound_linked_instance(cli, capsys
 
 
 @pytest.mark.integration
+def test_create_record_from_catalog_with_qa_stamps_manufacturer_provenance(
+        cli, capsys, tmp_path):
+    """End to end (M2 #27): create-record --from-catalog --qa qa.json --cert ->
+    an UNBOUND instance whose MEASURED geometry carries observed:manufacturer@
+    <serial> (the middle rung of the gradient — manufacturer QA, not the shop)."""
+    cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
+    capsys.readouterr()
+    qa = tmp_path / "qa.json"
+    qa.write_text(json.dumps({"diameter": {"value": 6.34, "unit": "mm"},
+                              "length": {"value": 50.0, "unit": "mm"}}))
+
+    loobric.create_record_from_catalog("B201", qa_path=str(qa),
+                                       cert="kennametal@SN12345")
+    out = capsys.readouterr().out
+    assert "unbound" in out and "SN12345" in out
+
+    inst = cli.list_tool_records()[0]
+    geo = inst["canonical"]["geometry"]
+    assert geo["diameter"]["value"] == 6.34
+    assert geo["diameter"]["source"] == "observed:manufacturer@SN12345"
+    assert geo["length"]["source"] == "observed:manufacturer@SN12345"
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_qa_requires_cert(cli, capsys, tmp_path):
+    """--cert is required iff --qa: the QA file with no cert exits non-zero and
+    creates no instance."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Spot Drill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "SD-90"}})
+    capsys.readouterr()
+    qa = tmp_path / "qa.json"
+    qa.write_text(json.dumps({"diameter": {"value": 3.0, "unit": "mm"}}))
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("SD-90", qa_path=str(qa), cert=None)
+    assert "--qa requires --cert" in capsys.readouterr().err
+    assert cli.list_tool_records() == []
+
+
+@pytest.mark.integration
 def test_create_record_from_catalog_twice_yields_two_instances(cli, capsys):
     """No dedup: each --from-catalog call mints a new, distinct instance."""
     cli.create_catalog_record(source="manufacturer:acme", fields={

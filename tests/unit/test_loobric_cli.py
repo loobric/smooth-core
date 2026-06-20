@@ -355,6 +355,52 @@ def test_create_record_catalog_form_passes_name_override(api):
     assert api.last("POST")["body"] == {"name": "relabel"}
 
 
+def test_create_record_catalog_qa_passes_qa_payload_and_cert(api, tmp_path):
+    """--qa <file> + --cert flow the geometry-shaped QA payload and the cert
+    through to the create-instance endpoint body (the server composes the
+    observed:manufacturer@<serial> source — the client never sends a raw source)."""
+    qa = tmp_path / "qa.json"
+    qa.write_text('{"diameter": {"value": 6.34, "unit": "mm"}}')
+    loobric.create_record_from_catalog("catalogid1", qa_path=str(qa),
+                                       cert="kennametal@SN12345")
+    body = api.last("POST")["body"]
+    assert api.last("POST")["endpoint"] == \
+        "/tool-catalog-records/catalogid1/create-instance"
+    assert body["qa"] == {"diameter": {"value": 6.34, "unit": "mm"}}
+    assert body["cert"] == "kennametal@SN12345"
+    assert "source" not in str(body)            # client never writes provenance
+
+
+def test_create_record_qa_without_cert_is_rejected(api, capsys, tmp_path):
+    """--cert is required iff --qa: a QA file with no cert exits non-zero."""
+    qa = tmp_path / "qa.json"
+    qa.write_text('{"diameter": {"value": 6.34, "unit": "mm"}}')
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("catalogid1", qa_path=str(qa), cert=None)
+    assert "--qa requires --cert" in capsys.readouterr().err
+    assert not api.of("POST")                    # rejected before any call
+
+
+def test_create_record_cert_without_qa_is_rejected(api, capsys):
+    """The other direction: a cert with no QA to certify exits non-zero."""
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("catalogid1", qa_path=None,
+                                           cert="kennametal@SN12345")
+    assert "--cert requires --qa" in capsys.readouterr().err
+    assert not api.of("POST")
+
+
+def test_create_record_entry_form_rejects_qa_and_cert(api, capsys):
+    """--qa/--cert are catalog-only: the entry form rejects them up front."""
+    import types
+    qa_args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                    from_catalog=None, name=None,
+                                    qa="qa.json", cert=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(qa_args)
+    assert "only valid with --from-catalog" in capsys.readouterr().err
+
+
 def test_create_record_rejects_mixing_entry_and_catalog_forms(api, capsys):
     import types
     args = types.SimpleNamespace(machine="machineid1", tool_number=3,

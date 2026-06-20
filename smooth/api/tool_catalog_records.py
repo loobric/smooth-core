@@ -182,12 +182,23 @@ class AssertRequest(BaseModel):
 class CreateInstanceRequest(BaseModel):
     """Create a physical instance from this catalog type. The link-actor is NOT
     a client field — it defaults to the requesting context (the requester's own
-    first-party act). The only knob is an optional `name` override; absent it,
-    the new instance copies the catalog record's name."""
+    first-party act). `name` is an optional override; absent it, the new instance
+    copies the catalog record's name.
+
+    Optional manufacturer QA: `qa` is a geometry-shaped map of bare {value, unit}
+    leaves (the client never writes `source` — lane discipline), and `cert` is the
+    certificate/serial identifier. When QA is present `cert` is REQUIRED, and the
+    SERVER composes each measured-geometry field's source as
+    `observed:manufacturer@<serial>` (the middle rung of the provenance gradient —
+    a real measurement, made by the manufacturer's QA, not the shop). This is the
+    deliberate audited door permitted to stamp a third-party `observed:manufacturer@*`;
+    the routine `observe` door still requires a client to stamp its own identity."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = None          # override; defaults to the catalog name
+    qa: Dict[str, NominalField] = {}    # geometry-shaped manufacturer QA measurements
+    cert: Optional[str] = None          # certificate/serial; REQUIRED when qa present
 
 
 # ---------------------------------------------------------------------------
@@ -356,21 +367,54 @@ def create_instance_from_catalog(record_id: str, req: CreateInstanceRequest,
     `asserted:<requester>` — the link is the requester's own first-party act, so
     the actor defaults to the requesting context (the client never declares it).
     `name` is the request override, else copied from the catalog record's name
-    (also requester-asserted). Measured geometry stays `unknown` (no QA in this
-    slice — nominal geometry is reachable through the catalog link, not copied
-    onto the instance) and `status` stays `unknown`. Every call produces a new,
-    distinct instance — no dedup. 404 if the catalog id isn't found/owned."""
+    (also requester-asserted). `status` stays `unknown`.
+
+    Optional manufacturer QA: if `qa` (geometry-shaped {value, unit} leaves) is
+    present, `cert` is REQUIRED, and each QA field becomes a measured-geometry leaf
+    stamped `observed:manufacturer@<serial>` — the SERVER composes that source from
+    `cert` (lane discipline; the client never sends a raw `source`). This is the
+    audited door that may stamp a third-party `observed:manufacturer@*`. With no QA,
+    measured geometry stays `unknown` (nominal geometry is reachable through the
+    catalog link, not copied onto the instance). Every call produces a new, distinct
+    instance — no dedup. 404 if the catalog id isn't found/owned."""
     row = _owned(db, user, record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not found")
+
+    qa = req.qa or {}
+    cert = (req.cert or "").strip()
+    if qa and not cert:
+        raise HTTPException(
+            status_code=400,
+            detail="cert is required when QA geometry is present (the measured "
+                   "fields are stamped observed:manufacturer@<cert>)")
+    if cert and not qa:
+        raise HTTPException(
+            status_code=400,
+            detail="cert has nothing to certify: provide QA geometry alongside it")
+
     actor = user.email          # the requesting context — its own first-party act
     name = req.name or (row.canonical.get("name") or {}).get("value")
+    geometry: dict = {}                                  # measured geometry: unknown unless QA
+    if qa:
+        # WHO is the generic measurer role 'manufacturer' (the specific vendor name
+        # lives on the catalog type's asserted:<manufacturer>); WHERE is the serial,
+        # taken as the tail after the last '@' so both 'kennametal@SN12345' and a
+        # bare 'SN12345' yield observed:manufacturer@SN12345.
+        serial = cert.rsplit("@", 1)[-1]
+        source = Provenance.observed("manufacturer", serial)
+        for fld, leaf in qa.items():
+            measured = {"value": leaf.value, "source": source}
+            if leaf.unit is not None:
+                measured["unit"] = leaf.unit
+            geometry[fld] = measured
+
     canonical = {
         "name": ({"value": name, "source": Provenance.asserted(actor)}
                  if name else {"value": None, "source": UNKNOWN}),
         "catalog_type_id": {"value": row.id, "source": Provenance.asserted(actor)},
         "status": {"value": None, "source": UNKNOWN},   # status vocabulary deferred
-        "geometry": {},                                  # measured geometry unknown (no QA)
+        "geometry": geometry,
     }
     inst = InstanceRow(canonical=canonical, clients={}, catalog_type_id=row.id,
                        user_id=user.id, created_by=user.id, updated_by=user.id)

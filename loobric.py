@@ -491,14 +491,24 @@ class Client:
                           body={"actor": source, **(fields or {})})
 
     def create_instance_from_catalog(self, catalog_id: str,
-                                     name: Optional[str] = None) -> Dict[str, Any]:
+                                     name: Optional[str] = None,
+                                     qa: Optional[Dict[str, Any]] = None,
+                                     cert: Optional[str] = None) -> Dict[str, Any]:
         """Create a new physical instance from a catalog type via the catalog->
         instance door. The server stamps the catalog_type_id link as
         asserted:<requester> and leaves the instance UNBOUND (a catalog is not a
-        machine position). `name` overrides the copied catalog name when given."""
+        machine position). `name` overrides the copied catalog name when given.
+
+        Optional manufacturer QA: `qa` is a geometry-shaped {value, unit} map and
+        `cert` its certificate/serial; the server stamps each measured field
+        observed:manufacturer@<serial> (the client never sends a raw source)."""
         body: Dict[str, Any] = {}
         if name is not None:
             body["name"] = name
+        if qa is not None:
+            body["qa"] = qa
+        if cert is not None:
+            body["cert"] = cert
         return self._call("POST",
                           f"/tool-catalog-records/{catalog_id}/create-instance",
                           body=body)
@@ -1106,13 +1116,21 @@ def create_record(args):
     """Context-aware create-record: from a machine entry (-> BOUND instance) or
     from a catalog record (-> UNBOUND instance). The two paths are mutually
     exclusive; the outcome message names which one ran."""
+    qa_path = getattr(args, "qa", None)
+    cert = getattr(args, "cert", None)
     if getattr(args, "from_catalog", None):
         if args.machine or args.tool_number is not None:
             print("Error: --from-catalog cannot be combined with MACHINE/TOOL_NUMBER",
                   file=sys.stderr)
             sys.exit(1)
-        create_record_from_catalog(args.from_catalog, args.name)
+        create_record_from_catalog(args.from_catalog, args.name,
+                                   qa_path=qa_path, cert=cert)
     else:
+        if qa_path or cert:
+            print("Error: --qa/--cert are only valid with --from-catalog "
+                  "(manufacturer QA is recorded when creating from a catalog record)",
+                  file=sys.stderr)
+            sys.exit(1)
         if not args.machine or args.tool_number is None:
             print("Error: create-record needs MACHINE TOOL_NUMBER (entry form) "
                   "or --from-catalog CATALOG", file=sys.stderr)
@@ -1133,16 +1151,44 @@ def create_record_from_entry(machine_id: str, tool_number: int, name: str = None
           f"(record {rec_id}).")
 
 
-def create_record_from_catalog(catalog_handle: str, name: str = None):
+def create_record_from_catalog(catalog_handle: str, name: str = None,
+                               qa_path: str = None, cert: str = None):
     """Create a new UNBOUND instance from a catalog record (the catalog->instance
     door). The server stamps the catalog_type_id link as asserted:<requester>;
     the instance is left unbound (it sits in no machine entry). The name defaults
-    to the catalog record's name unless --name overrides it."""
+    to the catalog record's name unless --name overrides it.
+
+    Optional manufacturer QA: --qa is a geometry-shaped JSON file ({diameter:
+    {value, unit}, ...}) and --cert its certificate/serial. --cert is required
+    iff --qa is given; the server stamps each measured field
+    observed:manufacturer@<serial>."""
+    if qa_path and not cert:
+        print("Error: --qa requires --cert (the certificate/serial the QA "
+              "measurements are recorded against)", file=sys.stderr)
+        sys.exit(1)
+    if cert and not qa_path:
+        print("Error: --cert requires --qa (a certificate needs QA measurements "
+              "to certify)", file=sys.stderr)
+        sys.exit(1)
+    qa = None
+    if qa_path:
+        with open(qa_path) as f:
+            text = f.read().strip()
+        try:
+            qa = json.loads(text) if text else {}
+        except json.JSONDecodeError as e:
+            print(f"Error: invalid JSON in --qa file: {e}", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(qa, dict):
+            print("Error: --qa JSON must be a geometry-shaped object", file=sys.stderr)
+            sys.exit(1)
     catalog = _resolve_catalog(catalog_handle)
     cat_name = _cval(catalog, "name")
-    rec = _client().create_instance_from_catalog(_rid(catalog), name=name)
+    rec = _client().create_instance_from_catalog(_rid(catalog), name=name,
+                                                 qa=qa, cert=cert)
     inst_id = str(_rid(rec) or "")[:8]
-    print(f"✓ Created instance {inst_id} from {cat_name} — unbound "
+    qa_note = f" with manufacturer QA ({cert})" if qa else ""
+    print(f"✓ Created instance {inst_id} from {cat_name}{qa_note} — unbound "
           f"(no machine entry yet).")
 
 
@@ -1472,6 +1518,8 @@ def main():
   # Catalog records -> a physical instance (unbound: not in any machine yet)
   loobric create-record --from-catalog B201            # by product code
   loobric create-record --from-catalog B201 --name "1/4 downcut, lot 7"
+  loobric create-record --from-catalog B201 \\
+    --qa qa.json --cert "kennametal@SN12345"           # + manufacturer QA
 
   # Inspect
   loobric list-machines
@@ -1708,6 +1756,17 @@ Environment Variables:
         "--name",
         help="Name for the new instance (entry form: defaults to the entry "
              "description; catalog form: defaults to the catalog record's name)",
+    )
+    create_record_parser.add_argument(
+        "--qa", metavar="FILE",
+        help="Manufacturer QA: a geometry-shaped JSON file ({diameter:{value,"
+             "unit}, ...}) measured on the certified tool (catalog form only; "
+             "requires --cert)",
+    )
+    create_record_parser.add_argument(
+        "--cert",
+        help="Certificate/serial the --qa measurements are recorded against; the "
+             "server stamps them observed:manufacturer@<serial> (required iff --qa)",
     )
     create_record_parser.set_defaults(func=create_record)
 
