@@ -84,6 +84,21 @@ TOOLSET = {
     "clients": {},
 }
 
+CATALOG = {
+    "internal": {"id": "catalogid1", "version": 1,
+                 "created_at": "t", "updated_at": "t"},
+    "canonical": {
+        "name": {"value": "1/4in 2FL Endmill", "source": "asserted:manufacturer:kennametal"},
+        "manufacturer": {"value": "Kennametal", "source": "asserted:manufacturer:kennametal"},
+        "product_code": {"value": "B201", "source": "asserted:manufacturer:kennametal"},
+        "geometry": {
+            "diameter": {"value": 6.35, "unit": "mm",
+                         "source": "asserted:manufacturer:kennametal"},
+        },
+    },
+    "clients": {},
+}
+
 INBOX_ITEM = {
     "id": "proposalid000000000000000000000000000",
     "confidence": 0.91,
@@ -119,6 +134,8 @@ class Recorder:
                 return {"items": [TOOLSET]}
             if endpoint.startswith("/tool-table-entry-records"):
                 return {"items": [ENTRY]}
+            if endpoint.startswith("/tool-catalog-records"):
+                return {"items": [CATALOG]}
             if endpoint.startswith("/instance-inbox"):
                 return {"items": [INBOX_ITEM]}
             if endpoint.startswith("/audit-logs"):
@@ -154,6 +171,8 @@ class Recorder:
                 return TOOLSET
             if endpoint == "/tool-instance-records":
                 return INSTANCE
+            if endpoint == "/tool-catalog-records":
+                return CATALOG
             if endpoint == "/tool-table-entry-records":
                 return ENTRY
         if method == "DELETE":
@@ -360,6 +379,51 @@ def test_push_snapshot_mode_is_explicit(api):
     assert api.last("POST")["body"]["mode"] == "snapshot"
 
 
+# ---------------------------------------------------------------------------
+# Catalog records (M2): seeded create + browse + provenance.
+# ---------------------------------------------------------------------------
+
+def test_create_catalog_record_posts_actor_and_fields(api, capsys, monkeypatch):
+    """--source becomes the `actor`; the JSON/flags carry values+units; the body
+    never carries a `source` (the server stamps it)."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Endmill"}, '
+                                    '"manufacturer": {"value": "Kennametal"}}'))
+    loobric.create_catalog_record(source="manufacturer:kennametal",
+                                  product_code="B201", diameter=6.35)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-catalog-records"
+    body = post["body"]
+    assert body["actor"] == "manufacturer:kennametal"
+    assert body["name"] == {"value": "Endmill"}
+    assert body["product_code"] == {"value": "B201"}            # convenience flag
+    assert body["geometry"]["diameter"] == {"value": 6.35, "unit": "mm"}
+    assert "source" not in body                                  # never client-written
+    assert "asserted:manufacturer:kennametal" in capsys.readouterr().out
+
+
+def test_list_catalog_records_hits_endpoint_and_shows_identity(api, capsys):
+    loobric.list_catalog_records()
+    assert api.last("GET")["endpoint"] == "/tool-catalog-records"
+    out = capsys.readouterr().out
+    assert "catalogid1" in out and "Kennametal" in out and "B201" in out
+
+
+def test_show_catalog_record_resolves_and_shows_provenance(api, capsys):
+    loobric.show_catalog_record("catalogid1")
+    out = capsys.readouterr().out
+    assert "1/4in 2FL Endmill" in out
+    # every field is shown with its source badge
+    assert "asserted:manufacturer:kennametal" in out
+    assert "diameter" in out
+
+
+def test_show_catalog_record_resolves_by_product_code(api, capsys):
+    loobric.show_catalog_record("B201")
+    assert "1/4in 2FL Endmill" in capsys.readouterr().out
+
+
 def test_audit_reads_logs_list(api, capsys):
     # the /audit-logs response nests rows under "logs" (not "items")
     loobric.list_audit()
@@ -402,6 +466,8 @@ def test_list_keys_shows_revoked_state(monkeypatch, capsys):
     lambda: loobric.create_machine("millstone", controller="linuxcnc"),
     lambda: loobric.create_set("Drawer A"),
     lambda: loobric.push_table("machineid1", ["3:1/4 downcut:6.35"]),
+    lambda: loobric.list_catalog_records(),
+    lambda: loobric.show_catalog_record("catalogid1"),
 ])
 def test_no_command_touches_the_retired_flat_facade(api, invoke):
     invoke()

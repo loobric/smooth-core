@@ -18,17 +18,17 @@ routine sync still cannot touch it.
 """
 import copy
 from datetime import datetime, UTC
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.database.schema import User, ToolCatalogRecord as Row
 from smooth.audit import create_audit_log
 from smooth.contract import (
-    ToolCatalogRecord, CatalogCanonical, Provenance, UNKNOWN,
+    ToolCatalogRecord, CatalogCanonical, Provenance,
     LaneViolation, reject_out_of_lane,
 )
 
@@ -41,16 +41,6 @@ def _now() -> str:
 
 def _iso(value) -> str:
     return value.isoformat() if isinstance(value, datetime) else str(value)
-
-
-def _blank_canonical() -> dict:
-    """A freshly-minted catalog type asserts nothing — its name is honestly
-    unknown until asserted, and manufacturer/product_code/item_type/components
-    are optional and simply absent until someone declares them."""
-    return {
-        "name": {"value": None, "source": UNKNOWN},
-        "geometry": {},
-    }
 
 
 def _response(row: Row) -> dict:
@@ -96,13 +86,44 @@ def _set_path(canonical: dict, path: str, field: dict) -> dict:
 # Request bodies
 # ---------------------------------------------------------------------------
 
+class NominalField(BaseModel):
+    """A client-supplied nominal value (+ optional unit) for the seeded create.
+    The client NEVER sends `source` — the server stamps asserted:<actor> on each.
+    `extra="forbid"` is what makes that lane discipline real: a leaf that smuggles
+    in `source` (or any stray key) fails validation, which the API turns into a
+    422/400 — provenance is the server's to write, not the client's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any = None
+    unit: Optional[str] = None
+
+
 class CreateRequest(BaseModel):
+    """Seeded, atomic catalog-type create. One declared `actor` plus the nominal
+    fields as bare {value, unit} leaves; the server stamps asserted:<actor> as
+    each field's source. Identity floor: name/manufacturer/product_code are
+    required (checked in the endpoint for a clear message). Spec fields
+    (geometry, item_type) are optional and honest-sparse. `extra="forbid"` keeps
+    the client out of the internal/canonical lane — a stray top-level `source`
+    or section is rejected, never silently stripped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str
+    # identity floor — required, non-null (enforced in the endpoint)
+    name: Optional[NominalField] = None
+    manufacturer: Optional[NominalField] = None
+    product_code: Optional[NominalField] = None
+    # optional, honest-sparse nominal spec
+    geometry: Dict[str, NominalField] = {}
+    item_type: Optional[NominalField] = None
     # optional initial client section (the creating client names itself here;
     # subsequent section writes name the client in the path instead)
     client: Optional[str] = None
     client_version: Optional[str] = None
     client_item_id: Optional[str] = None
-    data: dict = {}
+    client_data: dict = {}
 
 
 class AssertRequest(BaseModel):
@@ -117,20 +138,59 @@ class AssertRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("")
-def create_catalog(payload: CreateRequest, db: Session = Depends(get_db),
-                   user: User = Depends(get_authenticated_user)):
-    """Mint a catalog type. Canonical starts all-unknown; an optional initial
-    client section may be seeded. Canonical is populated only via the assert
-    door thereafter (a type is never observed)."""
+def create_catalog_record(req: CreateRequest, db: Session = Depends(get_db),
+                          user: User = Depends(get_authenticated_user)):
+    """Seeded, atomic create of a catalog type. The request carries one declared
+    `actor` plus nominal {value, unit} fields; the server stamps asserted:<actor>
+    as each field's source (lane discipline — the client never writes
+    provenance). Identity floor: name/manufacturer/product_code are required and
+    non-null (findability/de-dup, not spec completeness). Spec fields are
+    optional and honest-sparse — a record with no geometry is accepted, never
+    fabricated to pass a gate. All-or-nothing: a malformed request leaves no
+    half-built record, and a success writes exactly one CREATE audit row."""
+    actor = (req.actor or "").strip()
+    if not actor:
+        raise HTTPException(status_code=400, detail="actor is required")
+
+    # Identity floor: required and non-null. Findability/de-dup, not spec.
+    for fld in ("name", "manufacturer", "product_code"):
+        leaf = getattr(req, fld)
+        if leaf is None or leaf.value is None:
+            raise HTTPException(
+                status_code=400,
+                detail="identity floor: %s is required (name, manufacturer and "
+                       "product_code identify the record)" % fld)
+
+    def _stamp(leaf: NominalField) -> dict:
+        """Seed one canonical leaf — value + (optional) unit + server-stamped
+        provenance. The actor is the ONLY thing the client declares about
+        source."""
+        field = {"value": leaf.value, "source": Provenance.asserted(actor)}
+        if leaf.unit is not None:
+            field["unit"] = leaf.unit
+        return field
+
+    canonical = {
+        "name": _stamp(req.name),
+        "manufacturer": _stamp(req.manufacturer),
+        "product_code": _stamp(req.product_code),
+        "geometry": {k: _stamp(v) for k, v in req.geometry.items()},
+    }
+    if req.item_type is not None:
+        canonical["item_type"] = _stamp(req.item_type)
+    # Validate the whole canonical BEFORE any DB write — a malformed seed is
+    # rejected with no half-built record (atomicity).
+    _validate_canonical(canonical)
+
     clients = {}
-    if payload.client:
-        clients[payload.client] = {
-            "client_version": payload.client_version or "",
-            "client_item_id": payload.client_item_id,
+    if req.client:
+        clients[req.client] = {
+            "client_version": req.client_version or "",
+            "client_item_id": req.client_item_id,
             "created_at": _now(), "updated_at": _now(),
-            "data": payload.data or {},
+            "data": req.client_data or {},
         }
-    row = Row(canonical=_blank_canonical(), clients=clients,
+    row = Row(canonical=canonical, clients=clients,
               user_id=user.id, created_by=user.id, updated_by=user.id)
     db.add(row)
     db.flush()

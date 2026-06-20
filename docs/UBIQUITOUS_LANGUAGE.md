@@ -61,6 +61,18 @@ only thing most clients do; physically cannot touch `internal`/`canonical`), **o
 machine reports a measured value), **assert** (an explicit, audited declaration). Routine sync is
 *not* a canonical-mutating door — that is enforced with a `400`, not a convention.
 
+### Catalog records — authoring (M2)
+
+Normative. How a **ToolCatalogRecord** comes into being and how it is named. See
+`TOOL_SCHEMA.md` §7.1 and `M2_PLAN.md` §4.1.
+
+| Term | Definition |
+|------|------------|
+| **create_catalog_record** | The verb/endpoint that authors a ToolCatalogRecord in one **atomic, audited** act: `POST /api/v1/tool-catalog-records`. The request carries one declared **actor** plus the nominal fields as bare `{value, unit}` leaves; the **server stamps `asserted:<actor>`** as each field's `source` (the client never writes provenance — lane discipline). All-or-nothing: a malformed request leaves no half-built record and a success writes exactly one `CREATE` audit row. Replaces the old create-blank-then-N-asserts dance. CLI verb: `loobric create-catalog-record` (JSON on stdin/`--file` + convenience flags; required `--source` is the actor). No "mint" wording. |
+| **Identity floor** | The minimum a ToolCatalogRecord needs to be **found and de-duplicated**, not the minimum to be *complete*: `name`, `manufacturer`, and `product_code` are **required and non-null** at create. Spec fields (geometry, …) are deliberately optional and **honest-sparse** — a record with no geometry is valid; fields are never fabricated to pass a gate. (The `(manufacturer, product_code)` natural key that builds on this floor is M2 §4.2, a separate change.) |
+| **Catalog (vs ToolCatalogRecord)** ⚠️ | "Catalog" means a **set / collection** of records — a manufacturer's published line, or the future public/cross-account catalog layer. It is **not** the singular record: one published spec is a **ToolCatalogRecord** (CLI: a *catalog record*), never "a catalog". Say "catalog record" for the row and reserve "catalog" for the collection. (Manufacturer Catalog, below, is the collection sense.) |
+| **Shop-as-manufacturer** | The honest convention for a tool with no vendor (a shop-ground cutter): set `manufacturer = "shop"`. The shop genuinely *is* the manufacturer of a tool it ground, so this satisfies the identity floor without fiction — no nullable-manufacturer special case, no fabricated vendor. |
+
 ### Rejected / removed terms (do not reintroduce — reboot R2)
 
 These shipped during implementation without entering the language and were removed 2026-06-18.

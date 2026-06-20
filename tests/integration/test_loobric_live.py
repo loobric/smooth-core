@@ -179,10 +179,67 @@ def test_set_members(cli):
 
 @pytest.mark.integration
 def test_catalog_records(cli):
-    rec = cli.create_catalog_record()
+    rec = cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
     rid = rec["internal"]["id"]
+    # The server stamps provenance — the client never wrote a `source`.
+    assert rec["canonical"]["name"]["source"] == "asserted:manufacturer:kennametal"
+    assert rec["canonical"]["geometry"]["diameter"]["source"] == \
+        "asserted:manufacturer:kennametal"
     assert any(r["internal"]["id"] == rid for r in cli.list_catalog_records())
     assert cli.get_catalog_record(rid)["internal"]["id"] == rid
+
+
+@pytest.mark.integration
+def test_create_catalog_record_via_cli_stdin(cli, capsys, monkeypatch):
+    """The acceptance path: JSON on stdin + --source -> a stamped record."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Spot Drill"}, '
+                                    '"manufacturer": {"value": "Acme"}, '
+                                    '"product_code": {"value": "SD-90"}}'))
+    loobric.create_catalog_record(source="manufacturer:acme")
+    out = capsys.readouterr().out
+    assert "Spot Drill" in out and "asserted:manufacturer:acme" in out
+    rec = cli.list_catalog_records()[0]
+    assert rec["canonical"]["product_code"]["value"] == "SD-90"
+    assert rec["canonical"]["product_code"]["source"] == "asserted:manufacturer:acme"
+
+
+@pytest.mark.integration
+def test_create_catalog_record_identity_floor(cli, monkeypatch):
+    """Missing manufacturer/product_code -> the server rejects it (HTTP 400)."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Nameless"}}'))
+    with pytest.raises(loobric.HTTPError):
+        cli.create_catalog_record(source="human@cli",
+                                  fields={"name": {"value": "Nameless"}})
+
+
+@pytest.mark.integration
+def test_catalog_resolver_by_product_code_and_ambiguity(cli, capsys):
+    """The resolver accepts id/name/product_code; an ambiguous name prints
+    candidates rather than guessing."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Endmill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "A-100"}})
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Endmill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "A-200"}})
+    # Unique product_code resolves cleanly.
+    loobric.show_catalog_record("A-200")
+    out = capsys.readouterr().out
+    assert "A-200" in out and "asserted:manufacturer:acme" in out
+    # The shared name is ambiguous -> candidates listed, no guess.
+    with pytest.raises(SystemExit):
+        loobric.show_catalog_record("Endmill")
+    err = capsys.readouterr().err
+    assert "ambiguous" in err and "A-100" in err and "A-200" in err
 
 
 @pytest.mark.integration
