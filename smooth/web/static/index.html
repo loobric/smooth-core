@@ -122,6 +122,16 @@
   #ask input { width:100%; margin-top:.7rem; background:var(--bg); border:1px solid var(--line);
                color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
   #ask .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.9rem; }
+  /* Create-tool-from-catalog form: a separate overlay (not rebuilt by render(),
+     so the 15s auto-refresh can't wipe a half-typed name). */
+  #ccreate { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+             align-items:center; justify-content:center; z-index:11; padding:1rem; }
+  #ccreate .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                    padding:1.1rem; width:min(96vw,520px); max-height:86vh; overflow:auto; }
+  #ccreate .cclabel { display:block; color:var(--dim); font-size:.82rem; margin:.6rem 0 .25rem; }
+  #ccreate .ccinput { width:100%; background:var(--bg); border:1px solid var(--line);
+                      color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
+  #ccreate .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:1rem; }
 </style>
 </head>
 <body>
@@ -163,6 +173,17 @@
       <button class="mini reject" onclick="askCancel()">Cancel</button>
       <button class="mini confirm" onclick="askOk()">OK</button>
     </div>
+  </div>
+</div>
+
+<!-- Create tool from catalog: a pre-populated form (name editable; nominal
+     geometry shown read-only with provenance badges). Body is filled by
+     openCreateFromCatalog(). No QA/status fields here by design (M2). -->
+<div id="ccreate" onclick="if(event.target.id==='ccreate')closeCreate()">
+  <div class="sheet">
+    <div class="row"><strong>Create tool from catalog</strong>
+      <button class="mini reject" onclick="closeCreate()">Cancel</button></div>
+    <div id="ccbody"></div>
   </div>
 </div>
 
@@ -468,7 +489,10 @@ function renderCatalog(){
         <span class="id">${esc(rid(c).slice(0,8))}</span></div>
       <div class="muted">${mfr?esc(mfr):"<i>manufacturer unknown</i>"}${pc!=null?" &middot; "+esc(pc):""}</div>
       <div class="row" style="margin-top:.6rem"><span class="muted">catalog record</span>
-        <button class="mini link" onclick="openCatalog('${rid(c)}')">View provenance</button></div>
+        <span class="rowact">
+          <button class="mini link" onclick="openCatalog('${rid(c)}')">View provenance</button>
+          <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button>
+        </span></div>
     </div>`;
   }).join("");
 }
@@ -484,11 +508,15 @@ function renderCatalogDetail(){
   const geomRows=gKeys.length
     ? gKeys.map(k=>catalogField(k.replace(/_/g," "), geom[k])).join("")
     : `<div class="muted" style="padding:.45rem 0">No geometry recorded &mdash; honestly sparse, not zero.</div>`;
+  const made=instancesFromCatalog(rid(c)).length;
   return `<div class="row" style="margin-bottom:.6rem">
       <button class="mini link" onclick="backToCatalog()">&#x2190; Back to catalog</button>
-      <button class="mini link" onclick="showCatalog('${rid(c)}')">schema</button></div>
+      <span class="rowact">
+        <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button>
+        <button class="mini link" onclick="showCatalog('${rid(c)}')">schema</button></span></div>
     <div class="card">
       <div class="row"><strong>${esc(cf(c,"name")||"(unnamed)")}</strong><span class="id">${esc(rid(c))}</span></div>
+      ${made?`<div class="muted" style="margin-top:.3rem">${made} tool${made===1?"":"s"} created from this catalog record.</div>`:""}
       <div class="explain" style="margin-top:.6rem">Each field shows its value and the <b>source</b> that vouches for it:
         ${provBadge("asserted")} a declared / nominal claim &middot;
         ${provBadge("observed")} a real measurement &middot;
@@ -496,6 +524,57 @@ function renderCatalogDetail(){
       <div class="section-h">Identity</div>${idRows}
       <div class="section-h">Geometry</div>${geomRows}
     </div>`;
+}
+
+// ---- Create tool from catalog (the audited catalog→instance door) ----------
+// Browse → this opens a form pre-populated with the catalog's defaults: the name
+// is pre-filled and EDITABLE; the nominal geometry is shown READ-ONLY beside its
+// provenance badges (what you're creating from). No QA/status fields here — that
+// is a deferred future home (M2 form is deliberately thin). Confirm POSTs an
+// optional {name} to .../create-instance, which stamps catalog_type_id on a new,
+// UNBOUND instance (a catalog is not a machine position).
+let _ccFrom = null;   // id of the catalog record the open form is creating from
+// How many instances already point back at this catalog record — a client-side
+// filter over the already-fetched instances (WHERE catalog_type_id == id), NOT a
+// stored back-reference.
+function instancesFromCatalog(id){ return state.tools.filter(t=>cf(t,"catalog_type_id")===id); }
+function openCreateFromCatalog(id){
+  const c=state.catalogs.find(x=>rid(x)===id); if(!c){ toast("Catalog record not found."); return; }
+  _ccFrom=id;
+  const can=c.canonical||{}, name=cf(c,"name")||"";
+  const geom=can.geometry||{}, gKeys=Object.keys(geom);
+  const geomRows=gKeys.length
+    ? gKeys.map(k=>catalogField(k.replace(/_/g," "), geom[k])).join("")
+    : `<div class="muted" style="padding:.45rem 0">No geometry recorded &mdash; honestly sparse, not zero.</div>`;
+  const made=instancesFromCatalog(id).length;
+  $("#ccbody").innerHTML = `
+    <div class="explain" style="margin-top:.6rem">Creating a physical tool from
+      <b>${esc(name||"this catalog record")}</b>. The new tool links back to this
+      catalog record and is left <b>unbound</b> &mdash; not yet on a machine.</div>
+    <label class="cclabel" for="ccname">Name</label>
+    <input id="ccname" class="ccinput" value="${esc(name)}" placeholder="tool name"
+           onkeydown="if(event.key==='Enter')submitCreateFromCatalog(); else if(event.key==='Escape')closeCreate();">
+    <div class="section-h">Nominal geometry (read-only)</div>
+    <div class="muted" style="font-size:.82rem;margin-bottom:.2rem">What you're creating from &mdash; the catalog's published spec.</div>
+    ${geomRows}
+    ${made?`<div class="muted" style="margin-top:.8rem">${made} tool${made===1?"":"s"} already created from this catalog record.</div>`:""}
+    <div class="arow">
+      <button class="mini reject" onclick="closeCreate()">Cancel</button>
+      <button class="mini confirm" onclick="submitCreateFromCatalog()">Create tool</button>
+    </div>`;
+  $("#ccreate").style.display="flex";
+  setTimeout(()=>{ const i=$("#ccname"); if(i){ i.focus(); i.select(); } },30);
+}
+function closeCreate(){ $("#ccreate").style.display="none"; _ccFrom=null; }
+async function submitCreateFromCatalog(){
+  if(!_ccFrom) return;
+  const id=_ccFrom, name=(($("#ccname")||{}).value||"").trim();
+  try{
+    const inst=await api("POST","/tool-catalog-records/"+id+"/create-instance", name?{name}:{});
+    closeCreate();
+    toast(`Created tool "${cf(inst,"name")||rid(inst).slice(0,8)}" — unbound, linked to this catalog record.`);
+    refresh();   // re-pull instances so the new tool (and the count) reflect it
+  }catch(e){ toast(e.message); }
 }
 
 // ---- Audit -----------------------------------------------------------------
