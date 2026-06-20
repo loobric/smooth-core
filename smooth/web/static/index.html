@@ -73,6 +73,22 @@
   .pill.warn { color:var(--warn); border-color:var(--warn); }
   .pill.bad  { color:var(--bad); border-color:var(--bad); }
   .pill.info { color:var(--link); border-color:var(--link); }
+  /* provenance badges (catalog drift detector): a claim must READ differently
+     from a measurement, and an honest gap from either. */
+  .prov { font-size:.72rem; font-family:ui-monospace,monospace; padding:.1em .55em;
+          border-radius:9px; border:1px solid var(--line); white-space:nowrap; }
+  .prov.asserted { color:var(--warn); border-color:var(--warn); }
+  .prov.observed { color:var(--ok);   border-color:var(--ok); }
+  .prov.derived  { color:var(--link); border-color:var(--link); }
+  .prov.unknown  { color:var(--dim);  border-style:dashed; }
+  .frow { display:flex; justify-content:space-between; gap:.6rem; align-items:center;
+          flex-wrap:wrap; padding:.45rem 0; border-top:1px solid var(--line); }
+  .frow:first-of-type { border-top:none; }
+  .flabel { color:var(--dim); flex:0 0 9rem; }
+  .fval { flex:1; min-width:6rem; font-weight:600; }
+  .unknownval { color:var(--dim); font-style:italic; font-weight:400; }
+  .section-h { font-size:.82rem; color:var(--dim); text-transform:uppercase;
+               letter-spacing:.05em; margin:1rem 0 .1rem; }
   table { width:100%; border-collapse:collapse; font-size:.9rem; }
   td, th { text-align:left; padding:.35rem .4rem; border-top:1px solid var(--line); }
   th { color:var(--dim); font-weight:500; border-top:none; }
@@ -154,8 +170,8 @@
 "use strict";
 // Machines is the ONE binding surface — proposals (the old Inbox) are folded in
 // as a "pending review" band/filter on the entries themselves.
-const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["audit","Audit"]];
-let state = { tab:"machines", pendingOnly:false, inbox:[], tools:[], toolsets:[], machines:[], audit:[],
+const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"]];
+let state = { tab:"machines", pendingOnly:false, catalogSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
               machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
 
 const $ = (s) => document.querySelector(s);
@@ -207,12 +223,12 @@ function entryName(s){
 
 async function refresh(){
   try {
-    const [inbox, tools, sets, machines, audit] = await Promise.all([
+    const [inbox, tools, sets, machines, audit, catalog] = await Promise.all([
       api("GET","/instance-inbox"), api("GET","/tool-instance-records"),
       api("GET","/tool-set-records"), api("GET","/machine-records"),
-      api("GET","/audit-logs?limit=50")]);
+      api("GET","/audit-logs?limit=50"), api("GET","/tool-catalog-records")]);
     state.inbox=inbox.items; state.tools=tools.items; state.toolsets=sets.items;
-    state.machines=machines.items; state.audit=audit.logs||[];
+    state.machines=machines.items; state.audit=audit.logs||[]; state.catalogs=catalog.items;
     state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
     state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
     state.proposalByEntry=Object.fromEntries(inbox.items.map(p=>[p.entry.id, p]));
@@ -244,9 +260,9 @@ function render(){
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
-  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,audit:renderAudit}[state.tab]();
+  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit}[state.tab]();
 }
-function setTab(t){ state.tab=t; render(); refresh(); }
+function setTab(t){ state.tab=t; state.catalogSel=null; render(); refresh(); }
 
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
@@ -409,6 +425,77 @@ function entryRow(m,s){
     <div class="rowact">${actions}
       <button class="mini del" onclick="deleteEntry('${rid(s)}')">Remove</button></div>
   </div>`;
+}
+
+// ---- Catalog records (READ-ONLY: the visual drift detector) ----------------
+// A ToolCatalogRecord is a nominal, *asserted* published spec. The whole reason
+// this surface exists in M2 is provenance visibility: every field is shown next
+// to its `source`, so a manufacturer's claim (asserted:…) reads differently from
+// a real measurement (observed:…), and an honest gap (unknown) from either.
+// No create/edit surface here by design — authoring is CLI-only this slice.
+function provBadge(source){
+  const src = String(source || "unknown");
+  const kind = src.split(":")[0];
+  const cls = {asserted:"asserted", observed:"observed", derived:"derived", unknown:"unknown"}[kind] || "unknown";
+  return `<span class="prov ${cls}" title="${esc(src)}">${esc(src)}</span>`;
+}
+// One {value, unit?, source} leaf rendered next to its provenance badge. A null
+// value (or an `unknown` source) renders an explicit "unknown" — never a blank
+// that could be mistaken for zero/empty.
+function catalogField(label, leaf){
+  const src = (leaf && leaf.source) || "unknown";
+  const kind = String(src).split(":")[0];
+  const isUnknown = !leaf || leaf.value == null || kind === "unknown";
+  const val = isUnknown
+    ? `<span class="unknownval">unknown</span>`
+    : esc(leaf.value) + (leaf.unit ? ` <span class="muted">${esc(leaf.unit)}</span>` : "");
+  return `<div class="frow"><span class="flabel">${esc(label)}</span>`+
+         `<span class="fval">${val}</span>${provBadge(src)}</div>`;
+}
+function openCatalog(id){ state.tab="catalog"; state.catalogSel=id; render(); }
+function backToCatalog(){ state.catalogSel=null; render(); }
+function showCatalog(id){ const c=state.catalogs.find(x=>rid(x)===id);
+  if(c) showSchema("Catalog record · "+(cf(c,"name")||id.slice(0,8)), c); }
+
+function renderCatalog(){
+  if(state.catalogSel) return renderCatalogDetail();
+  if(!state.catalogs.length) return `<div class="empty">No catalog records yet.<br><span class="muted">Author them with the loobric CLI (create-catalog-record); this surface is read-only.</span></div>`;
+  const explain = `<div class="explain">Published catalog specs &mdash; nominal, <b>asserted</b> data. Open one to see every field beside the <b>source</b> that vouches for it, so a manufacturer's claim reads differently from a real measurement.</div>`;
+  return explain + state.catalogs.map(c=>{
+    const name=cf(c,"name"), mfr=cf(c,"manufacturer"), pc=cf(c,"product_code");
+    return `<div class="card">
+      <div class="row"><strong class="link-ish" onclick="openCatalog('${rid(c)}')">${esc(name||"(unnamed)")}</strong>
+        <span class="id">${esc(rid(c).slice(0,8))}</span></div>
+      <div class="muted">${mfr?esc(mfr):"<i>manufacturer unknown</i>"}${pc!=null?" &middot; "+esc(pc):""}</div>
+      <div class="row" style="margin-top:.6rem"><span class="muted">catalog record</span>
+        <button class="mini link" onclick="openCatalog('${rid(c)}')">View provenance</button></div>
+    </div>`;
+  }).join("");
+}
+function renderCatalogDetail(){
+  const c=state.catalogs.find(x=>rid(x)===state.catalogSel);
+  if(!c) return `<div class="empty">Record not found.<br><span class="link-ish" onclick="backToCatalog()">Back to catalog</span></div>`;
+  const can=c.canonical||{};
+  const idDefs=[["name","Name"],["manufacturer","Manufacturer"],["product_code","Product code"],
+                ["item_type","Item type"],["components","Components"]];
+  const idRows=idDefs.filter(([k])=>can[k]).map(([k,label])=>catalogField(label,can[k])).join("");
+  const geom=can.geometry||{};
+  const gKeys=Object.keys(geom);
+  const geomRows=gKeys.length
+    ? gKeys.map(k=>catalogField(k.replace(/_/g," "), geom[k])).join("")
+    : `<div class="muted" style="padding:.45rem 0">No geometry recorded &mdash; honestly sparse, not zero.</div>`;
+  return `<div class="row" style="margin-bottom:.6rem">
+      <button class="mini link" onclick="backToCatalog()">&#x2190; Back to catalog</button>
+      <button class="mini link" onclick="showCatalog('${rid(c)}')">schema</button></div>
+    <div class="card">
+      <div class="row"><strong>${esc(cf(c,"name")||"(unnamed)")}</strong><span class="id">${esc(rid(c))}</span></div>
+      <div class="explain" style="margin-top:.6rem">Each field shows its value and the <b>source</b> that vouches for it:
+        ${provBadge("asserted")} a declared / nominal claim &middot;
+        ${provBadge("observed")} a real measurement &middot;
+        ${provBadge("unknown")} an honest gap (never a guess).</div>
+      <div class="section-h">Identity</div>${idRows}
+      <div class="section-h">Geometry</div>${geomRows}
+    </div>`;
 }
 
 // ---- Audit -----------------------------------------------------------------
