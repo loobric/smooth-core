@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 # MIT License
 # Copyright (c) 2025 sliptonic
 # SPDX-License-Identifier: MIT
@@ -1903,6 +1904,16 @@ Environment Variables:
         description="End the current session (clears session cookie)."
     )
     logout_parser.set_defaults(func=lambda _: logout())
+
+    # Optional shell tab-completion. argcomplete is NOT a dependency — this file
+    # stays stdlib-only and fully runnable without it; if the user has installed
+    # and registered argcomplete (see README/CLI.md), it wires up completion for
+    # every subcommand and flag derived from this parser. No-op when absent.
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
 
     # Parse args
     args = parser.parse_args()

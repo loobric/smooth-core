@@ -31,6 +31,11 @@ dev = [
     "ruff>=0.1.11",
     "mypy>=1.8.0",
 ]
+# Optional: shell tab-completion for the loobric CLI. loobric.py stays
+# stdlib-only and runs without this; install it to enable completion.
+completion = [
+    "argcomplete>=3.0",
+]
 
 [build-system]
 requires = ["hatchling"]

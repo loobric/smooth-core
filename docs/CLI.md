@@ -34,6 +34,41 @@ If you prefer not to install, you can run the script directly with
 `python loobric.py …` from the `smooth-core` directory. Every command below
 works the same way; only the leading word changes.
 
+## Tab-completion (optional)
+
+`loobric` can complete subcommands and flags in your shell. It uses
+[`argcomplete`](https://github.com/kislyuk/argcomplete), which is **optional** —
+the CLI stays stdlib-only and runs fine without it; completion just switches on
+once it is installed and registered.
+
+```bash
+uv pip install -e ".[completion]"     # or: pip install argcomplete
+```
+
+Then register it, **for the same command name you actually type**:
+
+```bash
+# Bash — per-shell (add to ~/.bashrc to make it permanent):
+eval "$(register-python-argcomplete loobric)"        # if installed on PATH
+eval "$(register-python-argcomplete ./loobric.py)"   # if you run ./loobric.py
+
+# Zsh — ensure bashcompinit is loaded first, then the same eval:
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete loobric)"
+```
+
+Prefer global activation (completes every argcomplete-enabled script, once):
+
+```bash
+activate-global-python-argcomplete --user
+```
+
+Now `loobric create-<TAB>` completes to `create-catalog-record`,
+`loobric create-record --<TAB>` lists `--from-catalog --name --qa --cert`, and
+so on. (If you run the script as `./loobric.py`, it must be executable —
+`chmod +x loobric.py` — and the file's `# PYTHON_ARGCOMPLETE_OK` marker lets
+global activation find it.)
+
 ## How authentication works
 
 `loobric` picks credentials in this order:
