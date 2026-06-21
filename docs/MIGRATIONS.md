@@ -1,9 +1,10 @@
 # Schema Migrations — Design
 
-> Status: **proposed** (2026-06-21). This is a design for review, not yet implemented.
-> It addresses the top data-durability gap: today an upgrade that changes an existing
-> table breaks a populated database with a silent `no such column` 500, and there is no
-> way to tell what schema version a database is at.
+> Status: **Phase 1 implemented** (2026-06-21) — the ledger, runner, baseline, and startup
+> wiring live in `smooth/migrations/` with tests; the later phases below remain proposed.
+> It addresses the top data-durability gap: an upgrade that changes an existing table used to
+> break a populated database with a silent `no such column` 500, with no way to tell what
+> schema version a database was at.
 
 ## The problem (what exists today)
 
@@ -72,8 +73,9 @@ def upgrade(conn):
     ...
 ```
 
-The existing `scripts/migrate_m2_catalog_natural_key.py` becomes migration `0002`
-(see baseline below for why it isn't `0001`) essentially unchanged — it is already idempotent.
+(The one-off `scripts/migrate_m2_catalog_natural_key.py` is **not** adopted as a migration:
+it was a single-instance fix that has already run, so no database still needs it. Future
+schema changes ship as `NNNN_name.py` units from the start.)
 
 ### 3. The runner: `run_migrations(engine)`
 
@@ -102,9 +104,8 @@ Three database states must be handled:
 - **Legacy populated DB (tables exist, no `schema_migrations`).** Introduce the spine with a
   `0001_baseline` revision that represents "the schema as shipped at spine introduction."
   Stamp `0001` as applied (its `upgrade` is a no-op assertion that core tables exist), then
-  apply anything newer. Migrations that legacy DBs may genuinely be missing (like the M2
-  columns) live at `0002+` and, being idempotent, are safe to run whether or not the manual
-  script was already applied.
+  apply anything newer. Future migrations live at `0002+` and, being idempotent, are safe to
+  apply whether or not their effect is already present on a given legacy database.
 - **Spine-managed DB.** Normal case: apply pending, done.
 
 Detection: *tables exist but `schema_migrations` is absent* ⇒ legacy ⇒ stamp baseline.
@@ -144,13 +145,13 @@ solo instance to multi-user. Tracked alongside the spine but designed on its own
 
 ## Phased implementation
 
-1. **Ledger + runner + baseline**, `schema_migrations` table, `0001_baseline`. Wire into
-   `init_db()`. Test: fresh DB, legacy DB, managed DB.
-2. **Adopt the M2 script** as `0002`. Test: a pre-M2 DB upgrades cleanly on startup with no
-   manual step.
-3. **Backup metadata revision + restore drift handling.** Test: restore older backup → auto
-   forward-migrate; reject newer.
-4. **solo→multi-user adopt** (own design doc).
+1. **Ledger + runner + baseline** — `schema_migrations`, `0001_baseline`, wired into
+   `init_db()`. ✅ **Done** (`smooth/migrations/`, `tests/integration/test_migrations.py`):
+   fresh / legacy / managed boot, idempotent re-run, failure-aborts-without-recording with
+   idempotent retry, checksum drift, and the safety-backup hook.
+2. **Backup metadata revision + restore drift handling.** Stamp the schema revision into
+   backup metadata; on restore, forward-migrate an older backup and refuse a newer one.
+3. **solo→multi-user adopt** (its own design — data-ownership, not schema).
 
-Test matrix lives in `tests/integration/test_migrations.py` (new): fresh / legacy / managed
-boot paths, idempotent re-run, failure-aborts-startup, and the three restore-drift cases.
+Future schema changes are added as new `smooth/migrations/NNNN_name.py` units, each with an
+idempotent `upgrade(conn)`.

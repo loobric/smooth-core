@@ -14,8 +14,9 @@ provenance and an audit trail.
 - Conflict freeze and resolution (no silent overwrites) — #7
 - Docker packaging (x86 + ARM) and a sub-30-minute quickstart — #8
 - **Schema migration spine** — so a `docker pull` + restart upgrades a populated database
-  safely instead of crashing on a changed table. Design: [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
-  Blocks promoting self-host upgrades and the solo→multi-user story.
+  safely instead of crashing on a changed table. Phase 1 (ledger + runner + baseline) is in;
+  remaining: stamp the schema revision into backups + handle restore drift, then the
+  solo→multi-user data adoption. Design: [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
 ## Milestone 2 — importers (epic #11)
 
