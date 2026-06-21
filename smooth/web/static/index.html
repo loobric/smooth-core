@@ -379,7 +379,7 @@ function renderTools(){
   return state.tools.map(t=>{
     const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(boundAt[rid(t)]||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showById('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
+      <div class="row"><strong>${esc(cf(t,"name")||"(unnamed)")}</strong>
         <span>${idLink(rid(t))}
           <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
@@ -393,6 +393,18 @@ function renderTools(){
 // ---- Tool Sets -------------------------------------------------------------
 function openSet(id){ state.tab="toolsets"; state.setSel=id; render(); }
 function backToToolSets(){ state.setSel=null; render(); }
+async function removeMember(setId, toolId){
+  const s=state.toolsets.find(x=>rid(x)===setId); if(!s) return;
+  const tname=state.toolNames[toolId]||toolId.slice(0,8);
+  if(!(await confirmDialog(`Remove "${tname}" from "${cf(s,"name")||setId.slice(0,8)}"? The tool itself isn't deleted.`))) return;
+  // Read-modify-write over the replace-only members door (the same move as
+  // `loobric remove-from-set`): keep every other member and its number, drop this one.
+  const members=(s.canonical.members||[])
+    .filter(m=>m.tool_record_id!==toolId)
+    .map(m=>({tool_record_id:m.tool_record_id, number:(m.number||{}).value}));
+  try{ await api("POST","/tool-set-records/"+setId+"/members",{members, actor:"human@web"}); toast("Removed from set."); refresh(); }
+  catch(e){ toast(e.message); }
+}
 
 function renderToolSets(){
   if(state.setSel) return renderToolSetDetail();
@@ -404,7 +416,6 @@ function renderToolSets(){
         <span>${idLink(rid(s))}</span></div>
       <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
-        <button class="mini link" onclick="openSet('${rid(s)}')">View members</button>
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
         <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
@@ -424,8 +435,8 @@ function renderToolSetDetail(){
     const numDisp=num.value!=null?`T${num.value}`:`<span class="unknownval">no #</span>`;
     return `<div class="frow">
       <span class="flabel">${numDisp} ${provBadge(num.source||"unknown")}</span>
-      <span class="fval"><span class="link-ish" onclick="showById('${tid}')">${esc(tname)}</span>`+
-      `${shape?` <span class="muted">${esc(shape)}</span>`:""}${dia!=null?` <span class="muted">&#x2300;${dia}</span>`:""}</span>
+      <span class="fval"><strong>${esc(tname)}</strong>${shape?` <span class="muted">${esc(shape)}</span>`:""}${dia!=null?` <span class="muted">&#x2300;${dia}</span>`:""} ${idLink(tid)}</span>
+      <button class="mini del" onclick="removeMember('${rid(s)}','${tid}')">Remove</button>
     </div>`;
   }).join("") : `<div class="muted" style="padding:.45rem 0">No tools in this set yet &mdash; add them with <code>loobric add-to-set</code>.</div>`;
   return `<div class="row" style="margin-bottom:.6rem">
@@ -455,7 +466,7 @@ function renderMachines(){
     const body = entries.length ? entries.map(s=>entryRow(m,s)).join("")
       : `<div class="muted">${state.pendingOnly?"nothing pending on this machine":"empty tool table"}</div>`;
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showById('${rid(m)}')">${esc(state.machineNames[rid(m)])}</strong>
+      <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
         <span class="rowact">${idLink(rid(m))}<span class="muted">${esc(cf(m,"controller_type")||"")}</span>
           <button class="mini create" onclick="createSetFromMachine('${rid(m)}')">Create tool set</button>
           <button class="unbind" onclick="deleteMachine('${rid(m)}')">Delete machine</button></span></div>
@@ -538,7 +549,6 @@ function renderCatalog(){
       <div class="muted">${mfr?esc(mfr):"<i>manufacturer unknown</i>"}${pc!=null?" &middot; "+esc(pc):""}</div>
       <div class="row" style="margin-top:.6rem"><span class="muted">catalog record</span>
         <span class="rowact">
-          <button class="mini link" onclick="openCatalog('${rid(c)}')">View provenance</button>
           <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button>
         </span></div>
     </div>`;
