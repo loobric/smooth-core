@@ -616,11 +616,13 @@ def test_no_command_touches_the_retired_flat_facade(api, invoke):
 # missing /version endpoint is itself reported as an older build.
 # ---------------------------------------------------------------------------
 
-def test_whoami_shows_account_and_server_build(api, capsys):
+def test_whoami_shows_server_account_and_build(api, capsys, monkeypatch):
+    monkeypatch.setattr(loobric, "BASE_URL", "http://nas:8000")
     loobric.whoami()
     out = capsys.readouterr().out
+    assert "Server: http://nas:8000" in out      # which server we're talking to
     assert "admin@example.com" in out
-    assert "Server: 0.1.0 (abc123def456)" in out
+    assert "Build:  0.1.0 (abc123def456)" in out  # what code it's running
     assert any(c["endpoint"] == "/version" for c in api.of("GET"))
 
 
@@ -634,4 +636,4 @@ def test_whoami_reports_old_server_without_version_endpoint(monkeypatch, capsys)
     monkeypatch.setattr(loobric, "make_request", fake)
     loobric.whoami()
     out = capsys.readouterr().out
-    assert "older build" in out
+    assert "older server" in out

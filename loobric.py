@@ -1379,20 +1379,24 @@ def reset_account(assume_yes=False):
 
 
 def whoami():
-    """Show the authenticated account and the server's build identity."""
-    me = _client().whoami()
-    print(f"  Email: {me.get('email')}")
-    print(f"  Role:  {me.get('role')}")
-    print(f"  Admin: {me.get('is_admin')}")
+    """Show which server we're talking to, the authenticated account, and the
+    server's build identity (the fastest 'is this the server/code I expect?'
+    check)."""
+    client = _client()
+    print(f"  Server: {client.base_url or '(none set)'}")
+    me = client.whoami()
+    print(f"  Email:  {me.get('email')}")
+    print(f"  Role:   {me.get('role')}")
+    print(f"  Admin:  {me.get('is_admin')}")
     if me.get("id"):
-        print(f"  ID:    {me.get('id')}")
-    # Server build identity — also the fastest "is this server running my code?"
-    # check. An older server has no /version endpoint, which is itself the answer.
+        print(f"  ID:     {me.get('id')}")
+    # Server build identity — an older server has no /version endpoint, which is
+    # itself the answer to "is it running my code?"
     try:
-        v = _client().server_version()
-        print(f"  Server: {v.get('version', '?')} ({v.get('commit', '?')})")
+        v = client.server_version()
+        print(f"  Build:  {v.get('version', '?')} ({v.get('commit', '?')})")
     except NotFound:
-        print("  Server: unknown — older build with no /version endpoint")
+        print("  Build:  unknown — older server with no /version endpoint")
 
 
 def list_audit(limit=50):
