@@ -1,6 +1,6 @@
 [project]
 name = "smooth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Vendor-neutral tool data synchronization system"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,11 @@ dev = [
     "hypothesis>=6.92.2",
     "ruff>=0.1.11",
     "mypy>=1.8.0",
+]
+# Optional: shell tab-completion for the loobric CLI. loobric.py stays
+# stdlib-only and runs without this; install it to enable completion.
+completion = [
+    "argcomplete>=3.0",
 ]
 
 [build-system]

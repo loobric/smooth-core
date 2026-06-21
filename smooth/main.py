@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from smooth.config import settings
+from smooth.version import __version__ as SERVER_VERSION, build_info
 from smooth.api.auth import router as auth_router
 from smooth.api.backup_api import router as backup_router
 from smooth.api.users import router as users_router
@@ -71,25 +72,33 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Smooth Tool Data Exchange",
         description="Vendor-neutral tool data synchronization system",
-        version="0.1.0",
+        version=SERVER_VERSION,
         docs_url=f"/api/{settings.api_version}/docs",
         redoc_url=f"/api/{settings.api_version}/redoc",
         openapi_url=f"/api/{settings.api_version}/openapi.json",
     )
-    
+
     # Health check endpoint (before mounting static files and routers)
     @app.get("/api/health")
     async def health_check():
         """API health check endpoint.
-        
+
         Returns:
             dict: Service status information
         """
         return {
             "service": "smooth",
-            "version": "0.1.0",
+            "version": SERVER_VERSION,
             "status": "running"
         }
+
+    @app.get(f"/api/{settings.api_version}/version")
+    async def version_info():
+        """Server build identity — version + git commit. Unauthenticated on
+        purpose: a client (or `loobric whoami`) can verify *which code* a server
+        is running before, or without, logging in. A 404 here means the server
+        predates this endpoint — i.e. it is an older build."""
+        return build_info()
     
     # Include routers.
     # Public facade = the sectioned tool schema (docs/TOOL_SCHEMA.md): the

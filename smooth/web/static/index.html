@@ -34,6 +34,8 @@
   .muted { color:var(--dim); font-size:.9rem; }
   .row { display:flex; justify-content:space-between; gap:.6rem; align-items:baseline; flex-wrap:wrap; }
   .id { font-family:ui-monospace,monospace; font-size:.8rem; color:var(--dim); }
+  .id.link { color:var(--link); cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
+  .id.link:hover { color:var(--ink); text-decoration-style:solid; }
   .vs { text-align:center; color:var(--dim); margin:.4rem 0; font-size:.9rem; }
   .conf { height:6px; background:var(--line); border-radius:3px; margin:.6rem 0 .3rem; }
   .conf > div { height:100%; border-radius:3px; background:var(--warn); }
@@ -73,6 +75,22 @@
   .pill.warn { color:var(--warn); border-color:var(--warn); }
   .pill.bad  { color:var(--bad); border-color:var(--bad); }
   .pill.info { color:var(--link); border-color:var(--link); }
+  /* provenance badges (catalog drift detector): a claim must READ differently
+     from a measurement, and an honest gap from either. */
+  .prov { font-size:.72rem; font-family:ui-monospace,monospace; padding:.1em .55em;
+          border-radius:9px; border:1px solid var(--line); white-space:nowrap; }
+  .prov.asserted { color:var(--warn); border-color:var(--warn); }
+  .prov.observed { color:var(--ok);   border-color:var(--ok); }
+  .prov.derived  { color:var(--link); border-color:var(--link); }
+  .prov.unknown  { color:var(--dim);  border-style:dashed; }
+  .frow { display:flex; justify-content:space-between; gap:.6rem; align-items:center;
+          flex-wrap:wrap; padding:.45rem 0; border-top:1px solid var(--line); }
+  .frow:first-of-type { border-top:none; }
+  .flabel { color:var(--dim); flex:0 0 9rem; }
+  .fval { flex:1; min-width:6rem; font-weight:600; }
+  .unknownval { color:var(--dim); font-style:italic; font-weight:400; }
+  .section-h { font-size:.82rem; color:var(--dim); text-transform:uppercase;
+               letter-spacing:.05em; margin:1rem 0 .1rem; }
   table { width:100%; border-collapse:collapse; font-size:.9rem; }
   td, th { text-align:left; padding:.35rem .4rem; border-top:1px solid var(--line); }
   th { color:var(--dim); font-weight:500; border-top:none; }
@@ -106,6 +124,16 @@
   #ask input { width:100%; margin-top:.7rem; background:var(--bg); border:1px solid var(--line);
                color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
   #ask .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.9rem; }
+  /* Create-tool-from-catalog form: a separate overlay (not rebuilt by render(),
+     so the 15s auto-refresh can't wipe a half-typed name). */
+  #ccreate { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+             align-items:center; justify-content:center; z-index:11; padding:1rem; }
+  #ccreate .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                    padding:1.1rem; width:min(96vw,520px); max-height:86vh; overflow:auto; }
+  #ccreate .cclabel { display:block; color:var(--dim); font-size:.82rem; margin:.6rem 0 .25rem; }
+  #ccreate .ccinput { width:100%; background:var(--bg); border:1px solid var(--line);
+                      color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
+  #ccreate .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:1rem; }
 </style>
 </head>
 <body>
@@ -150,12 +178,23 @@
   </div>
 </div>
 
+<!-- Create tool from catalog: a pre-populated form (name editable; nominal
+     geometry shown read-only with provenance badges). Body is filled by
+     openCreateFromCatalog(). No QA/status fields here by design (M2). -->
+<div id="ccreate" onclick="if(event.target.id==='ccreate')closeCreate()">
+  <div class="sheet">
+    <div class="row"><strong>Create tool from catalog</strong>
+      <button class="mini reject" onclick="closeCreate()">Cancel</button></div>
+    <div id="ccbody"></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 // Machines is the ONE binding surface — proposals (the old Inbox) are folded in
 // as a "pending review" band/filter on the entries themselves.
-const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["audit","Audit"]];
-let state = { tab:"machines", pendingOnly:false, inbox:[], tools:[], toolsets:[], machines:[], audit:[],
+const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"]];
+let state = { tab:"machines", pendingOnly:false, catalogSel:null, setSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
               machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
 
 const $ = (s) => document.querySelector(s);
@@ -207,12 +246,12 @@ function entryName(s){
 
 async function refresh(){
   try {
-    const [inbox, tools, sets, machines, audit] = await Promise.all([
+    const [inbox, tools, sets, machines, audit, catalog] = await Promise.all([
       api("GET","/instance-inbox"), api("GET","/tool-instance-records"),
       api("GET","/tool-set-records"), api("GET","/machine-records"),
-      api("GET","/audit-logs?limit=50")]);
+      api("GET","/audit-logs?limit=50"), api("GET","/tool-catalog-records")]);
     state.inbox=inbox.items; state.tools=tools.items; state.toolsets=sets.items;
-    state.machines=machines.items; state.audit=audit.logs||[];
+    state.machines=machines.items; state.audit=audit.logs||[]; state.catalogs=catalog.items;
     state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
     state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
     state.proposalByEntry=Object.fromEntries(inbox.items.map(p=>[p.entry.id, p]));
@@ -244,15 +283,29 @@ function render(){
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
-  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,audit:renderAudit}[state.tab]();
+  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit}[state.tab]();
 }
-function setTab(t){ state.tab=t; render(); refresh(); }
+function setTab(t){ state.tab=t; state.catalogSel=null; state.setSel=null; render(); refresh(); }
 
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
-function showRecord(id){ const t=state.tools.find(x=>rid(x)===id); if(t) showSchema("Tool instance · "+(cf(t,"name")||id.slice(0,8)), t); }
-function showEntry(id){ const s=state.entriesById[id]; if(s) showSchema("Entry · T"+cf(s,"tool_number"), s); }
-function showSet(id){ const s=state.toolsets.find(x=>rid(x)===id); if(s) showSchema("Tool set · "+(cf(s,"name")||id.slice(0,8)), s); }
+// Every id shown in the UI is a link to its record's schema JSON. One resolver
+// serves all item types: it finds the loaded record across every collection and
+// titles the sheet by kind. No per-type "schema" buttons.
+function showById(id){
+  for(const [label,coll] of [["Tool instance",state.tools],["Tool set",state.toolsets],
+                             ["Machine",state.machines],["Catalog record",state.catalogs]]){
+    const r=(coll||[]).find(x=>rid(x)===id);
+    if(r){ showSchema(label+" · "+(cf(r,"name")||(""+id).slice(0,8)), r); return; }
+  }
+  const e=state.entriesById&&state.entriesById[id];
+  if(e){ showSchema("Entry · T"+cf(e,"tool_number"), e); return; }
+  toast("That record isn't loaded in this view.");
+}
+// Render a record id as a clickable schema link. n = chars to show (default 8;
+// pass 0 for the full id).
+function idLink(id,n){ const s=(id==null?"":String(id)); const short=(n===0?s:s.slice(0,n||8));
+  return `<a class="id link" title="${esc(s)}" onclick="showById('${esc(s)}')">${esc(short)}</a>`; }
 
 // ---- Binding lives on the Machines tab (proposals folded in) ----------------
 async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Bound. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
@@ -276,7 +329,7 @@ async function deleteEntry(id){
   try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed entry."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteSet(id){ const s=state.toolsets.find(x=>rid(x)===id);
   if(!(await confirmDialog(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`))) return;
-  try{ await api("DELETE","/tool-set-records/"+id); toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
+  try{ await api("DELETE","/tool-set-records/"+id); if(state.setSel===id) state.setSel=null; toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- tool set from a machine (orchestrates existing canonical doors) --------
 function _boundInstances(machineId){
@@ -326,10 +379,9 @@ function renderTools(){
   return state.tools.map(t=>{
     const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(boundAt[rid(t)]||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showRecord('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
-        <span><span class="id">${esc(rid(t).slice(0,8))}</span>
-          <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button>
-          <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
+      <div class="row"><strong>${esc(cf(t,"name")||"(unnamed)")}</strong>
+        <span>${idLink(rid(t))}
+          <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
       where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">bound</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
       `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} binding(s)</span>
@@ -339,19 +391,65 @@ function renderTools(){
 }
 
 // ---- Tool Sets -------------------------------------------------------------
+function openSet(id){ state.tab="toolsets"; state.setSel=id; render(); }
+function backToToolSets(){ state.setSel=null; render(); }
+async function removeMember(setId, toolId){
+  const s=state.toolsets.find(x=>rid(x)===setId); if(!s) return;
+  const tname=state.toolNames[toolId]||toolId.slice(0,8);
+  if(!(await confirmDialog(`Remove "${tname}" from "${cf(s,"name")||setId.slice(0,8)}"? The tool itself isn't deleted.`))) return;
+  // Read-modify-write over the replace-only members door (the same move as
+  // `loobric remove-from-set`): keep every other member and its number, drop this one.
+  const members=(s.canonical.members||[])
+    .filter(m=>m.tool_record_id!==toolId)
+    .map(m=>({tool_record_id:m.tool_record_id, number:(m.number||{}).value}));
+  try{ await api("POST","/tool-set-records/"+setId+"/members",{members, actor:"human@web"}); toast("Removed from set."); refresh(); }
+  catch(e){ toast(e.message); }
+}
+
 function renderToolSets(){
+  if(state.setSel) return renderToolSetDetail();
   if(!state.toolsets.length) return `<div class="empty">No tool sets yet.</div>`;
   return state.toolsets.map(s=>{
     const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
-        <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
+      <div class="row"><strong class="link-ish" onclick="openSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
+        <span>${idLink(rid(s))}</span></div>
       <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
         <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
   }).join("");
+}
+function renderToolSetDetail(){
+  const s=state.toolsets.find(x=>rid(x)===state.setSel);
+  if(!s) return `<div class="empty">Tool set not found.<br><span class="link-ish" onclick="backToToolSets()">Back to tool sets</span></div>`;
+  const machine=cf(s,"machine_id");
+  const members=(s.canonical.members||[]).slice()
+    .sort((a,b)=>(((a.number||{}).value)??1e9)-(((b.number||{}).value)??1e9));
+  const rows = members.length ? members.map(m=>{
+    const tid=m.tool_record_id, num=m.number||{};
+    const t=state.tools.find(x=>rid(x)===tid);
+    const tname=t?(cf(t,"name")||tid.slice(0,8)):(state.toolNames[tid]||tid.slice(0,8));
+    const dia=t?cf(t,"geometry.diameter"):null, shape=t?cf(t,"geometry.shape"):null;
+    const numDisp=num.value!=null?`T${num.value}`:`<span class="unknownval">no #</span>`;
+    return `<div class="frow">
+      <span class="flabel">${numDisp} ${provBadge(num.source||"unknown")}</span>
+      <span class="fval"><strong>${esc(tname)}</strong>${shape?` <span class="muted">${esc(shape)}</span>`:""}${dia!=null?` <span class="muted">&#x2300;${dia}</span>`:""} ${idLink(tid)}</span>
+      <button class="mini del" onclick="removeMember('${rid(s)}','${tid}')">Remove</button>
+    </div>`;
+  }).join("") : `<div class="muted" style="padding:.45rem 0">No tools in this set yet &mdash; add them with <code>loobric add-to-set</code>.</div>`;
+  return `<div class="row" style="margin-bottom:.6rem">
+      <button class="mini link" onclick="backToToolSets()">&#x2190; Back to tool sets</button>
+      <span class="rowact">
+        ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
+        <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
+    <div class="card">
+      <div class="row"><strong>${esc(cf(s,"name")||"(unnamed)")}</strong>${idLink(rid(s),0)}</div>
+      <div class="muted" style="margin-top:.3rem">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8))+" &middot; member numbers inherited from its tool table":" &middot; not linked to a machine"}</div>
+      <div class="explain" style="margin-top:.6rem">Each member shows its tool number and the <b>source</b> that vouches for it &mdash; ${provBadge("asserted")} declared, ${provBadge("observed")} inherited from a machine, ${provBadge("unknown")} no number yet.</div>
+      <div class="section-h">Members</div>${rows}
+    </div>`;
 }
 
 // ---- Machines (+ tool tables) ----------------------------------------------
@@ -369,7 +467,7 @@ function renderMachines(){
       : `<div class="muted">${state.pendingOnly?"nothing pending on this machine":"empty tool table"}</div>`;
     return `<div class="card">
       <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
-        <span class="rowact"><span class="muted">${esc(cf(m,"controller_type")||"")}</span>
+        <span class="rowact">${idLink(rid(m))}<span class="muted">${esc(cf(m,"controller_type")||"")}</span>
           <button class="mini create" onclick="createSetFromMachine('${rid(m)}')">Create tool set</button>
           <button class="unbind" onclick="deleteMachine('${rid(m)}')">Delete machine</button></span></div>
       ${body}</div>`;
@@ -400,7 +498,7 @@ function entryRow(m,s){
   }
   return `<div class="trow">
     <div class="tinfo">
-      <span class="tnum link-ish" onclick="showEntry('${rid(s)}')">T${cf(s,"tool_number")}</span>
+      <span class="tnum link-ish" onclick="showById('${rid(s)}')">T${cf(s,"tool_number")}</span>
       <span>${esc(entryName(s)||"")}</span>
       <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
       ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
@@ -411,12 +509,137 @@ function entryRow(m,s){
   </div>`;
 }
 
+// ---- Catalog records (READ-ONLY: the visual drift detector) ----------------
+// A ToolCatalogRecord is a nominal, *asserted* published spec. The whole reason
+// this surface exists in M2 is provenance visibility: every field is shown next
+// to its `source`, so a manufacturer's claim (asserted:…) reads differently from
+// a real measurement (observed:…), and an honest gap (unknown) from either.
+// No create/edit surface here by design — authoring is CLI-only this slice.
+function provBadge(source){
+  const src = String(source || "unknown");
+  const kind = src.split(":")[0];
+  const cls = {asserted:"asserted", observed:"observed", derived:"derived", unknown:"unknown"}[kind] || "unknown";
+  return `<span class="prov ${cls}" title="${esc(src)}">${esc(src)}</span>`;
+}
+// One {value, unit?, source} leaf rendered next to its provenance badge. A null
+// value (or an `unknown` source) renders an explicit "unknown" — never a blank
+// that could be mistaken for zero/empty.
+function catalogField(label, leaf){
+  const src = (leaf && leaf.source) || "unknown";
+  const kind = String(src).split(":")[0];
+  const isUnknown = !leaf || leaf.value == null || kind === "unknown";
+  const val = isUnknown
+    ? `<span class="unknownval">unknown</span>`
+    : esc(leaf.value) + (leaf.unit ? ` <span class="muted">${esc(leaf.unit)}</span>` : "");
+  return `<div class="frow"><span class="flabel">${esc(label)}</span>`+
+         `<span class="fval">${val}</span>${provBadge(src)}</div>`;
+}
+function openCatalog(id){ state.tab="catalog"; state.catalogSel=id; render(); }
+function backToCatalog(){ state.catalogSel=null; render(); }
+
+function renderCatalog(){
+  if(state.catalogSel) return renderCatalogDetail();
+  if(!state.catalogs.length) return `<div class="empty">No catalog records yet.<br><span class="muted">Author them with the loobric CLI (create-catalog-record); this surface is read-only.</span></div>`;
+  const explain = `<div class="explain">Published catalog specs &mdash; nominal, <b>asserted</b> data. Open one to see every field beside the <b>source</b> that vouches for it, so a manufacturer's claim reads differently from a real measurement.</div>`;
+  return explain + state.catalogs.map(c=>{
+    const name=cf(c,"name"), mfr=cf(c,"manufacturer"), pc=cf(c,"product_code");
+    return `<div class="card">
+      <div class="row"><strong class="link-ish" onclick="openCatalog('${rid(c)}')">${esc(name||"(unnamed)")}</strong>
+        ${idLink(rid(c))}</div>
+      <div class="muted">${mfr?esc(mfr):"<i>manufacturer unknown</i>"}${pc!=null?" &middot; "+esc(pc):""}</div>
+      <div class="row" style="margin-top:.6rem"><span class="muted">catalog record</span>
+        <span class="rowact">
+          <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button>
+        </span></div>
+    </div>`;
+  }).join("");
+}
+function renderCatalogDetail(){
+  const c=state.catalogs.find(x=>rid(x)===state.catalogSel);
+  if(!c) return `<div class="empty">Record not found.<br><span class="link-ish" onclick="backToCatalog()">Back to catalog</span></div>`;
+  const can=c.canonical||{};
+  const idDefs=[["name","Name"],["manufacturer","Manufacturer"],["product_code","Product code"],
+                ["item_type","Item type"],["components","Components"]];
+  const idRows=idDefs.filter(([k])=>can[k]).map(([k,label])=>catalogField(label,can[k])).join("");
+  const geom=can.geometry||{};
+  const gKeys=Object.keys(geom);
+  const geomRows=gKeys.length
+    ? gKeys.map(k=>catalogField(k.replace(/_/g," "), geom[k])).join("")
+    : `<div class="muted" style="padding:.45rem 0">No geometry recorded &mdash; honestly sparse, not zero.</div>`;
+  const made=instancesFromCatalog(rid(c)).length;
+  return `<div class="row" style="margin-bottom:.6rem">
+      <button class="mini link" onclick="backToCatalog()">&#x2190; Back to catalog</button>
+      <span class="rowact">
+        <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button></span></div>
+    <div class="card">
+      <div class="row"><strong>${esc(cf(c,"name")||"(unnamed)")}</strong>${idLink(rid(c),0)}</div>
+      ${made?`<div class="muted" style="margin-top:.3rem">${made} tool${made===1?"":"s"} created from this catalog record.</div>`:""}
+      <div class="explain" style="margin-top:.6rem">Each field shows its value and the <b>source</b> that vouches for it:
+        ${provBadge("asserted")} a declared / nominal claim &middot;
+        ${provBadge("observed")} a real measurement &middot;
+        ${provBadge("unknown")} an honest gap (never a guess).</div>
+      <div class="section-h">Identity</div>${idRows}
+      <div class="section-h">Geometry</div>${geomRows}
+    </div>`;
+}
+
+// ---- Create tool from catalog (the audited catalog→instance door) ----------
+// Browse → this opens a form pre-populated with the catalog's defaults: the name
+// is pre-filled and EDITABLE; the nominal geometry is shown READ-ONLY beside its
+// provenance badges (what you're creating from). No QA/status fields here — that
+// is a deferred future home (M2 form is deliberately thin). Confirm POSTs an
+// optional {name} to .../create-instance, which stamps catalog_type_id on a new,
+// UNBOUND instance (a catalog is not a machine position).
+let _ccFrom = null;   // id of the catalog record the open form is creating from
+// How many instances already point back at this catalog record — a client-side
+// filter over the already-fetched instances (WHERE catalog_type_id == id), NOT a
+// stored back-reference.
+function instancesFromCatalog(id){ return state.tools.filter(t=>cf(t,"catalog_type_id")===id); }
+function openCreateFromCatalog(id){
+  const c=state.catalogs.find(x=>rid(x)===id); if(!c){ toast("Catalog record not found."); return; }
+  _ccFrom=id;
+  const can=c.canonical||{}, name=cf(c,"name")||"";
+  const geom=can.geometry||{}, gKeys=Object.keys(geom);
+  const geomRows=gKeys.length
+    ? gKeys.map(k=>catalogField(k.replace(/_/g," "), geom[k])).join("")
+    : `<div class="muted" style="padding:.45rem 0">No geometry recorded &mdash; honestly sparse, not zero.</div>`;
+  const made=instancesFromCatalog(id).length;
+  $("#ccbody").innerHTML = `
+    <div class="explain" style="margin-top:.6rem">Creating a physical tool from
+      <b>${esc(name||"this catalog record")}</b>. The new tool links back to this
+      catalog record and is left <b>unbound</b> &mdash; not yet on a machine.</div>
+    <label class="cclabel" for="ccname">Name</label>
+    <input id="ccname" class="ccinput" value="${esc(name)}" placeholder="tool name"
+           onkeydown="if(event.key==='Enter')submitCreateFromCatalog(); else if(event.key==='Escape')closeCreate();">
+    <div class="section-h">Nominal geometry (read-only)</div>
+    <div class="muted" style="font-size:.82rem;margin-bottom:.2rem">What you're creating from &mdash; the catalog's published spec.</div>
+    ${geomRows}
+    ${made?`<div class="muted" style="margin-top:.8rem">${made} tool${made===1?"":"s"} already created from this catalog record.</div>`:""}
+    <div class="arow">
+      <button class="mini reject" onclick="closeCreate()">Cancel</button>
+      <button class="mini confirm" onclick="submitCreateFromCatalog()">Create tool</button>
+    </div>`;
+  $("#ccreate").style.display="flex";
+  setTimeout(()=>{ const i=$("#ccname"); if(i){ i.focus(); i.select(); } },30);
+}
+function closeCreate(){ $("#ccreate").style.display="none"; _ccFrom=null; }
+async function submitCreateFromCatalog(){
+  if(!_ccFrom) return;
+  const id=_ccFrom, name=(($("#ccname")||{}).value||"").trim();
+  try{
+    const inst=await api("POST","/tool-catalog-records/"+id+"/create-instance", name?{name}:{});
+    closeCreate();
+    toast(`Created tool "${cf(inst,"name")||rid(inst).slice(0,8)}" — unbound, linked to this catalog record.`);
+    refresh();   // re-pull instances so the new tool (and the count) reflect it
+  }catch(e){ toast(e.message); }
+}
+
 // ---- Audit -----------------------------------------------------------------
 function renderAudit(){
   if(!state.audit.length) return `<div class="empty">No audit entries.</div>`;
   return `<div class="card"><table><tr><th>when</th><th>op</th><th>what</th></tr>`+
     state.audit.map(l=>`<tr><td class="muted">${esc((l.timestamp||"").replace("T"," ").slice(0,16))}</td>
-      <td>${esc(l.operation)}</td><td>${esc(l.entity_type)} <span class="id">${esc((l.entity_id||"").slice(0,8))}</span></td></tr>`).join("")+
+      <td>${esc(l.operation)}</td><td>${esc(l.entity_type)} ${idLink(l.entity_id)}</td></tr>`).join("")+
     `</table></div>`;
 }
 

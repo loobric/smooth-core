@@ -178,11 +178,187 @@ def test_set_members(cli):
 
 
 @pytest.mark.integration
+def test_add_and_remove_from_set_round_trip(cli):
+    """add_to_set/remove_from_set against the live members door: add preserves
+    existing members and skips duplicates; remove drops only the named tool."""
+    loobric.create_set("Drawer")
+    sid = cli.list_tool_sets()[0]["internal"]["id"]
+    a = cli.create_tool_record()["internal"]["id"]
+    b = cli.create_tool_record()["internal"]["id"]
+
+    cli.add_to_set(sid, [a])
+    cli.add_to_set(sid, [a, b])                 # `a` already present -> not duplicated
+    ids = [m["tool_record_id"] for m in cli.get_tool_set(sid)["canonical"]["members"]]
+    assert sorted(ids) == sorted([a, b])
+    assert ids.count(a) == 1
+
+    cli.remove_from_set(sid, [a])
+    ids = [m["tool_record_id"] for m in cli.get_tool_set(sid)["canonical"]["members"]]
+    assert ids == [b]                           # only `a` removed, `b` kept
+
+
+@pytest.mark.integration
+def test_show_tool_set_renders_members(cli, capsys):
+    loobric.create_set("Drawer")
+    sid = cli.list_tool_sets()[0]["internal"]["id"]
+    inst = cli.create_tool_record()
+    iid = inst["internal"]["id"]
+    cli.set_members(sid, [{"tool_record_id": iid, "number": 5}])
+    loobric.show_tool_set(sid)
+    out = capsys.readouterr().out
+    assert "Tool Set" in out and "Members: 1" in out
+    assert "T5" in out                          # the member's number, rendered
+    assert iid[:8] in out or "(no #)" not in out  # the resolved tool, not a bare blank
+
+
+@pytest.mark.integration
 def test_catalog_records(cli):
-    rec = cli.create_catalog_record()
+    rec = cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
     rid = rec["internal"]["id"]
+    # The server stamps provenance — the client never wrote a `source`.
+    assert rec["canonical"]["name"]["source"] == "asserted:manufacturer:kennametal"
+    assert rec["canonical"]["geometry"]["diameter"]["source"] == \
+        "asserted:manufacturer:kennametal"
     assert any(r["internal"]["id"] == rid for r in cli.list_catalog_records())
     assert cli.get_catalog_record(rid)["internal"]["id"] == rid
+
+
+@pytest.mark.integration
+def test_create_catalog_record_via_cli_stdin(cli, capsys, monkeypatch):
+    """The acceptance path: JSON on stdin + --source -> a stamped record."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Spot Drill"}, '
+                                    '"manufacturer": {"value": "Acme"}, '
+                                    '"product_code": {"value": "SD-90"}}'))
+    loobric.create_catalog_record(source="manufacturer:acme")
+    out = capsys.readouterr().out
+    assert "Spot Drill" in out and "asserted:manufacturer:acme" in out
+    rec = cli.list_catalog_records()[0]
+    assert rec["canonical"]["product_code"]["value"] == "SD-90"
+    assert rec["canonical"]["product_code"]["source"] == "asserted:manufacturer:acme"
+
+
+@pytest.mark.integration
+def test_create_catalog_record_identity_floor(cli, monkeypatch):
+    """Missing manufacturer/product_code -> the server rejects it (HTTP 400)."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Nameless"}}'))
+    with pytest.raises(loobric.HTTPError):
+        cli.create_catalog_record(source="human@cli",
+                                  fields={"name": {"value": "Nameless"}})
+
+
+@pytest.mark.integration
+def test_catalog_resolver_by_product_code_and_ambiguity(cli, capsys):
+    """The resolver accepts id/name/product_code; an ambiguous name prints
+    candidates rather than guessing."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Endmill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "A-100"}})
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Endmill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "A-200"}})
+    # Unique product_code resolves cleanly.
+    loobric.show_catalog_record("A-200")
+    out = capsys.readouterr().out
+    assert "A-200" in out and "asserted:manufacturer:acme" in out
+    # The shared name is ambiguous -> candidates listed, no guess.
+    with pytest.raises(SystemExit):
+        loobric.show_catalog_record("Endmill")
+    err = capsys.readouterr().err
+    assert "ambiguous" in err and "A-100" in err and "A-200" in err
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_makes_an_unbound_linked_instance(cli, capsys):
+    """End to end (M2 #26): author a catalog record, then create-record
+    --from-catalog -> a new UNBOUND instance that links the catalog type with
+    requester-asserted provenance, measured geometry and status unknown."""
+    cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
+    capsys.readouterr()
+
+    loobric.create_record_from_catalog("B201")          # resolve by product code
+    out = capsys.readouterr().out
+    assert "unbound" in out and "1/4in 2FL Endmill" in out
+
+    instances = cli.list_tool_records()
+    assert len(instances) == 1
+    inst = instances[0]
+    link = inst["canonical"]["catalog_type_id"]
+    assert link["value"] and link["source"].startswith("asserted:")
+    assert inst["canonical"]["geometry"] == {}          # measured geometry unknown
+    # Unbound: no machine entry references it.
+    assert cli.list_entries() == []
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_with_qa_stamps_manufacturer_provenance(
+        cli, capsys, tmp_path):
+    """End to end (M2 #27): create-record --from-catalog --qa qa.json --cert ->
+    an UNBOUND instance whose MEASURED geometry carries observed:manufacturer@
+    <serial> (the middle rung of the gradient — manufacturer QA, not the shop)."""
+    cli.create_catalog_record(source="manufacturer:kennametal", fields={
+        "name": {"value": "1/4in 2FL Endmill"},
+        "manufacturer": {"value": "Kennametal"},
+        "product_code": {"value": "B201"},
+        "geometry": {"diameter": {"value": 6.35, "unit": "mm"}},
+    })
+    capsys.readouterr()
+    qa = tmp_path / "qa.json"
+    qa.write_text(json.dumps({"diameter": {"value": 6.34, "unit": "mm"},
+                              "length": {"value": 50.0, "unit": "mm"}}))
+
+    loobric.create_record_from_catalog("B201", qa_path=str(qa),
+                                       cert="kennametal@SN12345")
+    out = capsys.readouterr().out
+    assert "unbound" in out and "SN12345" in out
+
+    inst = cli.list_tool_records()[0]
+    geo = inst["canonical"]["geometry"]
+    assert geo["diameter"]["value"] == 6.34
+    assert geo["diameter"]["source"] == "observed:manufacturer@SN12345"
+    assert geo["length"]["source"] == "observed:manufacturer@SN12345"
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_qa_requires_cert(cli, capsys, tmp_path):
+    """--cert is required iff --qa: the QA file with no cert exits non-zero and
+    creates no instance."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Spot Drill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "SD-90"}})
+    capsys.readouterr()
+    qa = tmp_path / "qa.json"
+    qa.write_text(json.dumps({"diameter": {"value": 3.0, "unit": "mm"}}))
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("SD-90", qa_path=str(qa), cert=None)
+    assert "--qa requires --cert" in capsys.readouterr().err
+    assert cli.list_tool_records() == []
+
+
+@pytest.mark.integration
+def test_create_record_from_catalog_twice_yields_two_instances(cli, capsys):
+    """No dedup: each --from-catalog call mints a new, distinct instance."""
+    cli.create_catalog_record(source="manufacturer:acme", fields={
+        "name": {"value": "Spot Drill"}, "manufacturer": {"value": "Acme"},
+        "product_code": {"value": "SD-90"}})
+    capsys.readouterr()
+    loobric.create_record_from_catalog("SD-90")
+    loobric.create_record_from_catalog("SD-90")
+    ids = {i["internal"]["id"] for i in cli.list_tool_records()}
+    assert len(ids) == 2
 
 
 @pytest.mark.integration

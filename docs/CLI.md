@@ -34,6 +34,41 @@ If you prefer not to install, you can run the script directly with
 `python loobric.py …` from the `smooth-core` directory. Every command below
 works the same way; only the leading word changes.
 
+## Tab-completion (optional)
+
+`loobric` can complete subcommands and flags in your shell. It uses
+[`argcomplete`](https://github.com/kislyuk/argcomplete), which is **optional** —
+the CLI stays stdlib-only and runs fine without it; completion just switches on
+once it is installed and registered.
+
+```bash
+uv pip install -e ".[completion]"     # or: pip install argcomplete
+```
+
+Then register it, **for the same command name you actually type**:
+
+```bash
+# Bash — per-shell (add to ~/.bashrc to make it permanent):
+eval "$(register-python-argcomplete loobric)"        # if installed on PATH
+eval "$(register-python-argcomplete ./loobric.py)"   # if you run ./loobric.py
+
+# Zsh — ensure bashcompinit is loaded first, then the same eval:
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete loobric)"
+```
+
+Prefer global activation (completes every argcomplete-enabled script, once):
+
+```bash
+activate-global-python-argcomplete --user
+```
+
+Now `loobric create-<TAB>` completes to `create-catalog-record`,
+`loobric create-record --<TAB>` lists `--from-catalog --name --qa --cert`, and
+so on. (If you run the script as `./loobric.py`, it must be executable —
+`chmod +x loobric.py` — and the file's `# PYTHON_ARGCOMPLETE_OK` marker lets
+global activation find it.)
+
 ## How authentication works
 
 `loobric` picks credentials in this order:
@@ -239,6 +274,45 @@ loobric create-set NAME
 
 Create a tool set and assert its name. Prints the new set's name and short id.
 
+#### `show-tool-set`
+
+```
+loobric show-tool-set SET
+```
+
+Show one tool set and its members. `SET` resolves by id, name, or unique prefix.
+Lists each member ordered by number, showing the member's number and the
+provenance `source` that vouches for it (`asserted`, `observed` when inherited
+from a machine, or `unknown`), the tool it points at, and that tool's diameter.
+`list-tool-sets` gives the across-the-shop overview (names + member counts); this
+is the drill-in.
+
+#### `add-to-set`
+
+```
+loobric add-to-set SET TOOL [TOOL ...]
+```
+
+Add one or more tool records to a set. `SET` and each `TOOL` resolve by id,
+name, or unique prefix. Existing members (and their numbers) are kept, and a
+tool already in the set is skipped — membership is a set, not a bag. New members
+have no number until the set is linked to a machine (or one is asserted). Prints
+the tools added and the resulting member count.
+
+#### `remove-from-set`
+
+```
+loobric remove-from-set SET TOOL [TOOL ...]
+```
+
+Remove one or more tool records from a set; the rest are kept. `SET` and each
+`TOOL` resolve by id, name, or unique prefix. Prints the tools removed and the
+resulting member count.
+
+> Both verbs are read-modify-write over the server's replace-only members door
+> (`POST /tool-set-records/{id}/members`): they read current membership, apply
+> the change, and write the full list back.
+
 #### `link-machine`
 
 ```
@@ -311,12 +385,22 @@ suggestions again.
 
 ```
 loobric create-record MACHINE TOOL_NUMBER [--name NAME]
+loobric create-record --from-catalog CATALOG [--name NAME]
 ```
 
-Create a brand-new tool record seeded from a machine entry's observed values and
-bind it, in one step. Use this when the machine has a tool the server has never
-seen and you want to promote it to a record. `--name` defaults to the entry's
-description.
+Context-aware: it creates a tool instance from one of two sources, and the
+outcome differs by bind state.
+
+- **Entry form** (`MACHINE TOOL_NUMBER`): seed a brand-new instance from a
+  machine entry's observed values and **bind** it to that tool-table position,
+  in one step. Use this when the machine has a tool the server has never seen.
+  `--name` defaults to the entry's description.
+- **Catalog form** (`--from-catalog CATALOG`): create an instance from a catalog
+  record (resolved by id / unique prefix / name / product code) and leave it
+  **unbound** — a catalog is a type, not a machine position. The new instance
+  links the catalog via `catalog_type_id`; measured geometry and status stay
+  unknown (nominal geometry is reachable through the link). `--name` defaults to
+  the catalog record's name. Each call yields a new, distinct instance.
 
 ### Removing data
 

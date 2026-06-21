@@ -3,6 +3,45 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.2.0] — 2026-06-21
+
+**M2** — author `ToolCatalogRecord`s and create physical tools from them, end to
+end through the CLI and the web UI.
+
+### Added
+- **Catalog-record authoring** — `loobric create-catalog-record`: a seeded,
+  atomic create. The request carries one declared `--source` actor and the
+  nominal `{value, unit}` fields; the **server stamps `asserted:<actor>`** on
+  each (lane discipline — the client never writes provenance). Identity floor
+  (`name` + `manufacturer` + `product_code`) required; spec fields honest-sparse.
+  Plus `list-catalog-records` and `show-catalog-record`.
+- **Catalog → instance** — `POST /tool-catalog-records/{id}/create-instance`
+  creates an **unbound** `ToolInstanceRecord` from a catalog type (`loobric
+  create-record --from-catalog`). Optional **manufacturer QA** at creation
+  (`--qa`/`--cert`) stamps measured geometry `observed:manufacturer@<cert>` —
+  the provenance gradient (nominal `asserted` → manufacturer-QA `observed` →
+  shop touch-off `observed`), reusing the existing grammar, no new kind.
+- **Natural-key uniqueness** — a DB unique index on the normalized
+  `(account, manufacturer, product_code)`; a duplicate returns **409** naming
+  the existing record and inviting reuse.
+- **Tool-set membership** — `add-to-set`, `remove-from-set`, and `show-tool-set`
+  (the membership door is replace-only; the verbs do a read-modify-write).
+- **Server build identity** — unauthenticated `GET /api/v1/version`
+  (`{version, commit}`); `loobric whoami` now shows the server address and build,
+  so "is this the server/code I expect?" is a one-line check.
+- **Optional shell tab-completion** for `loobric` via `argcomplete` (the CLI
+  stays stdlib-only and fully runnable without it).
+- **Web UI** — browse catalog records with provenance badges; a
+  create-tool-from-catalog form; a tool-set detail page listing members, with
+  per-member remove.
+
+### Changed
+- **Web UI — one consistent open/inspect model**: an item's **name** opens its
+  detail view, its **id** links to the raw schema JSON; the redundant per-item
+  "schema" / "view" buttons were removed.
+- `loobric create-record` is **context-aware** (a machine entry → **bound**; a
+  catalog → **unbound**) and names the outcome.
+
 ## [0.1.0] — 2026-06-19
 
 First tagged release. This is the **v2** server produced by the June 2026 reboot:

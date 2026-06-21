@@ -84,6 +84,21 @@ TOOLSET = {
     "clients": {},
 }
 
+CATALOG = {
+    "internal": {"id": "catalogid1", "version": 1,
+                 "created_at": "t", "updated_at": "t"},
+    "canonical": {
+        "name": {"value": "1/4in 2FL Endmill", "source": "asserted:manufacturer:kennametal"},
+        "manufacturer": {"value": "Kennametal", "source": "asserted:manufacturer:kennametal"},
+        "product_code": {"value": "B201", "source": "asserted:manufacturer:kennametal"},
+        "geometry": {
+            "diameter": {"value": 6.35, "unit": "mm",
+                         "source": "asserted:manufacturer:kennametal"},
+        },
+    },
+    "clients": {},
+}
+
 INBOX_ITEM = {
     "id": "proposalid000000000000000000000000000",
     "confidence": 0.91,
@@ -115,12 +130,21 @@ class Recorder:
                 return {"items": [MACHINE]}
             if endpoint.startswith("/tool-instance-records"):
                 return {"items": [INSTANCE]}
-            if endpoint.startswith("/tool-set-records"):
+            if endpoint == "/tool-set-records":
                 return {"items": [TOOLSET]}
+            if endpoint.startswith("/tool-set-records/"):
+                return TOOLSET                       # GET one set (by id)
             if endpoint.startswith("/tool-table-entry-records"):
                 return {"items": [ENTRY]}
+            if endpoint.startswith("/tool-catalog-records"):
+                return {"items": [CATALOG]}
             if endpoint.startswith("/instance-inbox"):
                 return {"items": [INBOX_ITEM]}
+            if endpoint == "/auth/me":
+                return {"email": "admin@example.com", "role": "admin",
+                        "is_admin": True, "id": "userid1"}
+            if endpoint == "/version":
+                return {"version": "0.1.0", "commit": "abc123def456"}
             if endpoint.startswith("/audit-logs"):
                 return {"logs": [{"operation": "BIND", "created_at": "t",
                                   "entity_type": "tool_table_entry_record",
@@ -138,6 +162,11 @@ class Recorder:
                     **ENTRY["canonical"],
                     "bound_instance_id": {"value": "instanceid1",
                                           "source": "asserted:human@web"}}}
+            if endpoint.endswith("/create-instance"):
+                # the catalog->instance door returns the new (unbound) instance
+                return INSTANCE
+            if endpoint.endswith("/members"):
+                return TOOLSET                       # replace-members door
             if endpoint.endswith("/unbind"):
                 return ENTRY
             if endpoint.endswith("/sync"):
@@ -154,6 +183,8 @@ class Recorder:
                 return TOOLSET
             if endpoint == "/tool-instance-records":
                 return INSTANCE
+            if endpoint == "/tool-catalog-records":
+                return CATALOG
             if endpoint == "/tool-table-entry-records":
                 return ENTRY
         if method == "DELETE":
@@ -297,6 +328,106 @@ def test_create_record_without_name_sends_empty_body(api):
     assert api.last("POST")["body"] == {}
 
 
+def test_create_record_entry_form_routes_to_bind_and_binds(api, capsys):
+    """The dispatcher's entry branch: MACHINE TOOL_NUMBER -> the bind door, and
+    the outcome message names the BOUND result (unchanged from before)."""
+    import types
+    args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                 from_catalog=None, name="quarter inch")
+    loobric.create_record(args)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-table-entry-records/slotid1/bind"
+    assert post["body"] == {"name": "quarter inch"}
+    assert "bound it" in capsys.readouterr().out
+
+
+def test_create_record_catalog_form_routes_to_create_instance_unbound(api, capsys):
+    """The dispatcher's catalog branch: --from-catalog -> the create-instance
+    door, and the outcome message names the UNBOUND result."""
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog="catalogid1", name=None)
+    loobric.create_record(args)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-catalog-records/catalogid1/create-instance"
+    assert post["body"] == {}
+    out = capsys.readouterr().out
+    assert "unbound" in out                     # names the unbound outcome
+    assert "1/4in 2FL Endmill" in out          # catalog name in the message
+
+
+def test_create_record_catalog_form_passes_name_override(api):
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog="catalogid1", name="relabel")
+    loobric.create_record(args)
+    assert api.last("POST")["body"] == {"name": "relabel"}
+
+
+def test_create_record_catalog_qa_passes_qa_payload_and_cert(api, tmp_path):
+    """--qa <file> + --cert flow the geometry-shaped QA payload and the cert
+    through to the create-instance endpoint body (the server composes the
+    observed:manufacturer@<serial> source — the client never sends a raw source)."""
+    qa = tmp_path / "qa.json"
+    qa.write_text('{"diameter": {"value": 6.34, "unit": "mm"}}')
+    loobric.create_record_from_catalog("catalogid1", qa_path=str(qa),
+                                       cert="kennametal@SN12345")
+    body = api.last("POST")["body"]
+    assert api.last("POST")["endpoint"] == \
+        "/tool-catalog-records/catalogid1/create-instance"
+    assert body["qa"] == {"diameter": {"value": 6.34, "unit": "mm"}}
+    assert body["cert"] == "kennametal@SN12345"
+    assert "source" not in str(body)            # client never writes provenance
+
+
+def test_create_record_qa_without_cert_is_rejected(api, capsys, tmp_path):
+    """--cert is required iff --qa: a QA file with no cert exits non-zero."""
+    qa = tmp_path / "qa.json"
+    qa.write_text('{"diameter": {"value": 6.34, "unit": "mm"}}')
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("catalogid1", qa_path=str(qa), cert=None)
+    assert "--qa requires --cert" in capsys.readouterr().err
+    assert not api.of("POST")                    # rejected before any call
+
+
+def test_create_record_cert_without_qa_is_rejected(api, capsys):
+    """The other direction: a cert with no QA to certify exits non-zero."""
+    with pytest.raises(SystemExit):
+        loobric.create_record_from_catalog("catalogid1", qa_path=None,
+                                           cert="kennametal@SN12345")
+    assert "--cert requires --qa" in capsys.readouterr().err
+    assert not api.of("POST")
+
+
+def test_create_record_entry_form_rejects_qa_and_cert(api, capsys):
+    """--qa/--cert are catalog-only: the entry form rejects them up front."""
+    import types
+    qa_args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                    from_catalog=None, name=None,
+                                    qa="qa.json", cert=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(qa_args)
+    assert "only valid with --from-catalog" in capsys.readouterr().err
+
+
+def test_create_record_rejects_mixing_entry_and_catalog_forms(api, capsys):
+    import types
+    args = types.SimpleNamespace(machine="machineid1", tool_number=3,
+                                 from_catalog="catalogid1", name=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(args)
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_create_record_requires_a_source(api, capsys):
+    import types
+    args = types.SimpleNamespace(machine=None, tool_number=None,
+                                 from_catalog=None, name=None)
+    with pytest.raises(SystemExit):
+        loobric.create_record(args)
+    assert "create-record needs" in capsys.readouterr().err
+
+
 def test_resolve_slot_errors_when_tool_number_absent(api, capsys):
     with pytest.raises(SystemExit):
         loobric.bind_entry("machineid1", 99, "instanceid1")
@@ -360,6 +491,128 @@ def test_push_snapshot_mode_is_explicit(api):
     assert api.last("POST")["body"]["mode"] == "snapshot"
 
 
+# ---------------------------------------------------------------------------
+# Tool-set membership: add/remove are read-modify-write over the replace-only
+# members door (GET the set, recompute, POST the full list).
+# ---------------------------------------------------------------------------
+
+def test_client_add_to_set_appends_and_dedupes(api):
+    loobric.Client().add_to_set("setid1", ["instanceid1", "newtool99"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    ids = [m["tool_record_id"] for m in post["body"]["members"]]
+    assert ids.count("instanceid1") == 1     # already a member -> not duplicated
+    assert "newtool99" in ids                # the genuinely new one is appended
+    assert post["body"]["actor"]             # the server stamps provenance from it
+
+
+def test_client_add_to_set_preserves_existing_member_numbers(api):
+    loobric.Client().add_to_set("setid1", ["newtool99"])
+    members = api.last("POST")["body"]["members"]
+    kept = next(m for m in members if m["tool_record_id"] == "instanceid1")
+    assert kept["number"] == 3               # TOOLSET's existing asserted number, preserved
+    added = next(m for m in members if m["tool_record_id"] == "newtool99")
+    assert added["number"] is None           # a fresh member's number is unknown
+
+
+def test_client_remove_from_set_drops_only_the_named_tool(api):
+    loobric.Client().remove_from_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    ids = [m["tool_record_id"] for m in post["body"]["members"]]
+    assert "instanceid1" not in ids
+
+
+def test_add_to_set_cli_resolves_set_and_tools(api, capsys):
+    loobric.add_to_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    assert any(m["tool_record_id"] == "instanceid1" for m in post["body"]["members"])
+    assert "Added" in capsys.readouterr().out
+
+
+def test_remove_from_set_cli_resolves_set_and_tools(api, capsys):
+    loobric.remove_from_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    assert "Removed" in capsys.readouterr().out
+
+
+def test_show_tool_set_lists_members_with_numbers(api, capsys):
+    loobric.show_tool_set("setid1")
+    out = capsys.readouterr().out
+    assert "Tool Set" in out
+    assert "Members: 1" in out
+    assert "1/4 downcut" in out          # member tool name resolved from its id
+    assert "T3" in out                   # the member's number
+
+
+# ---------------------------------------------------------------------------
+# Catalog records (M2): seeded create + browse + provenance.
+# ---------------------------------------------------------------------------
+
+def test_create_catalog_record_posts_actor_and_fields(api, capsys, monkeypatch):
+    """--source becomes the `actor`; the JSON/flags carry values+units; the body
+    never carries a `source` (the server stamps it)."""
+    import io
+    monkeypatch.setattr(loobric.sys, "stdin",
+                        io.StringIO('{"name": {"value": "Endmill"}, '
+                                    '"manufacturer": {"value": "Kennametal"}}'))
+    loobric.create_catalog_record(source="manufacturer:kennametal",
+                                  product_code="B201", diameter=6.35)
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-catalog-records"
+    body = post["body"]
+    assert body["actor"] == "manufacturer:kennametal"
+    assert body["name"] == {"value": "Endmill"}
+    assert body["product_code"] == {"value": "B201"}            # convenience flag
+    assert body["geometry"]["diameter"] == {"value": 6.35, "unit": "mm"}
+    assert "source" not in body                                  # never client-written
+    assert "asserted:manufacturer:kennametal" in capsys.readouterr().out
+
+
+def test_create_catalog_record_surfaces_the_409_reuse_funnel(capsys, monkeypatch):
+    """A natural-key collision (HTTP 409) reaches the user as the server's funnel
+    message — naming the existing record and inviting reuse — not a stack trace."""
+    import io
+    funnel = ("Kennametal B201 already exists as abc123 — create an instance "
+              "from it, or edit that record.")
+
+    def boom(*a, **k):
+        raise loobric.HTTPError(409, funnel)
+
+    monkeypatch.setattr(loobric, "make_request", boom)
+    monkeypatch.setattr(loobric.sys, "stdin", io.StringIO(""))
+    with pytest.raises(SystemExit):
+        loobric._run(loobric.create_catalog_record,
+                     source="manufacturer:kennametal", name="x",
+                     manufacturer="Kennametal", product_code="B201")
+    err = capsys.readouterr().err
+    assert "already exists as abc123" in err
+    assert "create an instance from it" in err
+
+
+def test_list_catalog_records_hits_endpoint_and_shows_identity(api, capsys):
+    loobric.list_catalog_records()
+    assert api.last("GET")["endpoint"] == "/tool-catalog-records"
+    out = capsys.readouterr().out
+    assert "catalogid1" in out and "Kennametal" in out and "B201" in out
+
+
+def test_show_catalog_record_resolves_and_shows_provenance(api, capsys):
+    loobric.show_catalog_record("catalogid1")
+    out = capsys.readouterr().out
+    assert "1/4in 2FL Endmill" in out
+    # every field is shown with its source badge
+    assert "asserted:manufacturer:kennametal" in out
+    assert "diameter" in out
+
+
+def test_show_catalog_record_resolves_by_product_code(api, capsys):
+    loobric.show_catalog_record("B201")
+    assert "1/4in 2FL Endmill" in capsys.readouterr().out
+
+
 def test_audit_reads_logs_list(api, capsys):
     # the /audit-logs response nests rows under "logs" (not "items")
     loobric.list_audit()
@@ -398,10 +651,16 @@ def test_list_keys_shows_revoked_state(monkeypatch, capsys):
     lambda: loobric.bind_entry("machineid1", 3, "instanceid1"),
     lambda: loobric.unbind_entry("machineid1", 3),
     lambda: loobric.create_record_from_entry("machineid1", 3, name="x"),
+    lambda: loobric.create_record_from_catalog("catalogid1"),
     lambda: loobric.link_machine("setid1", "machineid1"),
     lambda: loobric.create_machine("millstone", controller="linuxcnc"),
     lambda: loobric.create_set("Drawer A"),
+    lambda: loobric.add_to_set("setid1", ["instanceid1"]),
+    lambda: loobric.remove_from_set("setid1", ["instanceid1"]),
+    lambda: loobric.show_tool_set("setid1"),
     lambda: loobric.push_table("machineid1", ["3:1/4 downcut:6.35"]),
+    lambda: loobric.list_catalog_records(),
+    lambda: loobric.show_catalog_record("catalogid1"),
 ])
 def test_no_command_touches_the_retired_flat_facade(api, invoke):
     invoke()
@@ -412,3 +671,32 @@ def test_no_command_touches_the_retired_flat_facade(api, invoke):
                 "%s %s hits the retired flat facade %r — the exact v2-cutover "
                 "drift this suite guards against"
                 % (call["method"], call["endpoint"], retired))
+
+
+# ---------------------------------------------------------------------------
+# whoami: account identity + the server's build stamp (the "is this server
+# running my code?" check). New server -> version+commit; old server -> the
+# missing /version endpoint is itself reported as an older build.
+# ---------------------------------------------------------------------------
+
+def test_whoami_shows_server_account_and_build(api, capsys, monkeypatch):
+    monkeypatch.setattr(loobric, "BASE_URL", "http://nas:8000")
+    loobric.whoami()
+    out = capsys.readouterr().out
+    assert "Server: http://nas:8000" in out      # which server we're talking to
+    assert "admin@example.com" in out
+    assert "Build:  0.1.0 (abc123def456)" in out  # what code it's running
+    assert any(c["endpoint"] == "/version" for c in api.of("GET"))
+
+
+def test_whoami_reports_old_server_without_version_endpoint(monkeypatch, capsys):
+    def fake(method, endpoint, **kwargs):
+        if endpoint == "/version":
+            raise loobric.NotFound(404, "Not Found")
+        if endpoint == "/auth/me":
+            return {"email": "a@b", "role": "user", "is_admin": False, "id": "x"}
+        return {}
+    monkeypatch.setattr(loobric, "make_request", fake)
+    loobric.whoami()
+    out = capsys.readouterr().out
+    assert "older server" in out
