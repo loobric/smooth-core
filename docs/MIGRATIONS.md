@@ -35,7 +35,10 @@
    resolve, no three-way merge" ethos). Rollback = restore the pre-migration backup.
 5. **Idempotent migrations.** Each migration checks before it acts (the existing M2 script
    already does this with a column-existence guard). Idempotency is belt-and-suspenders
-   against imperfect baseline detection on legacy databases.
+   against imperfect baseline detection on legacy databases — **and it is mandatory on
+   SQLite**, where the driver auto-commits before DDL, so a `CREATE`/`ALTER` that later
+   fails is *not* rolled back. A failed migration is never recorded, so it is retried on the
+   next boot; the idempotent guard makes that retry safe over partially-applied state.
 
 ## The spine
 
