@@ -450,6 +450,12 @@ class Client:
     def whoami(self) -> Dict[str, Any]:
         return self._call("GET", "/auth/me")
 
+    def server_version(self) -> Dict[str, Any]:
+        """The server's build identity ({version, commit}). Unauthenticated, so
+        it works before login; a NotFound means the server predates the endpoint
+        (an older build)."""
+        return self._call("GET", "/version", require_auth=False)
+
     def change_password(self, current_password: str, new_password: str) -> Dict[str, Any]:
         return self._call("POST", "/auth/change-password",
                           body={"current_password": current_password,
@@ -1373,13 +1379,20 @@ def reset_account(assume_yes=False):
 
 
 def whoami():
-    """Show the authenticated account."""
+    """Show the authenticated account and the server's build identity."""
     me = _client().whoami()
     print(f"  Email: {me.get('email')}")
     print(f"  Role:  {me.get('role')}")
     print(f"  Admin: {me.get('is_admin')}")
     if me.get("id"):
         print(f"  ID:    {me.get('id')}")
+    # Server build identity — also the fastest "is this server running my code?"
+    # check. An older server has no /version endpoint, which is itself the answer.
+    try:
+        v = _client().server_version()
+        print(f"  Server: {v.get('version', '?')} ({v.get('commit', '?')})")
+    except NotFound:
+        print("  Server: unknown — older build with no /version endpoint")
 
 
 def list_audit(limit=50):
@@ -1906,8 +1919,8 @@ Environment Variables:
     logout_parser.set_defaults(func=lambda _: logout())
 
     # Optional shell tab-completion. argcomplete is NOT a dependency — this file
-    # stays stdlib-only and fully runnable without it; if the user has installed
-    # and registered argcomplete (see README/CLI.md), it wires up completion for
+    # stays stdlib-only and fully runnable without it; when argcomplete is
+    # present and registered (see README/CLI.md), it wires up completion for
     # every subcommand and flag derived from this parser. No-op when absent.
     try:
         import argcomplete

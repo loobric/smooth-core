@@ -138,6 +138,11 @@ class Recorder:
                 return {"items": [CATALOG]}
             if endpoint.startswith("/instance-inbox"):
                 return {"items": [INBOX_ITEM]}
+            if endpoint == "/auth/me":
+                return {"email": "admin@example.com", "role": "admin",
+                        "is_admin": True, "id": "userid1"}
+            if endpoint == "/version":
+                return {"version": "0.1.0", "commit": "abc123def456"}
             if endpoint.startswith("/audit-logs"):
                 return {"logs": [{"operation": "BIND", "created_at": "t",
                                   "entity_type": "tool_table_entry_record",
@@ -603,3 +608,30 @@ def test_no_command_touches_the_retired_flat_facade(api, invoke):
                 "%s %s hits the retired flat facade %r — the exact v2-cutover "
                 "drift this suite guards against"
                 % (call["method"], call["endpoint"], retired))
+
+
+# ---------------------------------------------------------------------------
+# whoami: account identity + the server's build stamp (the "is this server
+# running my code?" check). New server -> version+commit; old server -> the
+# missing /version endpoint is itself reported as an older build.
+# ---------------------------------------------------------------------------
+
+def test_whoami_shows_account_and_server_build(api, capsys):
+    loobric.whoami()
+    out = capsys.readouterr().out
+    assert "admin@example.com" in out
+    assert "Server: 0.1.0 (abc123def456)" in out
+    assert any(c["endpoint"] == "/version" for c in api.of("GET"))
+
+
+def test_whoami_reports_old_server_without_version_endpoint(monkeypatch, capsys):
+    def fake(method, endpoint, **kwargs):
+        if endpoint == "/version":
+            raise loobric.NotFound(404, "Not Found")
+        if endpoint == "/auth/me":
+            return {"email": "a@b", "role": "user", "is_admin": False, "id": "x"}
+        return {}
+    monkeypatch.setattr(loobric, "make_request", fake)
+    loobric.whoami()
+    out = capsys.readouterr().out
+    assert "older build" in out

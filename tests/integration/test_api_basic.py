@@ -38,6 +38,18 @@ def test_root_endpoint(client):
 
 
 @pytest.mark.integration
+def test_version_endpoint(client):
+    """The unauthenticated /version endpoint reports the server's build identity
+    (version + git commit) so a client can verify which code a server runs."""
+    from smooth.version import __version__
+    response = client.get("/api/v1/version")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == __version__
+    assert data["commit"]                 # a sha, or 'unknown' — never empty/missing
+
+
+@pytest.mark.integration
 def test_openapi_json_accessible(client):
     """Test that OpenAPI JSON specification is accessible.
     
