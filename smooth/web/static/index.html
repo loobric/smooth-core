@@ -34,6 +34,8 @@
   .muted { color:var(--dim); font-size:.9rem; }
   .row { display:flex; justify-content:space-between; gap:.6rem; align-items:baseline; flex-wrap:wrap; }
   .id { font-family:ui-monospace,monospace; font-size:.8rem; color:var(--dim); }
+  .id.link { color:var(--link); cursor:pointer; text-decoration:underline dotted; text-underline-offset:3px; }
+  .id.link:hover { color:var(--ink); text-decoration-style:solid; }
   .vs { text-align:center; color:var(--dim); margin:.4rem 0; font-size:.9rem; }
   .conf { height:6px; background:var(--line); border-radius:3px; margin:.6rem 0 .3rem; }
   .conf > div { height:100%; border-radius:3px; background:var(--warn); }
@@ -287,9 +289,23 @@ function setTab(t){ state.tab=t; state.catalogSel=null; render(); refresh(); }
 
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
-function showRecord(id){ const t=state.tools.find(x=>rid(x)===id); if(t) showSchema("Tool instance · "+(cf(t,"name")||id.slice(0,8)), t); }
-function showEntry(id){ const s=state.entriesById[id]; if(s) showSchema("Entry · T"+cf(s,"tool_number"), s); }
-function showSet(id){ const s=state.toolsets.find(x=>rid(x)===id); if(s) showSchema("Tool set · "+(cf(s,"name")||id.slice(0,8)), s); }
+// Every id shown in the UI is a link to its record's schema JSON. One resolver
+// serves all item types: it finds the loaded record across every collection and
+// titles the sheet by kind. No per-type "schema" buttons.
+function showById(id){
+  for(const [label,coll] of [["Tool instance",state.tools],["Tool set",state.toolsets],
+                             ["Machine",state.machines],["Catalog record",state.catalogs]]){
+    const r=(coll||[]).find(x=>rid(x)===id);
+    if(r){ showSchema(label+" · "+(cf(r,"name")||(""+id).slice(0,8)), r); return; }
+  }
+  const e=state.entriesById&&state.entriesById[id];
+  if(e){ showSchema("Entry · T"+cf(e,"tool_number"), e); return; }
+  toast("That record isn't loaded in this view.");
+}
+// Render a record id as a clickable schema link. n = chars to show (default 8;
+// pass 0 for the full id).
+function idLink(id,n){ const s=(id==null?"":String(id)); const short=(n===0?s:s.slice(0,n||8));
+  return `<a class="id link" title="${esc(s)}" onclick="showById('${esc(s)}')">${esc(short)}</a>`; }
 
 // ---- Binding lives on the Machines tab (proposals folded in) ----------------
 async function confirmProp(id){ try{ await api("POST","/instance-inbox/"+id+"/confirm"); toast("Bound. Nothing overwritten."); refresh(); }catch(e){ toast(e.message); } }
@@ -363,10 +379,9 @@ function renderTools(){
   return state.tools.map(t=>{
     const dia=cf(t,"geometry.diameter"), shape=cf(t,"geometry.shape"), where=(boundAt[rid(t)]||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showRecord('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
-        <span><span class="id">${esc(rid(t).slice(0,8))}</span>
-          <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button>
-          <button class="mini link" onclick="showRecord('${rid(t)}')">schema</button></span></div>
+      <div class="row"><strong class="link-ish" onclick="showById('${rid(t)}')">${esc(cf(t,"name")||"(unnamed)")}</strong>
+        <span>${idLink(rid(t))}
+          <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
       where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">bound</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
       `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} binding(s)</span>
@@ -381,8 +396,8 @@ function renderToolSets(){
   return state.toolsets.map(s=>{
     const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
-        <span><span class="id">${esc(rid(s).slice(0,8))}</span> <button class="mini link" onclick="showSet('${rid(s)}')">schema</button></span></div>
+      <div class="row"><strong class="link-ish" onclick="showById('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
+        <span>${idLink(rid(s))}</span></div>
       <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
@@ -405,8 +420,8 @@ function renderMachines(){
     const body = entries.length ? entries.map(s=>entryRow(m,s)).join("")
       : `<div class="muted">${state.pendingOnly?"nothing pending on this machine":"empty tool table"}</div>`;
     return `<div class="card">
-      <div class="row"><strong>${esc(state.machineNames[rid(m)])}</strong>
-        <span class="rowact"><span class="muted">${esc(cf(m,"controller_type")||"")}</span>
+      <div class="row"><strong class="link-ish" onclick="showById('${rid(m)}')">${esc(state.machineNames[rid(m)])}</strong>
+        <span class="rowact">${idLink(rid(m))}<span class="muted">${esc(cf(m,"controller_type")||"")}</span>
           <button class="mini create" onclick="createSetFromMachine('${rid(m)}')">Create tool set</button>
           <button class="unbind" onclick="deleteMachine('${rid(m)}')">Delete machine</button></span></div>
       ${body}</div>`;
@@ -437,7 +452,7 @@ function entryRow(m,s){
   }
   return `<div class="trow">
     <div class="tinfo">
-      <span class="tnum link-ish" onclick="showEntry('${rid(s)}')">T${cf(s,"tool_number")}</span>
+      <span class="tnum link-ish" onclick="showById('${rid(s)}')">T${cf(s,"tool_number")}</span>
       <span>${esc(entryName(s)||"")}</span>
       <span class="muted">${dia!=null?"&#x2300;"+dia:""}</span>
       ${bound?`<span class="pill bound">${esc(state.toolNames[bound]||bound.slice(0,8))}</span>`:`<span class="pill unbound">unbound</span>`}
@@ -475,8 +490,6 @@ function catalogField(label, leaf){
 }
 function openCatalog(id){ state.tab="catalog"; state.catalogSel=id; render(); }
 function backToCatalog(){ state.catalogSel=null; render(); }
-function showCatalog(id){ const c=state.catalogs.find(x=>rid(x)===id);
-  if(c) showSchema("Catalog record · "+(cf(c,"name")||id.slice(0,8)), c); }
 
 function renderCatalog(){
   if(state.catalogSel) return renderCatalogDetail();
@@ -486,7 +499,7 @@ function renderCatalog(){
     const name=cf(c,"name"), mfr=cf(c,"manufacturer"), pc=cf(c,"product_code");
     return `<div class="card">
       <div class="row"><strong class="link-ish" onclick="openCatalog('${rid(c)}')">${esc(name||"(unnamed)")}</strong>
-        <span class="id">${esc(rid(c).slice(0,8))}</span></div>
+        ${idLink(rid(c))}</div>
       <div class="muted">${mfr?esc(mfr):"<i>manufacturer unknown</i>"}${pc!=null?" &middot; "+esc(pc):""}</div>
       <div class="row" style="margin-top:.6rem"><span class="muted">catalog record</span>
         <span class="rowact">
@@ -512,10 +525,9 @@ function renderCatalogDetail(){
   return `<div class="row" style="margin-bottom:.6rem">
       <button class="mini link" onclick="backToCatalog()">&#x2190; Back to catalog</button>
       <span class="rowact">
-        <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button>
-        <button class="mini link" onclick="showCatalog('${rid(c)}')">schema</button></span></div>
+        <button class="mini create" onclick="openCreateFromCatalog('${rid(c)}')">Create tool from catalog</button></span></div>
     <div class="card">
-      <div class="row"><strong>${esc(cf(c,"name")||"(unnamed)")}</strong><span class="id">${esc(rid(c))}</span></div>
+      <div class="row"><strong>${esc(cf(c,"name")||"(unnamed)")}</strong>${idLink(rid(c),0)}</div>
       ${made?`<div class="muted" style="margin-top:.3rem">${made} tool${made===1?"":"s"} created from this catalog record.</div>`:""}
       <div class="explain" style="margin-top:.6rem">Each field shows its value and the <b>source</b> that vouches for it:
         ${provBadge("asserted")} a declared / nominal claim &middot;
@@ -582,7 +594,7 @@ function renderAudit(){
   if(!state.audit.length) return `<div class="empty">No audit entries.</div>`;
   return `<div class="card"><table><tr><th>when</th><th>op</th><th>what</th></tr>`+
     state.audit.map(l=>`<tr><td class="muted">${esc((l.timestamp||"").replace("T"," ").slice(0,16))}</td>
-      <td>${esc(l.operation)}</td><td>${esc(l.entity_type)} <span class="id">${esc((l.entity_id||"").slice(0,8))}</span></td></tr>`).join("")+
+      <td>${esc(l.operation)}</td><td>${esc(l.entity_type)} ${idLink(l.entity_id)}</td></tr>`).join("")+
     `</table></div>`;
 }
 
