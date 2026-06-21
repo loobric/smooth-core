@@ -274,6 +274,19 @@ loobric create-set NAME
 
 Create a tool set and assert its name. Prints the new set's name and short id.
 
+#### `show-tool-set`
+
+```
+loobric show-tool-set SET
+```
+
+Show one tool set and its members. `SET` resolves by id, name, or unique prefix.
+Lists each member ordered by number, showing the member's number and the
+provenance `source` that vouches for it (`asserted`, `observed` when inherited
+from a machine, or `unknown`), the tool it points at, and that tool's diameter.
+`list-tool-sets` gives the across-the-shop overview (names + member counts); this
+is the drill-in.
+
 #### `add-to-set`
 
 ```

@@ -198,6 +198,20 @@ def test_add_and_remove_from_set_round_trip(cli):
 
 
 @pytest.mark.integration
+def test_show_tool_set_renders_members(cli, capsys):
+    loobric.create_set("Drawer")
+    sid = cli.list_tool_sets()[0]["internal"]["id"]
+    inst = cli.create_tool_record()
+    iid = inst["internal"]["id"]
+    cli.set_members(sid, [{"tool_record_id": iid, "number": 5}])
+    loobric.show_tool_set(sid)
+    out = capsys.readouterr().out
+    assert "Tool Set" in out and "Members: 1" in out
+    assert "T5" in out                          # the member's number, rendered
+    assert iid[:8] in out or "(no #)" not in out  # the resolved tool, not a bare blank
+
+
+@pytest.mark.integration
 def test_catalog_records(cli):
     rec = cli.create_catalog_record(source="manufacturer:kennametal", fields={
         "name": {"value": "1/4in 2FL Endmill"},

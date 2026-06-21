@@ -538,6 +538,15 @@ def test_remove_from_set_cli_resolves_set_and_tools(api, capsys):
     assert "Removed" in capsys.readouterr().out
 
 
+def test_show_tool_set_lists_members_with_numbers(api, capsys):
+    loobric.show_tool_set("setid1")
+    out = capsys.readouterr().out
+    assert "Tool Set" in out
+    assert "Members: 1" in out
+    assert "1/4 downcut" in out          # member tool name resolved from its id
+    assert "T3" in out                   # the member's number
+
+
 # ---------------------------------------------------------------------------
 # Catalog records (M2): seeded create + browse + provenance.
 # ---------------------------------------------------------------------------
@@ -648,6 +657,7 @@ def test_list_keys_shows_revoked_state(monkeypatch, capsys):
     lambda: loobric.create_set("Drawer A"),
     lambda: loobric.add_to_set("setid1", ["instanceid1"]),
     lambda: loobric.remove_from_set("setid1", ["instanceid1"]),
+    lambda: loobric.show_tool_set("setid1"),
     lambda: loobric.push_table("machineid1", ["3:1/4 downcut:6.35"]),
     lambda: loobric.list_catalog_records(),
     lambda: loobric.show_catalog_record("catalogid1"),

@@ -809,6 +809,43 @@ def list_tool_sets():
         print("=" * 80)
 
 
+def show_tool_set(set_handle):
+    """Show one tool set and its members: each member's number (with the source
+    that vouches for it), the tool it points at, and that tool's geometry."""
+    s = _resolve_tool_set(set_handle)
+    members = (s.get("canonical") or {}).get("members") or []
+    print(f"\nTool Set {_rid(s)}")
+    print("=" * 78)
+    print(f"  Name: {_cval(s, 'name') or '(unnamed)'}")
+    machine = _cval(s, "machine_id")
+    if machine:
+        mname = {_rid(m): _cval(m, "name") for m in _client().list_machines()}.get(machine)
+        print(f"  Machine: {mname or str(machine)[:8]} (member numbers inherited)")
+    else:
+        print("  Machine: not linked")
+    print(f"  Members: {len(members)}")
+    if not members:
+        print("  (none yet — add tools with 'loobric add-to-set')")
+        print("=" * 78)
+        return
+    tools = {_rid(t): t for t in _client().list_tool_records()}
+
+    def _num(m):
+        v = (m.get("number") or {}).get("value")
+        return v if v is not None else float("inf")
+
+    for m in sorted(members, key=_num):
+        tid = m.get("tool_record_id")
+        num = m.get("number") or {}
+        t = tools.get(tid)
+        tname = (_cval(t, "name") if t else None) or (str(tid)[:8] if tid else "?")
+        ndisp = f"T{num['value']}" if num.get("value") is not None else "(no #)"
+        dia = _cval(t, "geometry", "diameter") if t else None
+        extra = f"  ⌀{dia}" if dia is not None else ""
+        print(f"  {ndisp:>6}  {tname}{extra}  [{num.get('source', 'unknown')}]")
+    print("=" * 78)
+
+
 def add_to_set(set_handle, tools):
     """Add one or more tools to a tool set (existing members are kept)."""
     s = _resolve_tool_set(set_handle)
@@ -1711,6 +1748,17 @@ Environment Variables:
         description="List the user's tool sets (named collections of ToolRecords)."
     )
     list_tool_sets_parser.set_defaults(func=lambda args: list_tool_sets())
+
+    # === show-tool-set ===
+    show_tool_set_parser = subparsers.add_parser(
+        "show-tool-set",
+        help="Show one tool set and its members",
+        description="Show a tool set's members — each member's number (with the "
+                    "source that vouches for it), the tool, and its geometry. SET "
+                    "resolves by id, name, or unique prefix.",
+    )
+    show_tool_set_parser.add_argument("set", help="Tool set id, name, or unique prefix")
+    show_tool_set_parser.set_defaults(func=lambda args: show_tool_set(args.set))
 
     # === link-machine ===
     link_parser = subparsers.add_parser(
