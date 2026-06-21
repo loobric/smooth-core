@@ -28,7 +28,10 @@ describes the system as it exists in the code. Planned capabilities live in
 
 ### 3. Data Layer
 - **SQLAlchemy ORM** with **SQLite** as the supported database
-- **Alembic migrations** for schema versioning
+- **Schema creation** on startup via `create_all` (creates missing tables only).
+  There is **no migration framework yet** — evolving columns on an existing
+  database is a known gap tracked in [ROADMAP.md](../ROADMAP.md). Until then,
+  schema changes that alter existing tables ship with a one-off script.
 - JSON columns for tool geometry, offsets, and metadata
 
 ### 4. Structured Logging
@@ -67,6 +70,6 @@ Not yet implemented (see roadmap): rate limiting, webhook signing, encryption at
 
 ## Dependencies
 
-- Python 3.9+
+- Python 3.11+
 - SQLite
-- FastAPI, SQLAlchemy, Alembic, Pydantic (see `requirements.txt`)
+- FastAPI, SQLAlchemy, Pydantic (see `pyproject.toml`)

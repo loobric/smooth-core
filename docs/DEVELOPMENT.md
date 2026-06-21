@@ -48,15 +48,13 @@ smooth-core/
 │   ├── auth/            # Authentication & authorization
 │   ├── contract/        # Authoritative contract models (tool schema, §10)
 │   ├── database/        # Database models and sessions
-│   ├── models/          # Data models and schemas
-│   ├── notifications/   # Notification system
-│   └── web/            # Web UI templates and static assets
+│   └── web/             # Web UI (single static file + assets)
 ├── tests/               # Test suite
 │   ├── contract/        # Schema contract tests (golden fixtures)
 │   ├── fixtures/        # Test fixtures
 │   ├── integration/     # Integration tests
 │   └── unit/            # Unit tests (includes test_loobric_cli.py)
-├── migrations/          # Database migrations
+├── scripts/             # One-off maintenance/migration scripts
 └── docs/                # Documentation
 ```
 
@@ -101,15 +99,18 @@ def test_unauthenticated_endpoint(client, disable_auth):
 - **Use fixtures**: Create reusable fixtures for common auth scenarios (admin user, normal user, etc.)
 - **Test auth failures**: Verify that endpoints properly reject unauthenticated/unauthorized requests
 
-## Database Migrations
+## Database Schema & Migrations
 
-```bash
-# Create new migration
-alembic revision --autogenerate -m "description"
+Tables are created on startup by `init_db()` (`smooth/database/session.py`), which
+calls SQLAlchemy `create_all` — it creates **missing tables only** and never alters
+existing ones.
 
-# Apply migrations
-alembic upgrade head
-```
+There is **no migration framework** (no Alembic). A schema change that alters an
+existing table currently ships as a one-off, idempotent script under `scripts/`
+(e.g. `scripts/migrate_m2_catalog_natural_key.py`), run by hand against the database.
+A first-class migration spine is the top open item on [ROADMAP.md](../ROADMAP.md);
+until it lands, treat cross-version upgrades on populated databases as unsupported
+without running the matching script.
 
 
 ## Testing API Endpoints
