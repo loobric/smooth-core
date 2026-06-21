@@ -102,15 +102,15 @@ def test_unauthenticated_endpoint(client, disable_auth):
 ## Database Schema & Migrations
 
 Tables are created on startup by `init_db()` (`smooth/database/session.py`), which
-calls SQLAlchemy `create_all` — it creates **missing tables only** and never alters
-existing ones.
+calls SQLAlchemy `create_all` (missing tables only) and then runs the **migration
+spine** (`smooth/migrations/`) to evolve existing tables. There is no Alembic — the
+spine is a small in-repo, forward-only runner; see [MIGRATIONS.md](MIGRATIONS.md).
 
-There is **no migration framework** (no Alembic). A schema change that alters an
-existing table currently ships as a one-off, idempotent script under `scripts/`
-(e.g. `scripts/migrate_m2_catalog_natural_key.py`), run by hand against the database.
-A first-class migration spine is the top open item on [ROADMAP.md](../ROADMAP.md);
-until it lands, treat cross-version upgrades on populated databases as unsupported
-without running the matching script.
+To change the schema of an existing table, add a migration file
+`smooth/migrations/NNNN_name.py` exposing `revision`, `name`, and an **idempotent**
+`upgrade(conn)` (guard every change — on SQLite a failed DDL is not rolled back, so a
+failed migration is retried and must tolerate partial state). It runs automatically on
+the next startup, and the applied set is recorded in the `schema_migrations` table.
 
 
 ## Testing API Endpoints
