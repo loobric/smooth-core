@@ -77,6 +77,31 @@ def init_db() -> None:
     else:
         print(f"Database schema: up to date ({len(after)} tables)")
 
+    # Schema migration spine: stamp a baseline on fresh/legacy databases and
+    # apply any pending migrations (idempotent). See docs/MIGRATIONS.md. A
+    # failure raises MigrationError and aborts startup rather than serving a
+    # half-migrated database.
+    from smooth.migrations import run_migrations, safety_backup
+
+    def _safety_backup() -> None:
+        path = safety_backup(engine)
+        if path:
+            print(f"Database schema: pre-migration backup written to {path}")
+
+    app_tables_before = before - {"schema_migrations", "sqlite_sequence"}
+    result = run_migrations(
+        engine,
+        fresh=(len(app_tables_before) == 0),
+        backup_fn=_safety_backup,
+    )
+    if result.applied:
+        print(f"Database schema: applied migration(s) {', '.join(result.applied)} "
+              f"(head {result.head})")
+    elif result.stamped:
+        print(f"Database schema: recorded baseline (head {result.head})")
+    else:
+        print(f"Database schema: migrations up to date (head {result.head})")
+
     # One-time data normalization (idempotent): rows created while the
     # ToolSet facade was still named "Library" carry type='library'; the
     # facade now reads only type='set' (2026-06-11 nomenclature purge).
