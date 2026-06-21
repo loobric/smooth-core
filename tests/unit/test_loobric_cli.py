@@ -130,8 +130,10 @@ class Recorder:
                 return {"items": [MACHINE]}
             if endpoint.startswith("/tool-instance-records"):
                 return {"items": [INSTANCE]}
-            if endpoint.startswith("/tool-set-records"):
+            if endpoint == "/tool-set-records":
                 return {"items": [TOOLSET]}
+            if endpoint.startswith("/tool-set-records/"):
+                return TOOLSET                       # GET one set (by id)
             if endpoint.startswith("/tool-table-entry-records"):
                 return {"items": [ENTRY]}
             if endpoint.startswith("/tool-catalog-records"):
@@ -163,6 +165,8 @@ class Recorder:
             if endpoint.endswith("/create-instance"):
                 # the catalog->instance door returns the new (unbound) instance
                 return INSTANCE
+            if endpoint.endswith("/members"):
+                return TOOLSET                       # replace-members door
             if endpoint.endswith("/unbind"):
                 return ENTRY
             if endpoint.endswith("/sync"):
@@ -488,6 +492,53 @@ def test_push_snapshot_mode_is_explicit(api):
 
 
 # ---------------------------------------------------------------------------
+# Tool-set membership: add/remove are read-modify-write over the replace-only
+# members door (GET the set, recompute, POST the full list).
+# ---------------------------------------------------------------------------
+
+def test_client_add_to_set_appends_and_dedupes(api):
+    loobric.Client().add_to_set("setid1", ["instanceid1", "newtool99"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    ids = [m["tool_record_id"] for m in post["body"]["members"]]
+    assert ids.count("instanceid1") == 1     # already a member -> not duplicated
+    assert "newtool99" in ids                # the genuinely new one is appended
+    assert post["body"]["actor"]             # the server stamps provenance from it
+
+
+def test_client_add_to_set_preserves_existing_member_numbers(api):
+    loobric.Client().add_to_set("setid1", ["newtool99"])
+    members = api.last("POST")["body"]["members"]
+    kept = next(m for m in members if m["tool_record_id"] == "instanceid1")
+    assert kept["number"] == 3               # TOOLSET's existing asserted number, preserved
+    added = next(m for m in members if m["tool_record_id"] == "newtool99")
+    assert added["number"] is None           # a fresh member's number is unknown
+
+
+def test_client_remove_from_set_drops_only_the_named_tool(api):
+    loobric.Client().remove_from_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    ids = [m["tool_record_id"] for m in post["body"]["members"]]
+    assert "instanceid1" not in ids
+
+
+def test_add_to_set_cli_resolves_set_and_tools(api, capsys):
+    loobric.add_to_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    assert any(m["tool_record_id"] == "instanceid1" for m in post["body"]["members"])
+    assert "Added" in capsys.readouterr().out
+
+
+def test_remove_from_set_cli_resolves_set_and_tools(api, capsys):
+    loobric.remove_from_set("setid1", ["instanceid1"])
+    post = api.last("POST")
+    assert post["endpoint"] == "/tool-set-records/setid1/members"
+    assert "Removed" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
 # Catalog records (M2): seeded create + browse + provenance.
 # ---------------------------------------------------------------------------
 
@@ -595,6 +646,8 @@ def test_list_keys_shows_revoked_state(monkeypatch, capsys):
     lambda: loobric.link_machine("setid1", "machineid1"),
     lambda: loobric.create_machine("millstone", controller="linuxcnc"),
     lambda: loobric.create_set("Drawer A"),
+    lambda: loobric.add_to_set("setid1", ["instanceid1"]),
+    lambda: loobric.remove_from_set("setid1", ["instanceid1"]),
     lambda: loobric.push_table("machineid1", ["3:1/4 downcut:6.35"]),
     lambda: loobric.list_catalog_records(),
     lambda: loobric.show_catalog_record("catalogid1"),

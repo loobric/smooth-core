@@ -321,6 +321,39 @@ class Client:
         return self._call("POST", f"/tool-set-records/{set_id}/members",
                           body={"members": members, "actor": actor})
 
+    def _member_payload(self, set_id: str) -> List[Dict[str, Any]]:
+        """Current membership as the `{tool_record_id, number}` payload the
+        members door expects (number is the bare int, or None for unknown)."""
+        rec = self.get_tool_set(set_id)
+        out = []
+        for m in (rec.get("canonical") or {}).get("members") or []:
+            num = m.get("number")
+            out.append({"tool_record_id": m["tool_record_id"],
+                        "number": num.get("value") if isinstance(num, dict) else num})
+        return out
+
+    def add_to_set(self, set_id: str, tool_record_ids: List[str],
+                   actor: str = "human@cli") -> Dict[str, Any]:
+        """Add tool record(s) to a set, keeping existing members and their
+        numbers. Tools already in the set are skipped — membership is a set, not
+        a bag. Read-modify-write over the replace-only members door."""
+        members = self._member_payload(set_id)
+        have = {m["tool_record_id"] for m in members}
+        for tid in tool_record_ids:
+            if tid not in have:
+                members.append({"tool_record_id": tid, "number": None})
+                have.add(tid)
+        return self.set_members(set_id, members, actor)
+
+    def remove_from_set(self, set_id: str, tool_record_ids: List[str],
+                        actor: str = "human@cli") -> Dict[str, Any]:
+        """Remove tool record(s) from a set, keeping the rest. Read-modify-write
+        over the replace-only members door."""
+        drop = set(tool_record_ids)
+        members = [m for m in self._member_payload(set_id)
+                   if m["tool_record_id"] not in drop]
+        return self.set_members(set_id, members, actor)
+
     # -- machines ------------------------------------------------------------
     def list_machines(self) -> List[Dict[str, Any]]:
         return self._call("GET", "/machine-records").get("items", [])
@@ -774,6 +807,28 @@ def list_tool_sets():
             print(f"  Updated: {_ival(tool_set, 'updated_at')}")
         print(f"  Version: {_ival(tool_set, 'version')}")
         print("=" * 80)
+
+
+def add_to_set(set_handle, tools):
+    """Add one or more tools to a tool set (existing members are kept)."""
+    s = _resolve_tool_set(set_handle)
+    recs = [_resolve_record(t) for t in tools]
+    updated = _client().add_to_set(_rid(s), [_rid(r) for r in recs])
+    n = len((updated.get("canonical") or {}).get("members") or [])
+    label = _cval(s, "name") or str(_rid(s))[:8]
+    names = ", ".join(_cval(r, "name") or str(_rid(r))[:8] for r in recs)
+    print(f"✓ Added {len(recs)} tool(s) to '{label}' — {names}. Now {n} member(s).")
+
+
+def remove_from_set(set_handle, tools):
+    """Remove one or more tools from a tool set (the rest are kept)."""
+    s = _resolve_tool_set(set_handle)
+    recs = [_resolve_record(t) for t in tools]
+    updated = _client().remove_from_set(_rid(s), [_rid(r) for r in recs])
+    n = len((updated.get("canonical") or {}).get("members") or [])
+    label = _cval(s, "name") or str(_rid(s))[:8]
+    names = ", ".join(_cval(r, "name") or str(_rid(r))[:8] for r in recs)
+    print(f"✓ Removed {len(recs)} tool(s) from '{label}' — {names}. Now {n} member(s).")
 
 
 def list_pending():
@@ -1804,6 +1859,29 @@ Environment Variables:
     )
     create_set_parser.add_argument("name", help="Tool set name")
     create_set_parser.set_defaults(func=lambda args: create_set(args.name))
+
+    add_to_set_parser = subparsers.add_parser(
+        "add-to-set", help="Add one or more tools to a tool set",
+        description="Append tool record(s) to a set's membership. Existing "
+                    "members (and their numbers) are kept; a tool already in the "
+                    "set is skipped. SET and each TOOL resolve by id, name, or "
+                    "unique prefix.",
+    )
+    add_to_set_parser.add_argument("set", help="Tool set id, name, or unique prefix")
+    add_to_set_parser.add_argument("tool", nargs="+",
+                                   help="Tool record id(s), name(s), or unique prefix(es)")
+    add_to_set_parser.set_defaults(func=lambda args: add_to_set(args.set, args.tool))
+
+    remove_from_set_parser = subparsers.add_parser(
+        "remove-from-set", help="Remove one or more tools from a tool set",
+        description="Remove tool record(s) from a set's membership; the rest are "
+                    "kept. SET and each TOOL resolve by id, name, or unique prefix.",
+    )
+    remove_from_set_parser.add_argument("set", help="Tool set id, name, or unique prefix")
+    remove_from_set_parser.add_argument("tool", nargs="+",
+                                        help="Tool record id(s), name(s), or unique prefix(es)")
+    remove_from_set_parser.set_defaults(
+        func=lambda args: remove_from_set(args.set, args.tool))
 
     # === create-catalog-record ===
     create_catalog_parser = subparsers.add_parser(

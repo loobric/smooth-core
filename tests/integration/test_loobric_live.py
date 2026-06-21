@@ -178,6 +178,26 @@ def test_set_members(cli):
 
 
 @pytest.mark.integration
+def test_add_and_remove_from_set_round_trip(cli):
+    """add_to_set/remove_from_set against the live members door: add preserves
+    existing members and skips duplicates; remove drops only the named tool."""
+    loobric.create_set("Drawer")
+    sid = cli.list_tool_sets()[0]["internal"]["id"]
+    a = cli.create_tool_record()["internal"]["id"]
+    b = cli.create_tool_record()["internal"]["id"]
+
+    cli.add_to_set(sid, [a])
+    cli.add_to_set(sid, [a, b])                 # `a` already present -> not duplicated
+    ids = [m["tool_record_id"] for m in cli.get_tool_set(sid)["canonical"]["members"]]
+    assert sorted(ids) == sorted([a, b])
+    assert ids.count(a) == 1
+
+    cli.remove_from_set(sid, [a])
+    ids = [m["tool_record_id"] for m in cli.get_tool_set(sid)["canonical"]["members"]]
+    assert ids == [b]                           # only `a` removed, `b` kept
+
+
+@pytest.mark.integration
 def test_catalog_records(cli):
     rec = cli.create_catalog_record(source="manufacturer:kennametal", fields={
         "name": {"value": "1/4in 2FL Endmill"},

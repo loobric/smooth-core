@@ -274,6 +274,32 @@ loobric create-set NAME
 
 Create a tool set and assert its name. Prints the new set's name and short id.
 
+#### `add-to-set`
+
+```
+loobric add-to-set SET TOOL [TOOL ...]
+```
+
+Add one or more tool records to a set. `SET` and each `TOOL` resolve by id,
+name, or unique prefix. Existing members (and their numbers) are kept, and a
+tool already in the set is skipped — membership is a set, not a bag. New members
+have no number until the set is linked to a machine (or one is asserted). Prints
+the tools added and the resulting member count.
+
+#### `remove-from-set`
+
+```
+loobric remove-from-set SET TOOL [TOOL ...]
+```
+
+Remove one or more tool records from a set; the rest are kept. `SET` and each
+`TOOL` resolve by id, name, or unique prefix. Prints the tools removed and the
+resulting member count.
+
+> Both verbs are read-modify-write over the server's replace-only members door
+> (`POST /tool-set-records/{id}/members`): they read current membership, apply
+> the change, and write the full list back.
+
 #### `link-machine`
 
 ```
