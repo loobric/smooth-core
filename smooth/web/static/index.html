@@ -194,7 +194,7 @@
 // Machines is the ONE binding surface — proposals (the old Inbox) are folded in
 // as a "pending review" band/filter on the entries themselves.
 const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"]];
-let state = { tab:"machines", pendingOnly:false, catalogSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
+let state = { tab:"machines", pendingOnly:false, catalogSel:null, setSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
               machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
 
 const $ = (s) => document.querySelector(s);
@@ -285,7 +285,7 @@ function render(){
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
   $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit}[state.tab]();
 }
-function setTab(t){ state.tab=t; state.catalogSel=null; render(); refresh(); }
+function setTab(t){ state.tab=t; state.catalogSel=null; state.setSel=null; render(); refresh(); }
 
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
@@ -329,7 +329,7 @@ async function deleteEntry(id){
   try{ await api("DELETE","/tool-table-entry-records/"+id); toast("Removed entry."); refresh(); }catch(e){ toast(e.message); } }
 async function deleteSet(id){ const s=state.toolsets.find(x=>rid(x)===id);
   if(!(await confirmDialog(`Delete tool set "${cf(s,"name")||id.slice(0,8)}"? The tools are not deleted.`))) return;
-  try{ await api("DELETE","/tool-set-records/"+id); toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
+  try{ await api("DELETE","/tool-set-records/"+id); if(state.setSel===id) state.setSel=null; toast("Deleted set."); refresh(); }catch(e){ toast(e.message); } }
 
 // ---- tool set from a machine (orchestrates existing canonical doors) --------
 function _boundInstances(machineId){
@@ -391,19 +391,54 @@ function renderTools(){
 }
 
 // ---- Tool Sets -------------------------------------------------------------
+function openSet(id){ state.tab="toolsets"; state.setSel=id; render(); }
+function backToToolSets(){ state.setSel=null; render(); }
+
 function renderToolSets(){
+  if(state.setSel) return renderToolSetDetail();
   if(!state.toolsets.length) return `<div class="empty">No tool sets yet.</div>`;
   return state.toolsets.map(s=>{
     const machine=cf(s,"machine_id"), members=(s.canonical.members||[]);
     return `<div class="card">
-      <div class="row"><strong class="link-ish" onclick="showById('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
+      <div class="row"><strong class="link-ish" onclick="openSet('${rid(s)}')">${esc(cf(s,"name")||"(unnamed)")}</strong>
         <span>${idLink(rid(s))}</span></div>
       <div class="muted">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8)):" &middot; not linked to a machine"}</div>
       <div class="row" style="margin-top:.6rem"><span class="rowact">
+        <button class="mini link" onclick="openSet('${rid(s)}')">View members</button>
         ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
         <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
     </div>`;
   }).join("");
+}
+function renderToolSetDetail(){
+  const s=state.toolsets.find(x=>rid(x)===state.setSel);
+  if(!s) return `<div class="empty">Tool set not found.<br><span class="link-ish" onclick="backToToolSets()">Back to tool sets</span></div>`;
+  const machine=cf(s,"machine_id");
+  const members=(s.canonical.members||[]).slice()
+    .sort((a,b)=>(((a.number||{}).value)??1e9)-(((b.number||{}).value)??1e9));
+  const rows = members.length ? members.map(m=>{
+    const tid=m.tool_record_id, num=m.number||{};
+    const t=state.tools.find(x=>rid(x)===tid);
+    const tname=t?(cf(t,"name")||tid.slice(0,8)):(state.toolNames[tid]||tid.slice(0,8));
+    const dia=t?cf(t,"geometry.diameter"):null, shape=t?cf(t,"geometry.shape"):null;
+    const numDisp=num.value!=null?`T${num.value}`:`<span class="unknownval">no #</span>`;
+    return `<div class="frow">
+      <span class="flabel">${numDisp} ${provBadge(num.source||"unknown")}</span>
+      <span class="fval"><span class="link-ish" onclick="showById('${tid}')">${esc(tname)}</span>`+
+      `${shape?` <span class="muted">${esc(shape)}</span>`:""}${dia!=null?` <span class="muted">&#x2300;${dia}</span>`:""}</span>
+    </div>`;
+  }).join("") : `<div class="muted" style="padding:.45rem 0">No tools in this set yet &mdash; add them with <code>loobric add-to-set</code>.</div>`;
+  return `<div class="row" style="margin-bottom:.6rem">
+      <button class="mini link" onclick="backToToolSets()">&#x2190; Back to tool sets</button>
+      <span class="rowact">
+        ${machine?`<button class="mini link" onclick="refreshSet('${rid(s)}')">Refresh from machine</button>`:""}
+        <button class="unbind" onclick="deleteSet('${rid(s)}')">Delete</button></span></div>
+    <div class="card">
+      <div class="row"><strong>${esc(cf(s,"name")||"(unnamed)")}</strong>${idLink(rid(s),0)}</div>
+      <div class="muted" style="margin-top:.3rem">${members.length} tool(s)${machine?" &middot; linked to "+esc(state.machineNames[machine]||machine.slice(0,8))+" &middot; member numbers inherited from its tool table":" &middot; not linked to a machine"}</div>
+      <div class="explain" style="margin-top:.6rem">Each member shows its tool number and the <b>source</b> that vouches for it &mdash; ${provBadge("asserted")} declared, ${provBadge("observed")} inherited from a machine, ${provBadge("unknown")} no number yet.</div>
+      <div class="section-h">Members</div>${rows}
+    </div>`;
 }
 
 // ---- Machines (+ tool tables) ----------------------------------------------
