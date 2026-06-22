@@ -138,14 +138,13 @@ is **no** automatic replay of intervening migrations onto restored rows — a ba
 backup would need is a deliberate future step, never silent. This turns "restore across
 versions" from a silent failure into a checked, tested path.
 
-## Out of scope here (separate decision): solo → multi-user
+## Not in scope: solo → multi-user data ownership
 
-This is a **data-ownership** migration, not a schema migration, but it's the other way user
-data gets stranded (the solo user's password is generated and discarded, so its data is
-unreachable once `SMOOTH_SOLO` is unset). Proposed companion, to be specified separately:
-an admin-gated `POST /api/v1/account/adopt-solo` (CLI: `loobric adopt-solo`) that reassigns
-all rows owned by `solo@localhost.smooth` to a named real account, run once when promoting a
-solo instance to multi-user. Tracked alongside the spine but designed on its own.
+There is a *separate* way user data can be stranded — switching off solo mode orphans the
+solo user's data, because its password is generated and never disclosed. That is a
+**data-ownership** concern, not schema migration, and it is **deferred** (it would only matter
+to a single-user instance that later goes multi-user — concept drift for now). It is recorded
+under "Deferred" in [ROADMAP.md](../ROADMAP.md); do not build it into the spine.
 
 ## Phased implementation
 
@@ -156,7 +155,6 @@ solo instance to multi-user. Tracked alongside the spine but designed on its own
 2. **Backup revision + restore drift handling.** ✅ **Done** (`smooth/backup.py`,
    `tests/unit/test_backup.py`): export stamps `schema_revision`; restore refuses a
    newer-than-head backup and accepts equal / older / absent.
-3. **solo→multi-user adopt** (its own design — data-ownership, not schema).
 
-Future schema changes are added as new `smooth/migrations/NNNN_name.py` units, each with an
-idempotent `upgrade(conn)`.
+The spine is complete. Future schema changes are added as new
+`smooth/migrations/NNNN_name.py` units, each with an idempotent `upgrade(conn)`.

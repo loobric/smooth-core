@@ -14,9 +14,9 @@ provenance and an audit trail.
 - Conflict freeze and resolution (no silent overwrites) — #7
 - Docker packaging (x86 + ARM) and a sub-30-minute quickstart — #8
 - **Schema migration spine** — so a `docker pull` + restart upgrades a populated database
-  safely instead of crashing on a changed table. Phase 1 (ledger + runner + baseline) is in;
-  remaining: stamp the schema revision into backups + handle restore drift, then the
-  solo→multi-user data adoption. Design: [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
+  safely instead of crashing on a changed table. ✅ **Done**: ledger + forward-only runner +
+  baseline, and self-describing backups that refuse a newer-than-head restore. Design:
+  [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
 ## Milestone 2 — importers (epic #11)
 
@@ -48,3 +48,15 @@ where the source carries them:
 - Webhook/event system for external integrations
 - Rate limiting and hardening for public-facing deployments
 - PostgreSQL as a supported production backend
+
+## Deferred (considered, not pursued)
+
+- **Solo → multi-user data adoption.** A solo-mode instance owns all its data as the built-in
+  solo user, whose password is generated and never disclosed; switching the server to
+  multi-user (`SMOOTH_SOLO` unset) therefore strands that data under an unreachable account.
+  The fix *would have been* an admin-gated operation (e.g. `POST /api/v1/account/<verb>` + a
+  `loobric` CLI verb) that reassigns every tool-data row owned by `solo@localhost.smooth` to a
+  real account, run once after promotion. **Deferred as concept drift:** it only matters if a
+  single-user instance later goes multi-user, which is not a path we are building for now. If
+  revived, it needs a verb that clears the language gate (note: `adopt` is a retired term) and
+  a glossary entry with founder sign-off.
