@@ -398,7 +398,7 @@ async function removeMember(setId, toolId){
   const tname=state.toolNames[toolId]||toolId.slice(0,8);
   if(!(await confirmDialog(`Remove "${tname}" from "${cf(s,"name")||setId.slice(0,8)}"? The tool itself isn't deleted.`))) return;
   // Read-modify-write over the replace-only members door (the same move as
-  // `loobric remove-from-set`): keep every other member and its number, drop this one.
+  // `smooth remove-from-set`): keep every other member and its number, drop this one.
   const members=(s.canonical.members||[])
     .filter(m=>m.tool_record_id!==toolId)
     .map(m=>({tool_record_id:m.tool_record_id, number:(m.number||{}).value}));
@@ -438,7 +438,7 @@ function renderToolSetDetail(){
       <span class="fval"><strong>${esc(tname)}</strong>${shape?` <span class="muted">${esc(shape)}</span>`:""}${dia!=null?` <span class="muted">&#x2300;${dia}</span>`:""} ${idLink(tid)}</span>
       <button class="mini del" onclick="removeMember('${rid(s)}','${tid}')">Remove</button>
     </div>`;
-  }).join("") : `<div class="muted" style="padding:.45rem 0">No tools in this set yet &mdash; add them with <code>loobric add-to-set</code>.</div>`;
+  }).join("") : `<div class="muted" style="padding:.45rem 0">No tools in this set yet &mdash; add them with <code>smooth add-to-set</code>.</div>`;
   return `<div class="row" style="margin-bottom:.6rem">
       <button class="mini link" onclick="backToToolSets()">&#x2190; Back to tool sets</button>
       <span class="rowact">
@@ -539,7 +539,7 @@ function backToCatalog(){ state.catalogSel=null; render(); }
 
 function renderCatalog(){
   if(state.catalogSel) return renderCatalogDetail();
-  if(!state.catalogs.length) return `<div class="empty">No catalog records yet.<br><span class="muted">Author them with the loobric CLI (create-catalog-record); this surface is read-only.</span></div>`;
+  if(!state.catalogs.length) return `<div class="empty">No catalog records yet.<br><span class="muted">Author them with the smooth CLI (create-catalog-record); this surface is read-only.</span></div>`;
   const explain = `<div class="explain">Published catalog specs &mdash; nominal, <b>asserted</b> data. Open one to see every field beside the <b>source</b> that vouches for it, so a manufacturer's claim reads differently from a real measurement.</div>`;
   return explain + state.catalogs.map(c=>{
     const name=cf(c,"name"), mfr=cf(c,"manufacturer"), pc=cf(c,"product_code");

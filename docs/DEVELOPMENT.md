@@ -55,7 +55,7 @@ smooth-core/
 │   ├── contract/        # Schema contract tests (golden fixtures)
 │   ├── fixtures/        # Test fixtures
 │   ├── integration/     # Integration tests
-│   └── unit/            # Unit tests (includes test_loobric_cli.py)
+│   └── unit/            # Unit tests
 ├── migrations/          # Database migrations
 └── docs/                # Documentation
 ```

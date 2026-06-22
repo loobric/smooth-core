@@ -8,10 +8,8 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files. loobric.py is here too because pyproject.toml
-# force-includes it for the `loobric` console script, and hatchling resolves
-# that include eagerly at install time (before the `COPY . .` below).
-COPY pyproject.toml setup.py README.md loobric.py ./
+# Copy dependency files first for layer caching.
+COPY pyproject.toml setup.py README.md ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .

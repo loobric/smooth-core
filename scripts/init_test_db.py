@@ -36,17 +36,17 @@ from pathlib import Path
 
 
 def run_cli_command(args, input_text=None):
-    """Run loobric.py CLI command.
-    
+    """Run the smooth CLI command (requires the smooth-client package; e.g.
+    `pip install -e ../smooth-client`).
+
     Args:
         args: List of command arguments
         input_text: Optional stdin input for the command
-        
+
     Returns:
         subprocess.CompletedProcess: Result of the command
     """
-    cli_path = Path(__file__).parent.parent / "loobric.py"
-    cmd = ["python3", str(cli_path)] + args
+    cmd = ["python3", "-m", "smooth_client.cli.main"] + args
     
     result = subprocess.run(
         cmd,
@@ -159,13 +159,13 @@ def init_test_database(base_url: str = "http://127.0.0.1:8000"):
     
     print(f"\nUsage:")
     print(f"  # Use API key directly")
-    print(f"  export LOOBRIC_API_KEY={admin_api_key}")
+    print(f"  export SMOOTH_API_KEY={admin_api_key}")
     print()
     print(f"  # Or login with CLI")
-    print(f"  python3 loobric.py login admin@test.com")
+    print(f"  smooth login admin@test.com")
     print()
     print(f"  # Create more API keys")
-    print(f"  python3 loobric.py create-key \"My Key\" --scopes \"read write:items\"")
+    print(f"  smooth create-key \"My Key\" --scopes \"read write:items\"")
     print("=" * 60)
 
 
