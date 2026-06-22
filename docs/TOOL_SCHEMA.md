@@ -314,6 +314,67 @@ See `tests/fixtures/schema/tool_assembly_record.json` for a worked example.
 > compatibility checking, and assembly CRUD/inbox flows are **not yet
 > implemented** — they layer on without further schema change.
 
+### 7.7 Media (3D models, drawings, images)
+
+A tool has files attached to it: a **3D model** (a STEP solid — the manufacturer's
+authoritative shape), **2D drawings**, **product images**, **logos**. These are
+*shared truth about the tool*, identical for every consumer (FreeCAD, the web UI,
+a future Fusion client) — so they are **canonical**, not a client's private copy.
+Putting a model in `clients.freecad.data` would both mislabel it as FreeCAD's and
+force every other client to keep a duplicate — the same anti-pattern Principle 5
+removes for tool numbers.
+
+Media is one canonical, provenance-tagged **`media`** Field whose `value` is a
+list of **MediaRef** descriptors — modeled exactly like `components` (one Field,
+a validated list):
+
+```jsonc
+"media": {
+  "value": [
+    { "role": "model_3d", "ref": "sha256:9f86d0…", "content_type": "model/step",
+      "filename": "6676918-KH-stp.stp", "size": 94773 },
+    { "role": "model_3d_basic", "ref": "sha256:1b40…", "content_type": "model/step", … },
+    { "role": "image",    "ref": "sha256:a3f1…", "content_type": "image/png", … }
+  ],
+  "source": "asserted:catalog-import"        // server-stamped, like any canonical field
+}
+```
+
+`role` ∈ {`model_3d`, `model_3d_basic`, `drawing_2d`, `image`, `icon`, `logo`,
+`document`}. The same nominal-vs-measured split as geometry applies: a **catalog
+type** carries the manufacturer's nominal model (`asserted:catalog-import`); a
+**physical instance** may later carry an as-built/scanned model
+(`observed:presetter@…`) — different provenance, same field.
+
+**Reference, not inline bytes.** The canonical record holds only the small,
+shareable, verifiable **reference** (`ref` = the content-addressed blob key); the
+bytes live in a separate blob store (`smooth.media_store`) and are served
+out-of-band:
+
+```
+POST   .../{record_id}/media        multipart upload (file + role) → stores blob, asserts the ref
+GET    .../{record_id}/media/{ref}  streams the bytes
+DELETE .../{record_id}/media/{ref}  drops the reference (blob retained; GC deferred)
+```
+
+This keeps multi-MB models out of every record fetch, the changes feed, and
+backups — only the key travels in the JSON.
+
+**The server never parses media.** It stores and streams bytes; it does not read
+a STEP solid (that would mean dragging a CAD kernel into the server). Rendering is
+the consumer's job — the web UI renders STEP client-side via a WASM viewer
+(e.g. online-3d-viewer / occt-import-js), FreeCAD uses the file directly. This is
+the same discipline as importing: *interpret only what the canonical model can
+hold; carry everything else through verbatim.*
+
+> **Scope / deferred:** the reference, blob store, upload/serve/delete endpoints,
+> and provenance are implemented and validated. **Blob garbage-collection** (a
+> deleted reference leaves its content-addressed bytes in place) and **including
+> blob bytes in `backup-export`** (the backup carries the references, not the
+> bytes — back up the blob directory alongside the database) are deliberately
+> deferred. Per-item media provenance (each MediaRef its own `source`) is also
+> deferred — today the whole set shares one `source`, like `components`.
+
 ---
 
 ## 8. Invariants & reconciliation

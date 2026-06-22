@@ -20,11 +20,12 @@ import copy
 from datetime import datetime, UTC
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from smooth.api import _media
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.api.tool_instance_records import _response as _instance_response
 from smooth.database.schema import (
@@ -351,6 +352,66 @@ def assert_canonical(record_id: str, req: AssertRequest,
     create_audit_log(session=db, user_id=user.id, operation="ASSERT",
                      entity_type="tool_catalog_record", entity_id=row.id,
                      changes={"path": req.path, "source": field["source"]})
+    db.commit()
+    return _response(row)
+
+
+@router.post("/{record_id}/media")
+async def upload_media(record_id: str, file: UploadFile = File(...),
+                       role: str = Form(...), actor: str = Form("catalog-import"),
+                       db: Session = Depends(get_db),
+                       user: User = Depends(get_authenticated_user)):
+    """Attach a media file (3D model, drawing, image, logo) to this catalog type.
+    The bytes go to the content-addressed blob store; canonical.media gains a
+    provenance-tagged reference the server stamps asserted:<actor> (the client
+    never writes provenance). The server does not parse the file — clients and the
+    web UI render it. Re-uploading identical bytes for the same role is a no-op."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    data = await file.read()
+    canonical, entry = _media.append_media(
+        row.canonical, data=data, role=role,
+        content_type=file.content_type, filename=file.filename,
+        actor=(actor or "catalog-import").strip())
+    _validate_canonical(canonical)
+    row.canonical = canonical
+    row.version += 1
+    row.updated_by = user.id
+    create_audit_log(session=db, user_id=user.id, operation="ASSERT",
+                     entity_type="tool_catalog_record", entity_id=row.id,
+                     changes={"path": "media", "role": role, "ref": entry["ref"]})
+    db.commit()
+    return _response(row)
+
+
+@router.get("/{record_id}/media/{ref:path}")
+def get_media(record_id: str, ref: str, db: Session = Depends(get_db),
+              user: User = Depends(get_authenticated_user)):
+    """Stream a referenced media file's bytes (the blob the record points at)."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _media.serve(row.canonical, ref)
+
+
+@router.delete("/{record_id}/media/{ref:path}")
+def delete_media(record_id: str, ref: str, actor: str = "catalog-import",
+                 db: Session = Depends(get_db),
+                 user: User = Depends(get_authenticated_user)):
+    """Drop a media reference from this record. The blob bytes stay in the store
+    (content-addressed, possibly shared); blob GC is a separate concern."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    canonical = _media.remove_media(row.canonical, ref, actor=actor)
+    _validate_canonical(canonical)
+    row.canonical = canonical
+    row.version += 1
+    row.updated_by = user.id
+    create_audit_log(session=db, user_id=user.id, operation="ASSERT",
+                     entity_type="tool_catalog_record", entity_id=row.id,
+                     changes={"path": "media", "removed": ref})
     db.commit()
     return _response(row)
 

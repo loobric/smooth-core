@@ -20,10 +20,11 @@ import copy
 from datetime import datetime, UTC
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from smooth.api import _media
 from smooth.api.auth import get_db, get_authenticated_user
 from smooth.database.schema import User, ToolInstanceRecord as Row
 from smooth.audit import create_audit_log
@@ -254,6 +255,63 @@ def delete_instance(record_id: str, db: Session = Depends(get_db),
                      entity_type="tool_instance_record", entity_id=record_id)
     db.commit()
     return {"deleted": record_id}
+
+
+@router.post("/{record_id}/media")
+async def upload_media(record_id: str, file: UploadFile = File(...),
+                       role: str = Form(...), actor: str = Form("human@cli"),
+                       db: Session = Depends(get_db),
+                       user: User = Depends(get_authenticated_user)):
+    """Attach a media file (e.g. an as-built 3D scan, a photo) to this physical
+    instance. Bytes go to the blob store; canonical.media gains a reference the
+    server stamps asserted:<actor>. The server does not parse the file."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    data = await file.read()
+    canonical, entry = _media.append_media(
+        row.canonical, data=data, role=role,
+        content_type=file.content_type, filename=file.filename,
+        actor=(actor or "human@cli").strip())
+    _validate_canonical(canonical)
+    row.canonical = canonical
+    row.version += 1
+    row.updated_by = user.id
+    create_audit_log(session=db, user_id=user.id, operation="ASSERT",
+                     entity_type="tool_instance_record", entity_id=row.id,
+                     changes={"path": "media", "role": role, "ref": entry["ref"]})
+    db.commit()
+    return _response(row)
+
+
+@router.get("/{record_id}/media/{ref:path}")
+def get_media(record_id: str, ref: str, db: Session = Depends(get_db),
+              user: User = Depends(get_authenticated_user)):
+    """Stream a referenced media file's bytes."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _media.serve(row.canonical, ref)
+
+
+@router.delete("/{record_id}/media/{ref:path}")
+def delete_media(record_id: str, ref: str, actor: str = "human@cli",
+                 db: Session = Depends(get_db),
+                 user: User = Depends(get_authenticated_user)):
+    """Drop a media reference from this record (bytes remain in the blob store)."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    canonical = _media.remove_media(row.canonical, ref, actor=actor)
+    _validate_canonical(canonical)
+    row.canonical = canonical
+    row.version += 1
+    row.updated_by = user.id
+    create_audit_log(session=db, user_id=user.id, operation="ASSERT",
+                     entity_type="tool_instance_record", entity_id=row.id,
+                     changes={"path": "media", "removed": ref})
+    db.commit()
+    return _response(row)
 
 
 @router.post("/{record_id}/observe")
