@@ -4,8 +4,22 @@
 
 Before contributing, please review these key documents:
 
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** — environment setup, running tests, repo layout.
+- **[DESIGN_PHILOSOPHY.md](DESIGN_PHILOSOPHY.md)** — the principles every change is held to.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the system fits together.
+- **[TOOL_SCHEMA.md](TOOL_SCHEMA.md)** — the authoritative contract for the public API.
+- **[UBIQUITOUS_LANGUAGE.md](UBIQUITOUS_LANGUAGE.md)** — the project vocabulary. **Read the
+  language gate:** no new user-facing word (endpoint path, response field, CLI verb, UI label)
+  ships without an entry here. A concept on the public surface that isn't in the glossary is a
+  bug, not a feature.
 
+## Licensing & the CLA
 
+Smooth Core is licensed **AGPL-3.0**. Contributing to **smooth-core** requires signing the
+project **CLA** (see [CLA.md](../CLA.md)) on your first pull request — it grants the maintainer
+the rights needed to offer the commercial/hosted edition alongside the open core. The reference
+**clients** (`smooth-freecad`, `smooth-linuxcnc`) are MIT and use **DCO sign-off** (`git commit
+-s`) instead of a CLA.
 
 
 ## Development Process

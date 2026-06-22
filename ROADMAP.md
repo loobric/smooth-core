@@ -13,6 +13,9 @@ provenance and an audit trail.
 - A read-only view of which tool-set members are not yet present on the linked machine — #18 (clients: #19, freecad#8). Pulled from M1 scope in the 2026-06 reboot; it returns only if it re-earns a place in the ubiquitous language (see `docs/UBIQUITOUS_LANGUAGE.md`).
 - Conflict freeze and resolution (no silent overwrites) — #7
 - Docker packaging (x86 + ARM) and a sub-30-minute quickstart — #8
+- **Schema migration spine** — so a `docker pull` + restart upgrades a populated database
+  safely instead of crashing on a changed table. Design: [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
+  Blocks promoting self-host upgrades and the solo→multi-user story.
 
 ## Milestone 2 — importers (epic #11)
 
