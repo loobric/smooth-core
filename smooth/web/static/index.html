@@ -556,17 +556,18 @@ function entryRow(m,s){
 // images inline, mesh 3D models in an in-browser WebGL viewer (online-3d-viewer,
 // loaded lazily from a CDN — no build step), everything else as a download link.
 //
-// STEP note: online-3d-viewer reads STEP via a WASM kernel it runs in a Web
-// Worker, and a Worker script must be same-origin — it can't be pulled straight
-// from a CDN without self-hosting that worker (which would mean a build). So a
-// STEP solid is offered for download (FreeCAD opens it directly) rather than
-// rendered; mesh formats (STL, glTF/GLB, OBJ, PLY, 3MF, …) render in-browser.
-// See docs/TOOL_SCHEMA.md §7.7.
+// STEP renders too: online-3d-viewer >=0.15 reads STEP/IGES via its
+// occt-import-js (OpenCascade) kernel, which it fetches from the CDN itself —
+// it wraps the kernel in a same-origin blob worker on the fly, so there is no
+// vendoring and no build step, just a brief one-time WASM download on first 3D
+// view. Mesh formats render instantly (bundled JS loaders). See TOOL_SCHEMA §7.7.
 const O3DV_VERSION = "0.18.0";
 const O3DV_ENGINE_URL = "https://cdn.jsdelivr.net/npm/online-3d-viewer@"+O3DV_VERSION+"/build/engine/o3dv.min.js";
-// Mesh formats whose loaders are bundled in the engine (pure JS, no external
-// worker/WASM) — these render straight from a CDN. STEP/IGES/IFC/3DM are not here.
-const VIEWABLE_3D = new Set(["stl","obj","ply","off","3ds","gltf","glb","fbx","dae","wrl","vrml","3mf"]);
+// Mesh formats with loaders bundled in the engine (pure JS) — render instantly.
+const VIEWABLE_MESH = new Set(["stl","obj","ply","off","3ds","gltf","glb","fbx","dae","wrl","vrml","3mf"]);
+// CAD solids o3dv renders through its CDN-fetched occt (OpenCascade) kernel.
+const VIEWABLE_CAD = new Set(["step","stp","ste","iges","igs","ige","brep","brp"]);
+const VIEWABLE_3D = new Set([...VIEWABLE_MESH, ...VIEWABLE_CAD]);
 const MEDIA_ROLE_LABEL = {model_3d:"3D model", model_3d_basic:"3D model (basic)",
   drawing_2d:"2D drawing", image:"Image", icon:"Icon", logo:"Logo", document:"Document"};
 
@@ -612,7 +613,8 @@ function mediaSection(rec, base){
       return `<div class="media-item">${meta}<span class="rowact">
         <button class="mini view" onclick="openModelViewer('${id}','${esc(m.ref)}')">View 3D</button>${dl}</span></div>`;
     }
-    // STEP/IGES and other CAD solids: no in-browser kernel here — offer the file.
+    // A model format the viewer doesn't recognize (STEP/IGES/mesh all render
+    // above) — offer the file so a CAD tool can open it.
     return `<div class="media-item">${meta}<span class="rowact">${dl}</span>
       <div class="media-note">Opens in CAD (e.g. FreeCAD). A browser 3D preview of this format isn't shown here.</div></div>`;
   }).join("");
