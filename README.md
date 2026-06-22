@@ -53,11 +53,11 @@ This project was started out of a personal need to synchronize linuxcnc machine 
 
 [smooth-linuxcnc](https://github.com/loobric/smooth-linuxcnc)
 
-### **loobric** - Command Line Interface
+### **loobric-smooth** - Python library and CLI
 
-Installed with smooth-core (the `loobric` command). Use it to manage API keys
-and to review and bind reported tools. See the
-[CLI reference and walkthrough](docs/CLI.md).
+The reference Python client — an importable `Client` library and the `smooth`
+command-line client. Lives in its own repo:
+[loobric-smooth](https://github.com/loobric/loobric-smooth) (`pip install loobric-smooth`).
 
 ## Contributing
 

@@ -29,19 +29,19 @@ The first user created will automatically be the admin user.
 You can create a user account with the command line utility.
 
 ```
-  loobric --base-url http://127.0.0.1:8000 register admin@example.com
+  smooth --base-url http://127.0.0.1:8000 register admin@example.com
 ```
 
 5. Login as the admin user
 
 ```
-  loobric --base-url http://127.0.0.1:8000 login admin@example.com
+  smooth --base-url http://127.0.0.1:8000 login admin@example.com
 ```
 
 Create an access token
 
 ```
-  loobric create-key "Backup Script" \
+  smooth create-key "Backup Script" \
     --scopes "read" --tags "backup production" --expires-at "2027-12-31T23:59:59Z"
 ```
 
@@ -53,6 +53,6 @@ The previous command will echo the token back to the console in clear text. Only
 
 ## Next steps
 
-Once a client is reporting tools, you review and bind them with `loobric`. See
-the [CLI reference and walkthrough](CLI.md) for every command and a worked
+Once a client is reporting tools, you review and bind them with `smooth`. See
+the [CLI reference and walkthrough](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md) for every command and a worked
 example from touch-off to a bound tool.

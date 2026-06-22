@@ -17,8 +17,8 @@ way.)
 
 ## Before you start
 
-- A running Smooth Core server and a logged-in `loobric`. See
-  [QUICK_START.md](QUICK_START.md) and [CLI.md](CLI.md).
+- A running Smooth Core server and a logged-in `smooth`. See
+  [QUICK_START.md](QUICK_START.md) and [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md).
 - A control client configured against this server and pointed at your machine.
 - A CAM client configured against the same server.
 - The control client has run at least once, so the machine's tool table has
@@ -36,7 +36,7 @@ tool record stands behind it yet.
 ### 2. Find the machine
 
 ```bash
-loobric list-machines
+smooth list-machines
 ```
 
 Note the machine id (or a unique prefix — short prefixes work like a git short
@@ -45,7 +45,7 @@ SHA).
 ### 3. See what the machine reported
 
 ```bash
-loobric tool-table <machine>
+smooth tool-table <machine>
 ```
 
 Every entry shows as unbound:
@@ -62,9 +62,9 @@ T3: 3mm ball          ⌀3.00  [unbound]
 and binds the entry to it, in one step. Do this for each tool you want in CAM.
 
 ```bash
-loobric create-record <machine> 1 --name "6mm flat endmill"
-loobric create-record <machine> 2 --name "1/4 downcut"
-loobric create-record <machine> 3 --name "3mm ball"
+smooth create-record <machine> 1 --name "6mm flat endmill"
+smooth create-record <machine> 2 --name "1/4 downcut"
+smooth create-record <machine> 3 --name "3mm ball"
 ```
 
 `--name` defaults to the entry's description, so you can omit it.
@@ -77,8 +77,8 @@ position is a property of the tool-table entry, never of the record itself. (See
 ### 5. Confirm the records exist and the entries are bound
 
 ```bash
-loobric list-tools
-loobric tool-table <machine>
+smooth list-tools
+smooth tool-table <machine>
 ```
 
 `list-tools` shows one record per tool. The table now reads `bound -> <record>`
@@ -86,7 +86,7 @@ for each entry you turned into a record.
 
 ### 6. Import the records into your CAM tool set
 
-This is the CAM client's job, not `loobric`. Point your CAM client at the
+This is the CAM client's job, not `smooth`. Point your CAM client at the
 server and import (or refresh). It reads the tool records and represents them as
 a tool set — that representation lives in the set's own client section, so the
 CAM library is just *one client's view* of a shared tool set (see
@@ -101,22 +101,22 @@ tool set carries an optional `machine_id` link to the Machine it belongs to.
 machine's tool-table entries** — so the set and the control agree on T-numbers
 without any extra step.
 
-Your CAM client may set this link when it creates the set. If not, `loobric`
+Your CAM client may set this link when it creates the set. If not, `smooth`
 links it for you:
 
 ```bash
 # find the set id
-loobric list-tool-sets
+smooth list-tool-sets
 
 # link the set to the machine
-loobric link-machine <set> <machine>
+smooth link-machine <set> <machine>
 ```
 
 ### 8. Confirm the result
 
 ```bash
-loobric tool-table <machine>   # every entry reads bound -> <record>
-loobric list-tool-sets         # the set is present and machine-linked
+smooth tool-table <machine>   # every entry reads bound -> <record>
+smooth list-tool-sets         # the set is present and machine-linked
 ```
 
 Because the set is linked to the machine, its member numbers follow the
@@ -125,16 +125,16 @@ match the machine's tools, T-number for T-number.
 
 ## Confirm success
 
-- `loobric tool-table <machine>` — every entry you turned into a record reads
+- `smooth tool-table <machine>` — every entry you turned into a record reads
   `bound -> <record>`.
-- `loobric list-tools` — one record per machine tool.
-- `loobric list-tool-sets` — the CAM tool set shows up, machine-linked, with the
+- `smooth list-tools` — one record per machine tool.
+- `smooth list-tool-sets` — the CAM tool set shows up, machine-linked, with the
   expected member count.
 - In your CAM client, the imported tool set matches the machine's tools.
 
 ## Related
 
-- [CLI.md](CLI.md) — every command used here, plus the touch-off-to-bound
+- [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md) — every command used here, plus the touch-off-to-bound
   walkthrough.
 - [HOWTO_MATCH_MACHINE_AND_CAM_TOOLS.md](HOWTO_MATCH_MACHINE_AND_CAM_TOOLS.md)
   — when the machine and the CAM tool set were built separately and need linking.

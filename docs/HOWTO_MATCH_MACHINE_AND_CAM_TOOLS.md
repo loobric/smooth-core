@@ -22,10 +22,10 @@ control and CAM client behave the same way.)
 
 ## Before you start
 
-- Server running, logged in with `loobric` (see [CLI.md](CLI.md)).
+- Server running, logged in with `smooth` (see [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md)).
 - The control client has synced the machine's tool table up — entries exist.
 - The CAM client has synced its tools up — tool records and a tool set exist.
-  Confirm with `loobric list-tools` and `loobric list-tool-sets`.
+  Confirm with `smooth list-tools` and `smooth list-tool-sets`.
 
 ## Steps
 
@@ -35,7 +35,7 @@ When a machine reports a tool the server doesn't recognize, the server may
 propose a matching record. Proposals collect in the inbox.
 
 ```bash
-loobric pending
+smooth pending
 ```
 
 ```
@@ -51,8 +51,8 @@ either side.
 ### 2. Confirm or reject each proposal
 
 ```bash
-loobric resolve 4f2a confirm   # same tool: link the entry to the record
-loobric resolve 7c10 reject    # different tools: drop the suggestion
+smooth resolve 4f2a confirm   # same tool: link the entry to the record
+smooth resolve 7c10 reject    # different tools: drop the suggestion
 ```
 
 - `confirm` = **same physical tool**. The entry binds to the record; future
@@ -69,9 +69,9 @@ The inbox only holds cases the server could guess at. Some entries will have no
 proposal — a match the server couldn't see. Find them and link by hand.
 
 ```bash
-loobric tool-table <machine>   # which entries are still unbound
-loobric list-tools             # the record id to link to
-loobric bind <machine> 5 <record>
+smooth tool-table <machine>   # which entries are still unbound
+smooth list-tools             # the record id to link to
+smooth bind <machine> 5 <record>
 ```
 
 Binding never overwrites either side; it routes future changes between the entry
@@ -89,8 +89,8 @@ observed fact, the set conforms. There is no separate step: linking *is* the
 alignment.
 
 ```bash
-loobric list-tool-sets               # find the set id
-loobric link-machine <set> <machine> # link it to the machine
+smooth list-tool-sets               # find the set id
+smooth link-machine <set> <machine> # link it to the machine
 ```
 
 A set member with no matching tool-table entry keeps its own asserted number —
@@ -100,9 +100,9 @@ corresponding entry (step 3) so the machine reports it.
 ### 5. Confirm the result
 
 ```bash
-loobric tool-table <machine>   # entries you linked read bound -> <record>
-loobric pending                # empty, or only items you deliberately left
-loobric list-tool-sets         # the set is present and machine-linked
+smooth tool-table <machine>   # entries you linked read bound -> <record>
+smooth pending                # empty, or only items you deliberately left
+smooth list-tool-sets         # the set is present and machine-linked
 ```
 
 ### A note on data differences
@@ -117,14 +117,14 @@ bind to "fix" a geometry mismatch — it answers "same tool?", nothing more.
 
 ## Confirm success
 
-- `loobric tool-table <machine>` — every entry you intended to link reads
+- `smooth tool-table <machine>` — every entry you intended to link reads
   `bound -> <record>`.
-- `loobric pending` — empty, or only items you deliberately left.
-- `loobric list-tool-sets` — the set is present and machine-linked.
+- `smooth pending` — empty, or only items you deliberately left.
+- `smooth list-tool-sets` — the set is present and machine-linked.
 
 ## Related
 
-- [CLI.md](CLI.md) — `pending`, `resolve`, `bind`, `tool-table`, `list-tools`,
+- [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md) — `pending`, `resolve`, `bind`, `tool-table`, `list-tools`,
   `link-machine`.
 - [HOWTO_BUILD_CAM_SET_FROM_MACHINE.md](HOWTO_BUILD_CAM_SET_FROM_MACHINE.md)
   — when the machine has the tools and CAM is empty (control → CAM).

@@ -48,12 +48,13 @@ smooth-core/
 │   ├── auth/            # Authentication & authorization
 │   ├── contract/        # Authoritative contract models (tool schema, §10)
 │   ├── database/        # Database models and sessions
+│   ├── migrations/      # Forward-only schema migrations
 │   └── web/             # Web UI (single static file + assets)
 ├── tests/               # Test suite
 │   ├── contract/        # Schema contract tests (golden fixtures)
 │   ├── fixtures/        # Test fixtures
 │   ├── integration/     # Integration tests
-│   └── unit/            # Unit tests (includes test_loobric_cli.py)
+│   └── unit/            # Unit tests
 ├── scripts/             # One-off maintenance/migration scripts
 └── docs/                # Documentation
 ```

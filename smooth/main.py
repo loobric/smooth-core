@@ -95,7 +95,7 @@ def create_app() -> FastAPI:
     @app.get(f"/api/{settings.api_version}/version")
     async def version_info():
         """Server build identity — version + git commit. Unauthenticated on
-        purpose: a client (or `loobric whoami`) can verify *which code* a server
+        purpose: a client (or `smooth whoami`) can verify *which code* a server
         is running before, or without, logging in. A 404 here means the server
         predates this endpoint — i.e. it is an older build."""
         return build_info()

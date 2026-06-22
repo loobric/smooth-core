@@ -19,9 +19,6 @@ dependencies = [
     "jinja2>=3.1.2",
 ]
 
-[project.scripts]
-loobric = "loobric:main"
-
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.4",
@@ -31,11 +28,6 @@ dev = [
     "ruff>=0.1.11",
     "mypy>=1.8.0",
 ]
-# Optional: shell tab-completion for the loobric CLI. loobric.py stays
-# stdlib-only and runs without this; install it to enable completion.
-completion = [
-    "argcomplete>=3.0",
-]
 
 [build-system]
 requires = ["hatchling"]
@@ -43,12 +35,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["smooth"]
-
-# loobric.py is a standalone single-file module that lives next to the
-# `smooth` package rather than inside it. Force-include it so the
-# `loobric` console script (see [project.scripts]) resolves after install.
-[tool.hatch.build.targets.wheel.force-include]
-"loobric.py" = "loobric.py"
 
 [tool.ruff]
 line-length = 100
