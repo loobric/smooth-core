@@ -579,3 +579,63 @@ def test_backup_metadata_indicates_backup_type(db_session):
     # Admin backup
     admin_backup = export_backup(db_session, user_id=user.id, admin=True)
     assert admin_backup["metadata"]["backup_type"] == "admin"
+
+
+# --- Schema-revision stamping & restore drift (migration spine, Phase 2) ---
+
+
+@pytest.mark.unit
+def test_export_stamps_schema_revision(db_session):
+    """A backup records the schema revision it was taken on, so it is
+    self-describing for restore-time compatibility checks."""
+    from smooth.backup import export_backup
+    from smooth.migrations import current_head
+
+    backup = export_backup(db_session)
+    assert backup["metadata"]["schema_revision"] == current_head()
+    assert backup["metadata"]["schema_revision"] is not None
+
+
+@pytest.mark.unit
+def test_restore_accepts_equal_revision(db_session):
+    """Restoring a backup taken on the current schema revision is allowed."""
+    from smooth.backup import export_backup, restore_backup
+
+    backup = export_backup(db_session)
+    result = restore_backup(db_session, backup)
+    assert result["success"] is True
+
+
+@pytest.mark.unit
+def test_restore_accepts_older_revision(db_session):
+    """An older backup restores into the current schema (newer columns take
+    their model defaults)."""
+    from smooth.backup import export_backup, restore_backup
+
+    backup = export_backup(db_session)
+    backup["metadata"]["schema_revision"] = "0000"
+    result = restore_backup(db_session, backup)
+    assert result["success"] is True
+
+
+@pytest.mark.unit
+def test_restore_accepts_backup_without_schema_revision(db_session):
+    """Backups predating this field (no schema_revision) still restore."""
+    from smooth.backup import export_backup, restore_backup
+
+    backup = export_backup(db_session)
+    del backup["metadata"]["schema_revision"]
+    result = restore_backup(db_session, backup)
+    assert result["success"] is True
+
+
+@pytest.mark.unit
+def test_restore_refuses_newer_revision(db_session):
+    """Restoring a backup taken on a NEWER schema than this server understands
+    is refused — it would be a downgrade and risk data loss."""
+    from smooth.backup import export_backup, restore_backup, BackupVersionError
+
+    backup = export_backup(db_session)
+    backup["metadata"]["schema_revision"] = "9999"
+    with pytest.raises(BackupVersionError, match="newer than"):
+        restore_backup(db_session, backup)

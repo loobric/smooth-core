@@ -25,6 +25,7 @@ from smooth.database.schema import (
     User, ApiKey, MachineRecord, ToolInstanceRecord, ToolCatalogRecord,
     ToolTableEntryRecord, ToolSetRecord, EntryProposal,
 )
+from smooth.migrations import current_head
 
 
 class BackupVersionError(Exception):
@@ -51,6 +52,21 @@ ENTITY_ORDER = [
     ("entry_proposals", EntryProposal),
     ("api_keys", ApiKey),
 ]
+
+
+def _current_schema_revision() -> Any:
+    """The schema revision this server targets, stamped into backups so they
+    are self-describing. None if the migration spine defines no revisions."""
+    return current_head()
+
+
+def _rev_int(revision: str) -> int:
+    """Numeric form of a zero-padded revision string for ordering. Unparseable
+    values sort as 0 (treated as oldest)."""
+    try:
+        return int(revision)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _serialize_entity(entity: Any) -> dict:
@@ -121,6 +137,7 @@ def export_backup(session: Session, user_id: str = None, admin: bool = False) ->
     
     metadata = {
         "version": "0.1.0",
+        "schema_revision": _current_schema_revision(),
         "timestamp": datetime.now(UTC).isoformat(),
         "backup_type": backup_type,
         "counts": counts
@@ -176,6 +193,23 @@ def _validate_backup(backup: dict) -> None:
     major_version = version.split(".")[0]
     if major_version != "0":
         raise BackupVersionError(f"Incompatible backup version: {version}")
+
+    # Schema-revision drift. Refuse to restore a backup taken on a schema NEWER
+    # than this server understands — that would be a downgrade and risk data
+    # loss. Older or absent revisions (pre-dating this field) are allowed: the
+    # data loads into the current schema and any columns added since the backup
+    # take their model defaults. (The live schema is already at head before any
+    # restore, so there is no automatic replay of intervening migrations.)
+    backup_revision = backup["metadata"].get("schema_revision")
+    if backup_revision is not None:
+        head = current_head()
+        if head is not None and _rev_int(backup_revision) > _rev_int(head):
+            raise BackupVersionError(
+                f"Backup was taken on schema revision {backup_revision}, newer than "
+                f"this server's {head}. Restoring it would downgrade the schema and "
+                "risk data loss — upgrade the server to at least that revision, then "
+                "restore."
+            )
 
 
 def _validate_entity(entity_name: str, entity_data: dict, entity_class: Any) -> None:
