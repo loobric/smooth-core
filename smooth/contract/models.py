@@ -232,6 +232,54 @@ def _validate_composition(item_type: Optional[Field],
             Component.model_validate(entry)
 
 
+# -- Media (docs/TOOL_SCHEMA.md §Media) ---------------------------------------
+# A tool carries media — 3D models (STEP), 2D drawings, images, logos — as
+# canonical *references*. The bytes live in the blob store (smooth.media_store)
+# and are served out-of-band; the record holds only a small, shareable, verifiable
+# reference. Like `components`, the whole media set is one provenance-tagged Field
+# (value = list[MediaRef]); the server never parses the media — clients (FreeCAD)
+# and the web UI render it.
+
+MEDIA_ROLES = {
+    "model_3d",        # detailed 3D solid (e.g. a GTC detailed STEP)
+    "model_3d_basic",  # simplified/basic 3D solid
+    "drawing_2d",      # a 2D product/technical drawing
+    "image",           # a product photo/picture
+    "icon",            # a class/product icon
+    "logo",            # a brand/manufacturer logo
+    "document",        # any other document (datasheet, disclaimer, …)
+}
+
+
+class MediaRef(BaseModel):
+    """One media file referenced by a record: the role it plays, its blob-store
+    reference, and enough metadata to serve/render it. The bytes are NOT here —
+    `ref` keys them in the blob store."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str
+    ref: str                              # blob-store key, e.g. "sha256:<hex>"
+    content_type: str                     # MIME, e.g. "model/step", "image/png"
+    filename: Optional[str] = None        # original filename, for download
+    size: Optional[int] = None            # bytes
+
+    @model_validator(mode="after")
+    def _role(self) -> "MediaRef":
+        if self.role not in MEDIA_ROLES:
+            raise ValueError("invalid media role %r" % self.role)
+        return self
+
+
+def _validate_media(media: Optional[Field]) -> None:
+    """A `media` Field's value is a list of MediaRef descriptors (or null)."""
+    if media is not None and media.value is not None:
+        if not isinstance(media.value, list):
+            raise ValueError("media value must be a list")
+        for entry in media.value:
+            MediaRef.model_validate(entry)
+
+
 class InstanceCanonical(BaseModel):
     """A physical tool's agreed truth: measured geometry, optional catalog
     link (unknown until asserted), install status. May be an assembly (a built
@@ -245,11 +293,13 @@ class InstanceCanonical(BaseModel):
     status: Optional[Field] = None
     item_type: Optional[Field] = None     # ISO role; None ~ leaf, or "assembly"
     components: Optional[Field] = None    # list[Component] when an assembly
+    media: Optional[Field] = None         # list[MediaRef]; bytes in the blob store
     geometry: Geometry = Geometry()
 
     @model_validator(mode="after")
     def _composition(self) -> "InstanceCanonical":
         _validate_composition(self.item_type, self.components)
+        _validate_media(self.media)
         return self
 
 
@@ -264,11 +314,13 @@ class CatalogCanonical(BaseModel):
     product_code: Optional[Field] = None
     item_type: Optional[Field] = None
     components: Optional[Field] = None
+    media: Optional[Field] = None         # list[MediaRef]; bytes in the blob store
     geometry: Geometry = Geometry()
 
     @model_validator(mode="after")
     def _composition(self) -> "CatalogCanonical":
         _validate_composition(self.item_type, self.components)
+        _validate_media(self.media)
         return self
 
 

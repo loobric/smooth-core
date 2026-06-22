@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     
     # Database
     database_url: str = "sqlite:///./smooth.db"
+
+    # Media blob store: where canonical media bytes (3D models, drawings, images)
+    # live on disk, content-addressed. The record carries only a reference; the
+    # bytes are served out-of-band (see docs/TOOL_SCHEMA.md §Media). Back this
+    # directory up alongside the database.
+    media_dir: str = "./smooth_media"
     
     # API
     api_host: str = "0.0.0.0"

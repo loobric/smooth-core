@@ -27,6 +27,8 @@ from smooth.contract.models import (
     EntryOffsets, ToolSetCanonical, SetMember, MachineCanonical,
     # composition (ISO 13399)
     Component, ITEM_TYPES, COMPONENT_ROLES,
+    # media
+    MediaRef, MEDIA_ROLES,
     # entities
     ToolInstanceRecord, ToolCatalogRecord, ToolTableEntry, ToolSet, Machine,
 )
@@ -38,6 +40,7 @@ __all__ = [
     "Geometry", "InstanceCanonical", "CatalogCanonical", "EntryCanonical",
     "EntryOffsets", "ToolSetCanonical", "SetMember", "MachineCanonical",
     "Component", "ITEM_TYPES", "COMPONENT_ROLES",
+    "MediaRef", "MEDIA_ROLES",
     "ToolInstanceRecord", "ToolCatalogRecord", "ToolTableEntry", "ToolSet",
     "Machine",
 ]
