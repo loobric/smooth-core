@@ -123,16 +123,20 @@ run_migrations(engine)    # baseline-stamp and/or apply pending
 `create_all` stays as the greenfield path so the model definitions remain the DDL source for
 *new* installs; migrations own all *changes to existing* installs.
 
-## Closing the backup/restore drift gap
+## Closing the backup/restore drift gap — ✅ implemented
 
-- Stamp the **schema revision** into backup metadata at export time.
-- At restore:
-  - backup revision **==** head → restore directly.
-  - backup revision **<** head → restore, then `run_migrations` forward.
-  - backup revision **>** head → **refuse** (cannot downgrade), with a clear message.
+- Export stamps the **schema revision** into backup metadata (`schema_revision`), so every
+  backup is self-describing.
+- Restore (`_validate_backup`) compares it to the server's current head:
+  - revision **>** head → **refused** (`BackupVersionError`): restoring a newer backup into
+    older code would be a downgrade and risk data loss.
+  - revision **≤** head, or **absent** (backups predating this field) → restored into the
+    current schema; columns added since the backup take their model defaults.
 
-This makes "restore an old backup into a newer server" a supported, tested path instead of a
-silent failure, and lets the README's "backup and restore … with rollback" claim become true.
+The live schema is always at head before any restore (startup runs the spine first), so there
+is **no** automatic replay of intervening migrations onto restored rows — a backfill an old
+backup would need is a deliberate future step, never silent. This turns "restore across
+versions" from a silent failure into a checked, tested path.
 
 ## Out of scope here (separate decision): solo → multi-user
 
@@ -149,8 +153,9 @@ solo instance to multi-user. Tracked alongside the spine but designed on its own
    `init_db()`. ✅ **Done** (`smooth/migrations/`, `tests/integration/test_migrations.py`):
    fresh / legacy / managed boot, idempotent re-run, failure-aborts-without-recording with
    idempotent retry, checksum drift, and the safety-backup hook.
-2. **Backup metadata revision + restore drift handling.** Stamp the schema revision into
-   backup metadata; on restore, forward-migrate an older backup and refuse a newer one.
+2. **Backup revision + restore drift handling.** ✅ **Done** (`smooth/backup.py`,
+   `tests/unit/test_backup.py`): export stamps `schema_revision`; restore refuses a
+   newer-than-head backup and accepts equal / older / absent.
 3. **solo→multi-user adopt** (its own design — data-ownership, not schema).
 
 Future schema changes are added as new `smooth/migrations/NNNN_name.py` units, each with an

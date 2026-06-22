@@ -79,6 +79,13 @@ def discover_migrations(directory: Optional[Path] = None) -> list[Migration]:
     return found
 
 
+def current_head(migrations: Optional[list] = None) -> Optional[str]:
+    """The latest defined revision (the schema version this code targets), or
+    None if no migrations are defined."""
+    migs = migrations if migrations is not None else discover_migrations()
+    return max((m.revision for m in migs), default=None)
+
+
 def run_migrations(
     engine,
     *,
