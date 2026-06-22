@@ -53,11 +53,11 @@ This project was started out of a personal need to synchronize linuxcnc machine 
 
 [smooth-linuxcnc](https://github.com/loobric/smooth-linuxcnc)
 
-### **smooth-client** - Python library and CLI
+### **loobric-smooth** - Python library and CLI
 
 The reference Python client — an importable `Client` library and the `smooth`
 command-line client. Lives in its own repo:
-[smooth-client](https://github.com/loobric/smooth-client) (`pip install smooth-client`).
+[loobric-smooth](https://github.com/loobric/loobric-smooth) (`pip install loobric-smooth`).
 
 ## Contributing
 

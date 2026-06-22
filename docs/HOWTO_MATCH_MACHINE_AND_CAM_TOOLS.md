@@ -22,7 +22,7 @@ control and CAM client behave the same way.)
 
 ## Before you start
 
-- Server running, logged in with `smooth` (see [CLI.md](https://github.com/loobric/smooth-client/blob/master/docs/CLI.md)).
+- Server running, logged in with `smooth` (see [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md)).
 - The control client has synced the machine's tool table up — entries exist.
 - The CAM client has synced its tools up — tool records and a tool set exist.
   Confirm with `smooth list-tools` and `smooth list-tool-sets`.
@@ -124,7 +124,7 @@ bind to "fix" a geometry mismatch — it answers "same tool?", nothing more.
 
 ## Related
 
-- [CLI.md](https://github.com/loobric/smooth-client/blob/master/docs/CLI.md) — `pending`, `resolve`, `bind`, `tool-table`, `list-tools`,
+- [CLI.md](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md) — `pending`, `resolve`, `bind`, `tool-table`, `list-tools`,
   `link-machine`.
 - [HOWTO_BUILD_CAM_SET_FROM_MACHINE.md](HOWTO_BUILD_CAM_SET_FROM_MACHINE.md)
   — when the machine has the tools and CAM is empty (control → CAM).

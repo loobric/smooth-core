@@ -54,5 +54,5 @@ The previous command will echo the token back to the console in clear text. Only
 ## Next steps
 
 Once a client is reporting tools, you review and bind them with `smooth`. See
-the [CLI reference and walkthrough](https://github.com/loobric/smooth-client/blob/master/docs/CLI.md) for every command and a worked
+the [CLI reference and walkthrough](https://github.com/loobric/loobric-smooth/blob/master/docs/CLI.md) for every command and a worked
 example from touch-off to a bound tool.

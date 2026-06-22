@@ -36,8 +36,8 @@ from pathlib import Path
 
 
 def run_cli_command(args, input_text=None):
-    """Run the smooth CLI command (requires the smooth-client package; e.g.
-    `pip install -e ../smooth-client`).
+    """Run the smooth CLI command (requires the loobric-smooth package; e.g.
+    `pip install -e ../loobric-smooth`).
 
     Args:
         args: List of command arguments

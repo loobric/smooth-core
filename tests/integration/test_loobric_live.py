@@ -1,7 +1,7 @@
 # GNU Affero General Public License v3.0 only
 # Copyright (c) 2025 sliptonic
 # SPDX-License-Identifier: AGPL-3.0-only
-"""End-to-end integration tests: drive the smooth-client reference client against
+"""End-to-end integration tests: drive the loobric-smooth reference client against
 the REAL app in-process.
 
 These prove the server accepts the client's requests and returns shapes the
@@ -10,7 +10,7 @@ unit suite can't catch. A transport bridge routes the client's requests through 
 solo-mode TestClient (db_session-isolated), mirroring make_request's
 success/error contract.
 
-Requires the smooth-client package (e.g. `pip install -e ../smooth-client`);
+Requires the loobric-smooth package (e.g. `pip install -e ../loobric-smooth`);
 skipped automatically when it isn't installed.
 """
 import json
@@ -25,7 +25,7 @@ from smooth_client.errors import _http_error    # noqa: E402
 
 
 def _bridge(test_client):
-    """A smooth-client transport that calls the in-process app, mirroring make_request:
+    """A loobric-smooth transport that calls the in-process app, mirroring make_request:
     parsed JSON on 2xx, the same SmoothClientError subclasses on error."""
     def transport(method, endpoint, body=None, extra_headers=None, require_auth=False,
                   base_url=None, api_key=None, session_cookie=None,
@@ -60,7 +60,7 @@ def app_client(db_session, monkeypatch):
 
 @pytest.fixture
 def cli(app_client, monkeypatch):
-    """Route smooth-client's command functions + Client through the in-process app, and
+    """Route loobric-smooth's command functions + Client through the in-process app, and
     return a bridged Client for tests that need raw ids."""
     bridge = _bridge(app_client)
     monkeypatch.setattr(cli_main, "_client", lambda: cli_main.Client(transport=bridge))
