@@ -134,6 +134,32 @@
   #ccreate .ccinput { width:100%; background:var(--bg); border:1px solid var(--line);
                       color:var(--ink); border-radius:8px; padding:.6rem; font-size:1rem; }
   #ccreate .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:1rem; }
+  /* Media view (canonical.media): raster images inline, mesh 3D models in an
+     in-browser WebGL viewer (opened in the #media overlay so the 15s refresh
+     can't wipe a live canvas), everything else as a download link. */
+  .media-grid { display:flex; flex-wrap:wrap; gap:.5rem; margin:.4rem 0 .2rem; }
+  .media-thumb { width:120px; height:120px; border:1px solid var(--line); border-radius:8px;
+                 background:var(--bg); overflow:hidden; display:flex; align-items:center;
+                 justify-content:center; cursor:pointer; }
+  .media-thumb img { max-width:100%; max-height:100%; object-fit:contain; display:block; }
+  .media-item { display:flex; justify-content:space-between; gap:.6rem; align-items:center;
+                flex-wrap:wrap; padding:.5rem 0; border-top:1px solid var(--line); }
+  .media-item:first-of-type { border-top:none; }
+  .media-meta { display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap; min-width:0; }
+  .media-note { flex-basis:100%; color:var(--dim); font-size:.8rem; }
+  a.dl { color:var(--link); text-decoration:underline dotted; text-underline-offset:3px;
+         font-size:.85rem; white-space:nowrap; }
+  button.mini.view { background:none; border:1px solid var(--link); color:var(--link); }
+  button.mini.view.active { background:var(--bg); color:var(--ink); }
+  #media { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
+           align-items:center; justify-content:center; z-index:12; padding:1rem; }
+  #media .sheet { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                  padding:1rem; width:min(96vw,900px); height:min(90vh,720px);
+                  display:flex; flex-direction:column; }
+  #mediaviewer { flex:1; min-height:0; margin-top:.6rem; border:1px solid var(--line);
+                 border-radius:10px; background:var(--bg); overflow:hidden; position:relative; }
+  #mediaviewer canvas { display:block; }
+  .media-tabs { display:flex; gap:.4rem; }
 </style>
 </head>
 <body>
@@ -162,6 +188,17 @@
     <div class="row"><strong id="detailtitle"></strong>
       <button class="mini reject" onclick="closeDetail()">Close</button></div>
     <pre id="detailbody"></pre>
+  </div>
+</div>
+
+<!-- 3D model viewer. A separate overlay (not rebuilt by render(), like #detail)
+     so the 15s auto-refresh can't tear down a live WebGL canvas mid-spin. -->
+<div id="media" onclick="if(event.target.id==='media')closeMedia()">
+  <div class="sheet">
+    <div class="row"><strong>3D model</strong>
+      <span class="rowact"><span class="media-tabs" id="mediatabs"></span>
+        <button class="mini reject" onclick="closeMedia()">Close</button></span></div>
+    <div id="mediaviewer"></div>
   </div>
 </div>
 
@@ -386,6 +423,7 @@ function renderTools(){
         <span>${idLink(rid(t))}
           <button class="mini link" onclick="setName('${rid(t)}')">${cf(t,"name")?"Rename":"Set name"}</button></span></div>
       <div class="muted">${shape?esc(shape):"<i>type unknown</i>"}${dia!=null?" &middot; &#x2300;"+dia:""}</div>`+
+      mediaSection(t,"tool-instance-records")+
       where.map(w=>`<div class="row" style="margin-top:.4rem"><span><span class="pill bound">bound</span> T${w.n} @ ${esc(state.machineNames[rid(w.m)])}</span></div>`).join("")+
       `<div class="row" style="margin-top:.6rem"><span class="muted">${where.length} binding(s)</span>
         <button class="unbind" onclick="deleteRecord('${rid(t)}')">Delete tool</button></div>`+
@@ -512,6 +550,145 @@ function entryRow(m,s){
   </div>`;
 }
 
+// ---- Media view (canonical.media) ------------------------------------------
+// A record's canonical.media is a list of {role, ref, content_type, filename,
+// size}. We SHOW it so a human can visually confirm an imported tool: raster
+// images inline, mesh 3D models in an in-browser WebGL viewer (online-3d-viewer,
+// loaded lazily from a CDN — no build step), everything else as a download link.
+//
+// STEP note: online-3d-viewer reads STEP via a WASM kernel it runs in a Web
+// Worker, and a Worker script must be same-origin — it can't be pulled straight
+// from a CDN without self-hosting that worker (which would mean a build). So a
+// STEP solid is offered for download (FreeCAD opens it directly) rather than
+// rendered; mesh formats (STL, glTF/GLB, OBJ, PLY, 3MF, …) render in-browser.
+// See docs/TOOL_SCHEMA.md §7.7.
+const O3DV_VERSION = "0.18.0";
+const O3DV_ENGINE_URL = "https://cdn.jsdelivr.net/npm/online-3d-viewer@"+O3DV_VERSION+"/build/engine/o3dv.min.js";
+// Mesh formats whose loaders are bundled in the engine (pure JS, no external
+// worker/WASM) — these render straight from a CDN. STEP/IGES/IFC/3DM are not here.
+const VIEWABLE_3D = new Set(["stl","obj","ply","off","3ds","gltf","glb","fbx","dae","wrl","vrml","3mf"]);
+const MEDIA_ROLE_LABEL = {model_3d:"3D model", model_3d_basic:"3D model (basic)",
+  drawing_2d:"2D drawing", image:"Image", icon:"Icon", logo:"Logo", document:"Document"};
+
+function mediaBytesUrl(base,id,ref){ return "/api/v1/"+base+"/"+id+"/media/"+ref; }
+function mediaExt(m){ const f=m.filename||""; const i=f.lastIndexOf("."); return i>=0?f.slice(i+1).toLowerCase():""; }
+function mediaIsImage(m){ const ct=(m.content_type||"").toLowerCase();
+  return ct.indexOf("image/")===0 || ["png","jpg","jpeg","gif","webp","bmp","svg"].includes(mediaExt(m)); }
+function mediaIsModel(m){ return m.role==="model_3d" || m.role==="model_3d_basic"
+  || VIEWABLE_3D.has(mediaExt(m)) || (m.content_type||"").toLowerCase().indexOf("model/")===0; }
+function mediaViewable3D(m){ return VIEWABLE_3D.has(mediaExt(m)); }
+function humanSize(n){ if(n==null) return ""; if(n<1024) return n+" B";
+  if(n<1048576) return (n/1024).toFixed(0)+" KB"; return (n/1048576).toFixed(1)+" MB"; }
+function recordMedia(rec){ return (((rec||{}).canonical||{}).media||{}).value || []; }
+function _findMediaRecord(id){
+  for(const c of (state.catalogs||[])) if(rid(c)===id) return {rec:c, base:"tool-catalog-records"};
+  for(const t of (state.tools||[]))    if(rid(t)===id) return {rec:t, base:"tool-instance-records"};
+  return null;
+}
+
+// The media block for a record's detail/card. Empty string when there's nothing
+// to show, so callers can drop it in unconditionally.
+function mediaSection(rec, base){
+  const items = recordMedia(rec);
+  if(!items.length) return "";
+  const id = rid(rec);
+  const images = items.filter(mediaIsImage);
+  const models = items.filter(m=>mediaIsModel(m) && !mediaIsImage(m));
+  const others = items.filter(m=>!mediaIsImage(m) && !mediaIsModel(m));
+  let html = `<div class="section-h">Media</div>`;
+  if(images.length){
+    html += `<div class="media-grid">` + images.map(m=>{
+      const url = mediaBytesUrl(base,id,m.ref);
+      return `<a class="media-thumb" href="${esc(url)}" target="_blank" rel="noopener"
+                 title="${esc(m.filename||m.role)}"><img src="${esc(url)}" alt="${esc(m.role)}"></a>`;
+    }).join("") + `</div>`;
+  }
+  html += models.map(m=>{
+    const url = mediaBytesUrl(base,id,m.ref), label = MEDIA_ROLE_LABEL[m.role]||"3D model";
+    const meta = `<span class="media-meta"><strong>${esc(label)}</strong>`+
+      `<span class="muted">${esc(m.filename||"")}${m.size!=null?" &middot; "+humanSize(m.size):""}</span></span>`;
+    const dl = `<a class="dl" href="${esc(url)}" download="${esc(m.filename||"")}">Download</a>`;
+    if(mediaViewable3D(m)){
+      return `<div class="media-item">${meta}<span class="rowact">
+        <button class="mini view" onclick="openModelViewer('${id}','${esc(m.ref)}')">View 3D</button>${dl}</span></div>`;
+    }
+    // STEP/IGES and other CAD solids: no in-browser kernel here — offer the file.
+    return `<div class="media-item">${meta}<span class="rowact">${dl}</span>
+      <div class="media-note">Opens in CAD (e.g. FreeCAD). A browser 3D preview of this format isn't shown here.</div></div>`;
+  }).join("");
+  html += others.map(m=>{
+    const url = mediaBytesUrl(base,id,m.ref), label = MEDIA_ROLE_LABEL[m.role]||"File";
+    return `<div class="media-item"><span class="media-meta"><strong>${esc(label)}</strong>
+      <span class="muted">${esc(m.filename||"")}${m.size!=null?" &middot; "+humanSize(m.size):""}</span></span>
+      <a class="dl" href="${esc(url)}" download="${esc(m.filename||"")}">Download</a></div>`;
+  }).join("");
+  return html;
+}
+
+// Lazily pull the viewer engine from the CDN — only when a model is actually
+// opened, so the WASM-free engine bundle never loads for media-less records.
+let _o3dvLoad=null, _viewer=null, _viewerModels=[], _viewerCtx=null;
+function loadViewerEngine(){
+  if(window.OV) return Promise.resolve(window.OV);
+  if(_o3dvLoad) return _o3dvLoad;
+  _o3dvLoad = new Promise((res,rej)=>{
+    const s=document.createElement("script"); s.src=O3DV_ENGINE_URL;
+    s.onload=()=>window.OV?res(window.OV):rej(new Error("viewer engine missing"));
+    s.onerror=()=>{ _o3dvLoad=null; rej(new Error("could not load the 3D viewer engine")); };
+    document.head.appendChild(s);
+  });
+  return _o3dvLoad;
+}
+function _destroyViewer(){ if(_viewer && _viewer.Destroy){ try{ _viewer.Destroy(); }catch(e){} } _viewer=null; }
+function openModelViewer(id, ref){
+  const found=_findMediaRecord(id);
+  if(!found){ toast("That record isn't loaded in this view."); return; }
+  // Prefer the detailed model_3d; offer a basic one as a fallback toggle.
+  _viewerModels = recordMedia(found.rec).filter(m=>mediaIsModel(m) && mediaViewable3D(m))
+    .sort((a,b)=>(a.role==="model_3d"?0:1)-(b.role==="model_3d"?0:1));
+  _viewerCtx = {id, base:found.base};
+  const startRef = _viewerModels.some(m=>m.ref===ref) ? ref : ((_viewerModels[0]||{}).ref);
+  $("#media").style.display="flex";   // size the host before the viewer measures it
+  mountModel(startRef);
+}
+function _renderViewerTabs(activeRef){
+  const tabs=$("#mediatabs");
+  tabs.innerHTML = _viewerModels.length<2 ? "" : _viewerModels.map(m=>
+    `<button class="mini view ${m.ref===activeRef?"active":""}" onclick="mountModel('${esc(m.ref)}')">${esc(MEDIA_ROLE_LABEL[m.role]||"Model")}</button>`).join("");
+}
+async function mountModel(ref){
+  if(!_viewerCtx) return;
+  _renderViewerTabs(ref);
+  const host=$("#mediaviewer");
+  host.innerHTML = `<div class="muted" style="padding:1rem">Loading 3D model&hellip;</div>`;
+  const m=_viewerModels.find(x=>x.ref===ref) || _viewerModels[0];
+  if(!m){ host.innerHTML=`<div class="muted" style="padding:1rem">No renderable 3D model.</div>`; return; }
+  try{
+    const OV=await loadViewerEngine();
+    const resp=await fetch(mediaBytesUrl(_viewerCtx.base,_viewerCtx.id,ref), {credentials:"same-origin"});
+    if(!resp.ok) throw new Error("HTTP "+resp.status);
+    const blob=await resp.blob();
+    // Wrap the bytes in a File named with the real filename — online-3d-viewer
+    // picks its loader from the extension (the bytes URL ends in a hash, not .stl).
+    const file=new File([blob], m.filename||("model."+(mediaExt(m)||"stl")), {type:m.content_type||""});
+    _destroyViewer();
+    host.innerHTML="";
+    _viewer=new OV.EmbeddedViewer(host, {
+      backgroundColor:new OV.RGBAColor(16,21,26,255),
+      defaultColor:new OV.RGBColor(180,190,200),
+      onModelLoadFailed:()=>{ host.innerHTML=`<div class="muted" style="padding:1rem">Could not read this 3D file in the browser. Use Download to open it in CAD.</div>`; }
+    });
+    _viewer.LoadModelFromFileList([file]);
+  }catch(e){
+    host.innerHTML=`<div class="muted" style="padding:1rem">3D preview unavailable: ${esc(e.message)}. Use Download to open the file.</div>`;
+  }
+}
+function closeMedia(){
+  $("#media").style.display="none"; _destroyViewer();
+  _viewerModels=[]; _viewerCtx=null;
+  $("#mediaviewer").innerHTML=""; $("#mediatabs").innerHTML="";
+}
+
 // ---- Catalog records (READ-ONLY: the visual drift detector) ----------------
 // A ToolCatalogRecord is a nominal, *asserted* published spec. The whole reason
 // this surface exists in M2 is provenance visibility: every field is shown next
@@ -583,6 +760,7 @@ function renderCatalogDetail(){
         ${provBadge("unknown")} an honest gap (never a guess).</div>
       <div class="section-h">Identity</div>${idRows}
       <div class="section-h">Geometry</div>${geomRows}
+      ${mediaSection(c,"tool-catalog-records")}
     </div>`;
 }
 
