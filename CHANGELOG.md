@@ -3,6 +3,29 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.0] — 2026-06-23
+
+The **request-to-load** release: the cross-client sync loop now closes end to
+end. Adding a tool to a machine-bound tool set becomes a request a controller
+surfaces and the operator fulfils by mounting.
+
+### Added
+- **Requested-member tool-set workflow.** Member-state reconciliation classifies
+  each member of a machine-bound set as `loaded`, `requested`, or `pending bind`;
+  loaded members inherit the machine entry's observed tool number.
+- `POST /tool-set-records/{id}/refresh` — merges a machine's state into a set's
+  membership, **preserving requested members** (the machine is authoritative for
+  numbers/offsets, never for membership).
+- Auto-proposed binding: a newly-mounted, still-unbound tool-table entry that
+  matches a requested member opens a binding proposal naming that instance.
+- **Canonical media** on tool records — 3D models, drawings, and images — with a
+  web UI media view and in-browser STEP rendering.
+- A schema **migration spine** and self-describing backups.
+
+### Changed
+- The client was **extracted into `smooth-client`** and removed from the server.
+- The web UI "refresh from machine" now merges membership instead of replacing it.
+
 ## [0.2.0] — 2026-06-21
 
 **M2** — author `ToolCatalogRecord`s and create physical tools from them, end to
