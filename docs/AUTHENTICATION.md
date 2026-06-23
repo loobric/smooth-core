@@ -1,156 +1,157 @@
 # Authentication
 
-Smooth uses simple authentication to protect your tool data while keeping it easy to integrate with machines and applications.
+Smooth Core protects your tool data while staying easy to integrate with machines
+and applications. Every API endpoint requires authentication (unless auth is
+explicitly disabled — see below), and all data is isolated per user account.
 
 ## Two Ways to Authenticate
 
-### 1. User Accounts (Web UI)
-- Email and password login
-- Session-based
-- For managing tools, data, and creating API keys
+### 1. User accounts (Web UI)
+- Email + password login
+- Session-cookie based
+- For managing tools and data, and for creating API keys
 
-### 2. API Keys (Machine/client Access)
-- For CNC machines, scripts, and applications
+### 2. API keys (machine / client access)
+- For CNC controllers, scripts, and applications
 - Created by users through the web UI
-- Can be scoped and tagged for specific purposes
+- Optionally scoped, tagged, and given an expiration
 
 ## API Keys
 
-### Creating API Keys
+### Creating an API key
 
-1. Log in to Smooth web UI
-2. Navigate to Settings → API Keys
-3. Click "Create New Key"
-4. Set:
-   - **Name**: Descriptive name (e.g., "Mill #3", "Backup Script")
-   - **Scopes**: What the key can do (read, write:items, write:presets, etc.)
-   - **Tags**: Optional labels to narrow what a token can act on.
-   - **Expiration**: Optional expiration date
+1. Log in to the Smooth Core web UI
+2. Open **Settings → API Keys**
+3. Click **Create New Key** and set:
+   - **Name** — a label (e.g. "Mill #3", "Backup Script")
+   - **Scopes** — what the key may do (see [Scopes](#scopes))
+   - **Tags** — optional labels that narrow which resources the key can act on
+   - **Expiration** — optional expiry date
+4. **Copy the key immediately — it is shown only once.**
 
-5. Copy the key immediately—it won't be shown again
+The key is a random URL-safe token (32 bytes of entropy, no fixed prefix). Only a
+bcrypt hash is stored server-side; the plaintext is never persisted and cannot be
+recovered — revoke and reissue if it is lost.
 
-### Using API Keys
+### Using an API key
 
-Include the key in the `Authorization` header:
+Send the key as a Bearer token in the `Authorization` header:
 
 ```bash
-curl -H "Authorization: Bearer sk_abc123..." \
-  https://api.loobric.com/api/v1/tools
+curl -H "Authorization: Bearer <your-api-key>" \
+  https://api.loobric.com/api/v1/tool-instance-records
 ```
+
+The public API is served under `/api/v1/`. The primary resources are
+`tool-instance-records`, `tool-catalog-records`, `tool-table-entry-records`,
+`tool-set-records`, and `machine-records` (see [ARCHITECTURE.md](./ARCHITECTURE.md)
+and [TOOL_SCHEMA.md](./TOOL_SCHEMA.md)).
 
 ### Scopes
 
-Control what each key can access:
+Scopes follow a simple `action:entity` pattern, with wildcards:
 
-- `read` - View all data
-- `write:items` - Create/update tool items
-- `write:presets` - Create/update presets
-- `write:assemblies` - Create/update assemblies
-- `admin:users` - Manage users (admin only)
-- `admin:backup` - Backup/restore operations
+- `read` — read access to all resources
+- `write:<entity>` — create/update a resource kind (e.g. `write:instances`)
+- `delete:<entity>` — delete a resource kind
+- `admin:<entity>` — administrative actions on a resource kind
+- `write:*` — any write action (action wildcard)
+- `admin:*` — full access; **bypasses scope and tag checks**
+
+A key with no scopes is denied. `admin:*` grants everything; the `read` scope
+covers all read operations.
 
 ### Tags
 
-Tags enable flexible, fine-grained access control for API keys:
+Tags provide coarse, resource-level access control on top of scopes:
 
 ```json
 {
   "name": "Mill #3 API Key",
-  "scopes": ["read", "write:assemblies"],
-  "tags": ["mill-3", "production", "shop-floor"]
+  "scopes": ["read", "write:instances"],
+  "tags": ["mill-3", "production"]
 }
 ```
 
-**How Tags Work:**
+**How tags work:** a tagged key may only act on resources sharing at least one of
+its tags. Access is granted when **any** key tag matches **any** resource tag.
 
-API keys with tags can only access resources that have matching tags. Access is granted if **any** tag on the API key matches **any** tag on the resource.
+- **Key has no tags** — no tag restriction (access governed by scopes alone)
+- **Resource has no tags** — reachable by any key with the right scopes
+- **Session login** — bypasses tag checks (a user owns all their own resources)
+- **`admin:*` scope** — bypasses tag checks
 
-- **Empty API key tags**: No tag restrictions (can access all resources with proper scopes)
-- **Empty resource tags**: Accessible to all API keys with proper scopes
-- **Session authentication**: Bypasses tag checks (users own all their resources)
-- **Admin scope** (`admin:*`): Bypasses all tag checks
+**Use cases:** machine-specific keys (`mill-3`, `lathe-1`), location-based access
+(`shop-floor`, `office`), purpose grouping (`backup`, `monitoring`), or
+environment isolation (`production`, `staging`).
 
-**Examples:**
+## What Is Enforced Today
 
-Create a resource with tags:
-```bash
-curl -H "Authorization: Bearer sk_mill3..." \
-  -X POST https://api.loobric.com/api/v1/tool-assemblies \
-  -d '{
-    "items": [{
-      "name": "Mill #3 Assembly",
-      "components": [...],
-      "tags": ["mill-3", "production"]
-    }]
-  }'
-```
-
-List resources (automatically filtered by tags):
-```bash
-# API key with ["mill-3"] tag only sees assemblies tagged with "mill-3"
-curl -H "Authorization: Bearer sk_mill3..." \
-  https://api.loobric.com/api/v1/tool-assemblies
-```
-
-**Use Cases:**
-- **Machine-specific keys**: Restrict keys to specific machines (e.g., "mill-3", "lathe-1")
-- **Location-based access**: Limit keys by location (e.g., "shop-floor", "office")
-- **Purpose grouping**: Organize by function (e.g., "backup", "monitoring", "integration")
-- **Environment isolation**: Separate production and development (e.g., "production", "staging")
-
-**Tag Enforcement:**
-
-Fully implemented for all resource types:
-- Tool assemblies (create, read, update, delete, list)
-- Tool sets (create, read, update, delete, list)
-- Tool items (create, read, update, delete, list)
-- Tool presets (create, read, update, delete, list)
-- Tool instances (create, read, update, delete, list)
+- **Authentication** is required on every endpoint (session cookie or API key),
+  unless auth is disabled (below).
+- **Per-user data isolation** applies everywhere: each user sees only their own
+  data; an admin sees all of it. API keys inherit their owner's access.
+- **Scope + tag enforcement** is wired on the internal tool resources
+  (tool items, assemblies, instances, presets).
+- **Per-client scope enforcement for the public sectioned-record API**
+  (`tool-instance-records` et al.) is the planned per-client scope manifest
+  described in [TOOL_SCHEMA.md](./TOOL_SCHEMA.md) §10 — **not yet enforced**.
+  Those endpoints currently rely on authentication and per-user isolation. Treat
+  the scope/tag model above as the access-control design; do not assume
+  fine-grained scope rejection on the records API until §10 lands.
 
 ## Security
 
 ### Passwords
 - Hashed with bcrypt (never stored in plaintext)
-- Minimum 8 characters recommended
+- 8-character minimum recommended
 
-### API Keys
-- Cryptographically secure (32-byte tokens)
-- Hashed in database (like passwords)
-- Shown only once at creation
-- Can be revoked anytime
+### API keys
+- 32-byte cryptographically random tokens
+- Stored only as a bcrypt hash
+- Shown once at creation
+- Can be revoked at any time; support an optional expiration
 
 ### Sessions
-- HTTP-only cookies (not accessible to JavaScript)
-- Secure flag in production (HTTPS only)
-- Automatic expiration
+- Server-side session store is **in-memory** (single process). It is not shared
+  across replicas and is cleared on server restart — you will need to log in again
+  after a restart. Production deployments should back it with Redis or the
+  database.
+- The session cookie is **HttpOnly** and **SameSite=Lax**, with a **24-hour**
+  lifetime (`max_age`).
 
 ## Disabling Authentication
 
-For testing or single-user deployments:
+For testing or trusted single-user deployments:
 
 ```bash
 export AUTH_ENABLED=false
 ```
 
-**Warning:** Only use in trusted environments. All API endpoints become publicly accessible.
+With auth disabled, all endpoints act as a built-in test user and become publicly
+accessible — only use this in a trusted environment.
+
+Smooth Core also supports a **solo mode** that runs as a single built-in user
+without login ceremony, intended for local single-operator setups.
 
 ## Multi-Tenancy
 
 All data is isolated by user account:
-- Each user sees only their own tools, presets, and assemblies
-- API keys inherit the user's data access
-- Queries automatically filtered by `user_id`
+- Each user sees only their own tools, sets, machines, and related records
+- API keys inherit their owner's data access
+- Queries are filtered by `user_id` (admins are exempt and see all data)
 
 ## Troubleshooting
 
 **"Invalid API key"**
-- Key may be expired, revoked, or mistyped
-- Check key is active in Settings → API Keys
+- The key may be expired, revoked, or mistyped
+- Confirm it is still active under Settings → API Keys
 
 **"Insufficient permissions"**
-- Key lacks required scope for the operation
-- Create new key with appropriate scopes
+- The key lacks the scope (or matching tag) required for the operation
+- Issue a new key with the appropriate scopes/tags
 
-**"Session expired"**
-- Log in again through web UI
-- Sessions expire after 24 hours of inactivity
+**"Session expired" / logged out unexpectedly**
+- Log in again through the web UI
+- The session cookie lasts 24 hours; you are also logged out if the server
+  restarts (in-memory session store)

@@ -10,8 +10,8 @@ end. Adding a tool to a machine-bound tool set becomes a request a controller
 surfaces and the operator fulfils by mounting.
 
 ### Added
-- **Requested-member tool-set workflow.** Member-state reconciliation classifies
-  each member of a machine-bound set as `loaded`, `requested`, or `pending bind`;
+- **Requested-member tool-set workflow.** Each member of a machine-bound set is
+  classified — at read time — as `loaded`, `requested`, or `pending bind`;
   loaded members inherit the machine entry's observed tool number.
 - `POST /tool-set-records/{id}/refresh` — merges a machine's state into a set's
   membership, **preserving requested members** (the machine is authoritative for

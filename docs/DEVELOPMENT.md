@@ -5,7 +5,7 @@
 2. **[Design Philosophy](DESIGN_PHILOSOPHY.md)** - Core principles and architecture
 3. **[Authentication](AUTHENTICATION.md)** - Authentication and authorization
 4. **[Architecture](ARCHITECTURE.md)** - System architecture and components
-5. **[Data Model](DATA_MODEL.md)** - Database schema and relationships
+5. **[Tool Schema](TOOL_SCHEMA.md)** - The authoritative sectioned-record contract
 
 ## Development Setup
 

@@ -48,6 +48,16 @@ where the source carries them:
 - Webhook/event system for external integrations
 - Rate limiting and hardening for public-facing deployments
 - PostgreSQL as a supported production backend
+- **Auth hardening — session cookie `Secure` flag.** The login session cookie is set
+  HttpOnly + SameSite=Lax but **without `Secure`** (`smooth/api/auth.py:381-386`), so it can
+  ride plain HTTP despite the docstring claiming otherwise. Set `Secure` (conditionally on a
+  production/HTTPS setting) so session IDs are never sent in clear text.
+- **Auth hardening — gate user registration.** `register()` (`smooth/api/auth.py:281`) has no
+  auth dependency, so registration is unconditionally open: the first user becomes admin, but
+  any anonymous caller can then create more accounts. Non-first-user registration should
+  require admin auth. Two tests already assert this and currently fail against the open
+  behavior — `tests/integration/test_registration_security.py::{test_second_user_registration_requires_auth,test_non_admin_cannot_register_users}`;
+  closing the gap makes them pass.
 
 ## Deferred (considered, not pursued)
 

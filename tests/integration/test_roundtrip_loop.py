@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Server-driven integration test for the ROUNDTRIP loop (docs/ROUNDTRIP.md
-steps 5-10, the acceptance test in docs/ROUNDTRIP_FIXES.md "Fix 2").
+steps 5-10, the acceptance test in docs/Archive/ROUNDTRIP_FIXES.md "Fix 2").
 
 This drives the *real* API endpoints the clients use (entry `/sync`, `/bind`,
 set create/assert/members, `/refresh`, set GET) and proves the loop closes:
