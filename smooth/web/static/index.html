@@ -352,10 +352,13 @@ async function createSetFromMachine(machineId){
 async function refreshSet(setId){
   const s=state.toolsets.find(x=>rid(x)===setId), machineId=cf(s,"machine_id");
   if(!machineId){ toast("This set isn't linked to a machine."); return; }
-  const ids=_boundInstances(machineId);
+  // A MERGE, not a replace: the machine owns numbers/offsets, never membership.
+  // Requested members (no machine entry yet) survive; only observed numbers change.
   try{
-    await api("POST","/tool-set-records/"+setId+"/members",{actor:"human@web",members:ids.map(id=>({tool_record_id:id}))});
-    toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${ids.length} tool(s).`); refresh();
+    const r=await api("POST","/tool-set-records/"+setId+"/refresh",{actor:"human@web"});
+    const n=(r.set.canonical.members||[]).length, amb=(r.ambiguities||[]).length;
+    toast(`Refreshed from ${state.machineNames[machineId]||"machine"}: ${n} tool(s).`+
+          (amb?` ${amb} to review.`:"")); refresh();
   }catch(e){ toast(e.message); }
 }
 // A suggested name for an instance: its own name, else the label of an entry it's bound in.

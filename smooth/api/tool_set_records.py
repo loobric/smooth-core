@@ -24,6 +24,7 @@ from smooth.database.schema import (
     User, ToolSetRecord as Row,
 )
 from smooth.audit import create_audit_log
+from smooth.binding_v2 import reconcile_set_membership
 from smooth.contract import (
     ToolSet, ToolSetCanonical, Provenance, UNKNOWN, LaneViolation, reject_out_of_lane,
 )
@@ -49,15 +50,37 @@ def _blank_canonical() -> dict:
     }
 
 
-def _response(row: Row) -> dict:
-    doc = {
+def _doc(row: Row) -> dict:
+    return {
         "internal": {
             "id": row.id, "version": row.version,
             "created_at": _iso(row.created_at), "updated_at": _iso(row.updated_at),
         },
-        "canonical": row.canonical,
+        "canonical": copy.deepcopy(row.canonical),
         "clients": row.clients,
     }
+
+
+def _response(row: Row) -> dict:
+    doc = _doc(row)
+    ToolSet.model_validate(doc)
+    return doc
+
+
+def _read_response(db: Session, row: Row) -> dict:
+    """The GET projection. For a machine-bound set, each member is classified
+    against the machine's tool-table entries (loaded / requested / pending bind)
+    and loaded members inherit the entry's observed tool_number — derived at read
+    time, never persisted (docs/ROUNDTRIP.md). A non-machine-bound set is
+    returned unchanged."""
+    doc = _doc(row)
+    if row.machine_id:
+        result = reconcile_set_membership(db, row)
+        doc["canonical"]["members"] = [
+            {"tool_record_id": ms.tool_record_id, "number": ms.number,
+             "state": ms.state}
+            for ms in result.members
+        ]
     ToolSet.model_validate(doc)
     return doc
 
@@ -98,6 +121,10 @@ class MembersRequest(BaseModel):
     actor: str
 
 
+class RefreshRequest(BaseModel):
+    actor: Optional[str] = None
+
+
 # -- endpoints ----------------------------------------------------------------
 
 @router.post("")
@@ -124,7 +151,7 @@ def create_set(payload: CreateRequest, db: Session = Depends(get_db),
 def list_sets(db: Session = Depends(get_db),
               user: User = Depends(get_authenticated_user)):
     rows = db.query(Row).filter(Row.user_id == user.id).order_by(Row.created_at).all()
-    return {"items": [_response(r) for r in rows]}
+    return {"items": [_read_response(db, r) for r in rows]}
 
 
 @router.get("/{record_id}")
@@ -133,7 +160,7 @@ def get_set(record_id: str, db: Session = Depends(get_db),
     row = _owned(db, user, record_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not found")
-    return _response(row)
+    return _read_response(db, row)
 
 
 @router.delete("/{record_id}")
@@ -230,3 +257,51 @@ def set_members(record_id: str, req: MembersRequest, db: Session = Depends(get_d
                      changes={"count": len(members)})
     db.commit()
     return _response(row)
+
+
+@router.post("/{record_id}/refresh")
+def refresh_from_machine(record_id: str, req: RefreshRequest = RefreshRequest(),
+                         db: Session = Depends(get_db),
+                         user: User = Depends(get_authenticated_user)):
+    """Refresh a machine-bound set from its machine — a MERGE, not a replace.
+
+    This is the MACHINE-DRIVEN counterpart to set_members (POST /members, the
+    human "replace membership" operation). It runs `reconcile_set_membership`
+    (ROUNDTRIP_FIXES S1) and writes back what the machine observes:
+
+    - **loaded** members inherit the bound entry's observed `tool_number`
+      (observed provenance), persisted into canonical;
+    - **requested** members (no machine entry yet) are PRESERVED with their
+      asserted-preference / unknown number — never deleted;
+    - **pending bind** members surface the proposed entry's observed number.
+
+    The machine is authoritative for numbers/offsets, NEVER for membership: the
+    member set is conserved (no additions, no deletions). Ambiguities surfaced by
+    the engine (e.g. an observed number colliding with an asserted preference)
+    are returned under `ambiguities` rather than silently renumbered. 400 when
+    the set is not machine-bound (there is nothing to refresh against)."""
+    row = _owned(db, user, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not found")
+    if not row.machine_id:
+        raise HTTPException(status_code=400,
+                            detail="set is not machine-bound; nothing to refresh")
+    result = reconcile_set_membership(db, row)
+    canonical = copy.deepcopy(row.canonical)
+    canonical["members"] = [
+        {"tool_record_id": ms.tool_record_id, "number": ms.number}
+        for ms in result.members
+    ]
+    _validate_canonical(canonical)
+    row.canonical = canonical
+    row.version += 1
+    row.updated_by = user.id
+    create_audit_log(session=db, user_id=user.id, operation="REFRESH",
+                     entity_type="tool_set_record", entity_id=row.id,
+                     changes={"count": len(result.members),
+                              "ambiguities": len(result.ambiguities),
+                              "actor": req.actor})
+    db.commit()
+    # A refresh report, not a bare record: the merged set plus any ambiguities
+    # the engine surfaced (kept out of the ToolSet doc, which forbids extras).
+    return {"set": _read_response(db, row), "ambiguities": result.ambiguities}

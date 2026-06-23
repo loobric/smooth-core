@@ -299,6 +299,10 @@ class SetMember(BaseModel):
 
     tool_record_id: str
     number: Field                      # observed when machine-bound; else asserted
+    # Derived at read time for a machine-bound set (never stored): the member's
+    # state against the machine's tool-table entries — "loaded" | "requested" |
+    # "pending bind". Absent (None) for a set with no machine link.
+    state: Optional[str] = None
 
 
 class ToolSetCanonical(BaseModel):
