@@ -24,7 +24,10 @@ from smooth.database.schema import (
     User, ToolTableEntryRecord as Row, ToolInstanceRecord as InstanceRow,
 )
 from smooth.audit import create_audit_log
-from smooth.binding_v2 import close_open_proposal_on_bind
+from smooth.binding_v2 import (
+    close_open_proposal_on_bind, requested_members_by_number,
+    propose_for_requested_entry,
+)
 from smooth.contract import (
     ToolTableEntry, EntryCanonical, Provenance, UNKNOWN,
     LaneViolation, reject_out_of_lane,
@@ -186,6 +189,7 @@ def sync_entries(req: EntrySyncRequest, db: Session = Depends(get_db),
                        % (len(doomed), len(existing)))
 
     items = []
+    created = []
     present = set()
     for s in req.entries:
         present.add(s.tool_number)
@@ -196,6 +200,7 @@ def sync_entries(req: EntrySyncRequest, db: Session = Depends(get_db),
                       user_id=user.id, created_by=user.id, updated_by=user.id)
             db.add(row)
             db.flush()
+            created.append(row)
         canonical = copy.deepcopy(row.canonical)
         canonical["tool_number"] = {"value": s.tool_number, "source": src}
         if s.description is not None:
@@ -233,6 +238,19 @@ def sync_entries(req: EntrySyncRequest, db: Session = Depends(get_db),
             db.query(EntryProposal).filter(EntryProposal.entry_id == row.id).delete()
             db.delete(row)
             removed.append(tn)
+
+    # ROUNDTRIP_FIXES Fix 2 / S3 — the request-aware binding bridge: a tool
+    # freshly mounted at a requested pocket should turn into a binding. For each
+    # entry CREATED + still UNBOUND in this push, open a request-aware proposal
+    # (number match to a machine-bound set's requested member, elevated
+    # confidence) or fall back to the geometry heuristic, exactly as before.
+    # Computed before any proposal is added so the requested members are read off
+    # the pre-bridge state (a new proposal would otherwise flip them to pending).
+    if created:
+        requested = requested_members_by_number(db, user, req.machine_id)
+        for row in created:
+            if row.bound_instance_id is None:
+                propose_for_requested_entry(db, user, row, requested)
 
     create_audit_log(session=db, user_id=user.id, operation="SYNC_TABLE",
                      entity_type="tool_table_entry_record", entity_id=req.machine_id,
