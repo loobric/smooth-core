@@ -3,16 +3,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """
-Integration tests for user registration security.
+Integration tests for user registration.
 
-Tests the security model where:
+Tests the open-registration model:
 - First user registration is open and creates an admin
-- Subsequent registrations require admin authentication
+- Subsequent registrations are also open and create standard "user" accounts
+
+This is the deliberate posture for the public sandbox (api.loobric.com): anyone
+may create an account without an invite. The first user still becomes admin; no
+one after them does, and open registration grants no elevated rights.
 
 Assumptions:
 - First user automatically becomes admin (is_admin=True, role="admin")
-- Non-admin users cannot register new users
-- Only admins can register additional users
+- Anyone may register an account; new accounts are non-admin "user" by default
 """
 import pytest
 from fastapi.testclient import TestClient
@@ -70,14 +73,18 @@ def test_first_user_becomes_admin(client, db_session):
 
 
 @pytest.mark.integration
-def test_second_user_registration_requires_auth(client):
-    """Test that second user registration requires authentication.
-    
+def test_second_user_registration_is_open(client):
+    """Test that a second user can register without authentication.
+
+    Open registration (the sandbox posture): once the first user exists,
+    anyone may still self-register. The new account is created as a non-admin
+    "user".
+
     Assumptions:
-    - After first user exists, registration requires authentication
-    - Unauthenticated registration returns 401
+    - Unauthenticated registration after the first user returns 201
+    - The new account is a non-admin "user"
     """
-    # Create first user
+    # Create first user (admin)
     client.post(
         "/api/v1/auth/register",
         json={
@@ -85,8 +92,8 @@ def test_second_user_registration_requires_auth(client):
             "password": "password123"
         }
     )
-    
-    # Try to register second user without authentication
+
+    # Register a second user with no authentication — allowed.
     response = client.post(
         "/api/v1/auth/register",
         json={
@@ -94,20 +101,27 @@ def test_second_user_registration_requires_auth(client):
             "password": "password123"
         }
     )
-    assert response.status_code == 401
+    assert response.status_code == 201
+    data = response.json()
+    assert data["email"] == "second@example.com"
+    assert data["role"] == "user"
 
 
 @pytest.mark.integration
-def test_non_admin_cannot_register_users(client, db_session):
-    """Test that non-admin users cannot register new users.
-    
+def test_non_admin_can_register_users(client, db_session):
+    """Test that a non-admin user can also register new accounts.
+
+    Open registration grants no elevated rights — a logged-in non-admin can
+    register another account exactly as an anonymous visitor can, and the
+    created account is a non-admin "user".
+
     Assumptions:
-    - Only admin users can register additional users
-    - Non-admin authenticated users get 403 Forbidden
+    - A non-admin (authenticated) registration returns 201
+    - The created account is a non-admin "user"
     """
     from smooth.database.schema import User
     from smooth.auth.password import hash_password
-    
+
     # Create first user (admin)
     client.post(
         "/api/v1/auth/register",
@@ -116,7 +130,7 @@ def test_non_admin_cannot_register_users(client, db_session):
             "password": "admin123"
         }
     )
-    
+
     # Manually create a non-admin user in the test database
     non_admin = User(
         email="user@example.com",
@@ -128,7 +142,7 @@ def test_non_admin_cannot_register_users(client, db_session):
     )
     db_session.add(non_admin)
     db_session.commit()
-    
+
     # Login as non-admin and get cookies
     login_response = client.post(
         "/api/v1/auth/login",
@@ -138,11 +152,11 @@ def test_non_admin_cannot_register_users(client, db_session):
         }
     )
     assert login_response.status_code == 200
-    
+
     # Extract cookies from login response
     cookies = login_response.cookies
-    
-    # Try to register new user as non-admin (with cookies)
+
+    # Register a new account as the non-admin — allowed under open registration.
     response = client.post(
         "/api/v1/auth/register",
         json={
@@ -151,8 +165,16 @@ def test_non_admin_cannot_register_users(client, db_session):
         },
         cookies=cookies
     )
-    assert response.status_code == 403
-    assert "administrator" in response.json()["detail"].lower()
+    assert response.status_code == 201
+    data = response.json()
+    assert data["email"] == "newuser@example.com"
+    assert data["role"] == "user"
+
+    # And it is genuinely non-admin in the database.
+    created = db_session.query(User).filter(User.email == "newuser@example.com").first()
+    assert created is not None
+    assert created.is_admin is False
+    assert created.role == "user"
 
 
 @pytest.mark.integration
