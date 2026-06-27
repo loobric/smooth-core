@@ -3,6 +3,14 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.4] — 2026-06-27
+
+### Added
+- **Web UI (`/ui`): sign out and self-service registration.** A **Sign out** button
+  in the header ends the session (`POST /auth/logout`). The login screen now toggles
+  between **Sign in** and **Create account**, so a new user can register from the
+  browser (register → auto sign-in) instead of needing the CLI.
+
 ## [0.3.3] — 2026-06-27
 
 ### Added

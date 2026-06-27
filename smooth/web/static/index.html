@@ -188,16 +188,20 @@
   <nav id="tabs"></nav>
   <span class="spacer"></span>
   <span id="whoami" class="muted"></span>
+  <button id="logout" class="mini reject" style="display:none" onclick="doLogout()">Sign out</button>
 </header>
 
 <main id="view"></main>
 
-<div id="login"><form onsubmit="return doLogin(event)">
-  <strong>Sign in to Smooth</strong>
+<div id="login"><form onsubmit="return doAuth(event)">
+  <strong id="logintitle">Sign in to Smooth</strong>
   <input id="email" type="email" placeholder="email" autocomplete="username" required>
   <input id="password" type="password" placeholder="password" autocomplete="current-password" required>
   <div class="err" id="loginerr"></div>
-  <button type="submit">Sign in</button>
+  <button type="submit" id="loginbtn">Sign in</button>
+  <div class="muted" style="text-align:center;font-size:.85rem">
+    <span id="loginswitch" class="link-ish" onclick="toggleAuthMode()">No account? Create one</span>
+  </div>
 </form></div>
 
 <div id="toast"></div>
@@ -312,11 +316,45 @@ async function api(method, path, body){
   if(!r.ok) throw new Error(data.detail||("HTTP "+r.status));
   return data;
 }
-async function doLogin(ev){ ev.preventDefault();
-  try { await api("POST","/auth/login",{email:$("#email").value,password:$("#password").value});
-        $("#login").style.display="none"; refresh();
-  } catch(e){ $("#loginerr").textContent="Sign-in failed - check credentials."; }
+// The login overlay does double duty: sign in OR create an account. Registration
+// is open (the first account becomes admin; the rest are regular users), so a new
+// user can self-serve here instead of needing the CLI.
+let authMode = "login";
+function setAuthMode(mode){
+  authMode = mode;
+  const reg = mode === "register";
+  $("#logintitle").textContent = reg ? "Create your Smooth account" : "Sign in to Smooth";
+  $("#loginbtn").textContent   = reg ? "Create account" : "Sign in";
+  $("#loginswitch").textContent= reg ? "Have an account? Sign in" : "No account? Create one";
+  $("#password").setAttribute("autocomplete", reg ? "new-password" : "current-password");
+  $("#loginerr").textContent = "";
+}
+function toggleAuthMode(){ setAuthMode(authMode === "login" ? "register" : "login"); }
+
+async function doAuth(ev){ ev.preventDefault();
+  const email = $("#email").value, password = $("#password").value;
+  try {
+    if(authMode === "register"){
+      await api("POST","/auth/register",{email, password});
+    }
+    // Either path ends in a session: register then log in to sign the new user in.
+    await api("POST","/auth/login",{email, password});
+    $("#login").style.display = "none";
+    setAuthMode("login");
+    refresh();
+  } catch(e){
+    $("#loginerr").textContent = authMode === "register"
+      ? ("Could not create account: " + (e.message === "auth" ? "try again" : (e.message||"try a different email")))
+      : "Sign-in failed - check credentials.";
+  }
   return false;
+}
+
+async function doLogout(){
+  try { await api("POST","/auth/logout"); } catch(e){ /* clear the UI regardless */ }
+  state.me = null; $("#whoami").textContent = ""; $("#logout").style.display = "none";
+  $("#email").value = ""; $("#password").value = ""; setAuthMode("login");
+  $("#login").style.display = "flex";
 }
 
 // Read a provenance-tagged canonical field's value / source by dotted path.
@@ -342,6 +380,7 @@ async function refresh(){
     state.machines=machines.items; state.audit=audit.logs||[]; state.catalogs=catalog.items;
     state.keys = Array.isArray(keys) ? keys : (keys.items||[]); state.me = me||null;
     $("#whoami").textContent = (me && me.email) ? me.email : "";
+    $("#logout").style.display = me ? "" : "none";
     state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
     state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
     state.proposalByEntry=Object.fromEntries(inbox.items.map(p=>[p.entry.id, p]));
