@@ -37,6 +37,7 @@ from smooth.api.tool_set_records import router as tool_set_records_router
 from smooth.api.machine_records import router as machine_records_router
 from smooth.api.instance_inbox import router as instance_inbox_router
 from smooth.api.account import router as account_router
+from smooth.api.admin import router as admin_router
 
 
 def create_app() -> FastAPI:
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(machine_records_router)
     app.include_router(instance_inbox_router)
     app.include_router(account_router)
+    app.include_router(admin_router)
     # Legacy deep-schema routers: retiring v1 substrate, kept reachable for the
     # v2 transition but unpublished (hidden from the OpenAPI contract). Slated
     # for removal — see REBOOT.md R6.

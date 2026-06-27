@@ -145,11 +145,17 @@ def get_session_user(session_id: Optional[str], db: Session) -> Optional[User]:
 
 def delete_session(session_id: str) -> None:
     """Delete a session.
-    
+
     Args:
         session_id: Session ID to delete
     """
     _sessions.pop(session_id, None)
+
+
+def clear_all_sessions() -> None:
+    """Drop every in-memory session. Used by the admin factory-reset wipe, so no
+    stale session can map to a now-deleted user."""
+    _sessions.clear()
 
 
 def require_auth(

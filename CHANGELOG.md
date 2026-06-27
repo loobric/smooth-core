@@ -3,6 +3,17 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.2] — 2026-06-27
+
+### Added
+- **`POST /api/v1/admin/wipe`** — admin factory reset. Deletes ALL data, ALL
+  accounts, and ALL API keys, **including the calling admin**. Admin-only and
+  guarded by an exact confirmation phrase (`"WIPE ALL DATA AND ACCOUNTS"`); 400
+  without it. Empties every ORM-mapped table in reverse-FK order and clears the
+  in-memory sessions; the schema and migration ledger survive. Afterwards the
+  database is empty and the next registration becomes the new admin. Distinct
+  from `/account/reset`, which wipes only the caller's tool data.
+
 ## [0.3.1] — 2026-06-27
 
 ### Fixed
