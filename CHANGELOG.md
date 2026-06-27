@@ -3,6 +3,15 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.3] — 2026-06-27
+
+### Added
+- **Web UI (`/ui`): an Account tab.** Create and revoke API keys (the new key's
+  plain value is shown once, for copying) and change your password — all over the
+  existing `/auth/keys` and `/auth/change-password` endpoints, authenticated by the
+  page's session. The signed-in email now also shows in the header. No new
+  endpoints; the page is still one dependency-free static file.
+
 ## [0.3.2] — 2026-06-27
 
 ### Added

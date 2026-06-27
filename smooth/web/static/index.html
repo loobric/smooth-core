@@ -160,6 +160,25 @@
                  border-radius:10px; background:var(--bg); overflow:hidden; position:relative; }
   #mediaviewer canvas { display:block; }
   .media-tabs { display:flex; gap:.4rem; }
+  /* Account tab: new-key and change-password overlays (separate, like #ccreate,
+     so the 15s auto-refresh can't wipe a half-typed key name or password). */
+  #keynew, #chpw { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+                   align-items:center; justify-content:center; z-index:11; padding:1rem; }
+  #keynew .sheet, #chpw .sheet { background:var(--card); border:1px solid var(--line);
+                   border-radius:14px; padding:1.1rem; width:min(96vw,520px);
+                   max-height:86vh; overflow:auto; }
+  #keynew .cclabel, #chpw .cclabel { display:block; color:var(--dim); font-size:.82rem;
+                   margin:.6rem 0 .25rem; }
+  #keynew .ccinput, #chpw .ccinput { width:100%; background:var(--bg);
+                   border:1px solid var(--line); color:var(--ink); border-radius:8px;
+                   padding:.6rem; font-size:1rem; }
+  #keynew .arow, #chpw .arow { display:flex; justify-content:flex-end; gap:.5rem; margin-top:1rem; }
+  .keycode { font-family:ui-monospace,monospace; font-size:.85rem; background:var(--bg);
+             border:1px solid var(--line); border-radius:8px; padding:.6rem;
+             word-break:break-all; margin:.5rem 0; }
+  .krow { display:flex; justify-content:space-between; gap:.6rem; align-items:center;
+          flex-wrap:wrap; padding:.55rem 0; border-top:1px solid var(--line); }
+  .krow:first-of-type { border-top:none; }
 </style>
 </head>
 <body>
@@ -226,13 +245,44 @@
   </div>
 </div>
 
+<!-- New API key: a form, then a one-time reveal of the plain key (copy now).
+     A separate overlay so the 15s refresh can't wipe a half-typed name or the
+     revealed key. -->
+<div id="keynew" onclick="if(event.target.id==='keynew')closeKeyNew()">
+  <div class="sheet">
+    <div class="row"><strong>New API key</strong>
+      <button class="mini reject" onclick="closeKeyNew()">Cancel</button></div>
+    <div id="keynewbody"></div>
+  </div>
+</div>
+
+<!-- Change password: separate overlay (same reasoning). -->
+<div id="chpw" onclick="if(event.target.id==='chpw')closeChpw()">
+  <div class="sheet">
+    <div class="row"><strong>Change password</strong>
+      <button class="mini reject" onclick="closeChpw()">Cancel</button></div>
+    <label class="cclabel" for="pw_cur">Current password</label>
+    <input id="pw_cur" class="ccinput" type="password" autocomplete="current-password">
+    <label class="cclabel" for="pw_new">New password</label>
+    <input id="pw_new" class="ccinput" type="password" autocomplete="new-password">
+    <label class="cclabel" for="pw_new2">Confirm new password</label>
+    <input id="pw_new2" class="ccinput" type="password" autocomplete="new-password"
+           onkeydown="if(event.key==='Enter')submitChangePw(); else if(event.key==='Escape')closeChpw();">
+    <div id="pwerr" style="color:var(--bad);font-size:.85rem;min-height:1em;margin-top:.4rem"></div>
+    <div class="arow">
+      <button class="mini reject" onclick="closeChpw()">Cancel</button>
+      <button class="mini confirm" onclick="submitChangePw()">Change password</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 // Machines is the ONE binding surface — proposals (the old Inbox) are folded in
 // as a "pending review" band/filter on the entries themselves.
-const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"]];
+const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"],["account","Account"]];
 let state = { tab:"machines", pendingOnly:false, catalogSel:null, setSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
-              machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{} };
+              machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{}, keys:[], me:null };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -283,12 +333,15 @@ function entryName(s){
 
 async function refresh(){
   try {
-    const [inbox, tools, sets, machines, audit, catalog] = await Promise.all([
+    const [inbox, tools, sets, machines, audit, catalog, keys, me] = await Promise.all([
       api("GET","/instance-inbox"), api("GET","/tool-instance-records"),
       api("GET","/tool-set-records"), api("GET","/machine-records"),
-      api("GET","/audit-logs?limit=50"), api("GET","/tool-catalog-records")]);
+      api("GET","/audit-logs?limit=50"), api("GET","/tool-catalog-records"),
+      api("GET","/auth/keys"), api("GET","/auth/me")]);
     state.inbox=inbox.items; state.tools=tools.items; state.toolsets=sets.items;
     state.machines=machines.items; state.audit=audit.logs||[]; state.catalogs=catalog.items;
+    state.keys = Array.isArray(keys) ? keys : (keys.items||[]); state.me = me||null;
+    $("#whoami").textContent = (me && me.email) ? me.email : "";
     state.machineNames=Object.fromEntries(machines.items.map(m=>[rid(m), cf(m,"name")||rid(m).slice(0,8)]));
     state.toolNames=Object.fromEntries(tools.items.map(t=>[rid(t), cf(t,"name")||rid(t).slice(0,8)]));
     state.proposalByEntry=Object.fromEntries(inbox.items.map(p=>[p.entry.id, p]));
@@ -320,7 +373,7 @@ function render(){
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
-  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit}[state.tab]();
+  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit,account:renderAccount}[state.tab]();
 }
 function setTab(t){ state.tab=t; state.catalogSel=null; state.setSel=null; render(); refresh(); }
 
@@ -815,6 +868,105 @@ async function submitCreateFromCatalog(){
     toast(`Created tool "${cf(inst,"name")||rid(inst).slice(0,8)}" — unbound, linked to this catalog record.`);
     refresh();   // re-pull instances so the new tool (and the count) reflect it
   }catch(e){ toast(e.message); }
+}
+
+// ---- Account: API keys + change password -----------------------------------
+// The browser session authenticates this page; API keys are for non-browser
+// clients (the smooth CLI, FreeCAD, LinuxCNC). A new key's plain value is shown
+// ONCE at creation (the server only stores its hash), so the create flow reveals
+// it for copying and never again.
+function renderAccount(){
+  const me = state.me || {};
+  const keys = state.keys || [];
+  const keyRows = keys.length ? keys.map(k=>{
+    const scopes=(k.scopes||[]).join(" ");
+    const active = k.is_active!==false;
+    return `<div class="krow">
+      <span class="tinfo">
+        <strong>${esc(k.name||"(unnamed)")}</strong>
+        <span class="id" title="${esc(k.id||"")}">${esc(String(k.id||"").slice(0,8))}</span>
+        ${scopes?`<span class="muted">${esc(scopes)}</span>`:""}
+        ${active?"":'<span class="pill bad">revoked</span>'}
+      </span>
+      ${active?`<button class="mini del" onclick="revokeKey('${esc(k.id)}','${esc(k.name||"")}')">Revoke</button>`:""}
+    </div>`;
+  }).join("") : `<div class="muted" style="padding:.45rem 0">No API keys yet.</div>`;
+  return `
+    <div class="card">
+      <div class="row"><strong>${esc(me.email||"Account")}</strong>
+        ${me.role?`<span class="pill info">${esc(me.role)}</span>`:""}</div>
+      <div class="row" style="margin-top:.7rem"><span class="muted">Password</span>
+        <button class="mini link" onclick="openChangePw()">Change password</button></div>
+    </div>
+    <div class="card">
+      <div class="row"><strong>API keys</strong>
+        <button class="mini create" onclick="openNewKey()">New key</button></div>
+      <div class="explain" style="margin-top:.6rem">API keys authenticate non-browser
+        clients (the <code>smooth</code> CLI, FreeCAD, LinuxCNC). A key is shown
+        <b>once</b> at creation &mdash; copy it then. Revoking takes effect immediately.</div>
+      ${keyRows}
+    </div>`;
+}
+
+function openNewKey(){
+  $("#keynewbody").innerHTML = `
+    <label class="cclabel" for="kn_name">Name</label>
+    <input id="kn_name" class="ccinput" placeholder="e.g. laptop CLI"
+           onkeydown="if(event.key==='Enter')submitNewKey(); else if(event.key==='Escape')closeKeyNew();">
+    <label class="cclabel" for="kn_scopes">Scopes</label>
+    <input id="kn_scopes" class="ccinput" value="read write" placeholder="space-separated, e.g. read write">
+    <div class="muted" style="font-size:.82rem;margin-top:.3rem">Common: <code>read write</code>
+      for a full client, or <code>read</code> for read-only.</div>
+    <div class="arow">
+      <button class="mini reject" onclick="closeKeyNew()">Cancel</button>
+      <button class="mini confirm" onclick="submitNewKey()">Create key</button>
+    </div>`;
+  $("#keynew").style.display="flex";
+  setTimeout(()=>{ const i=$("#kn_name"); if(i) i.focus(); },30);
+}
+function closeKeyNew(){ $("#keynew").style.display="none"; }
+async function submitNewKey(){
+  const name=(($("#kn_name")||{}).value||"").trim();
+  const scopes=(($("#kn_scopes")||{}).value||"").trim().split(/\s+/).filter(Boolean);
+  if(!name){ toast("A name is required."); return; }
+  try{
+    const k=await api("POST","/auth/keys",{name, scopes});
+    // Reveal the plain key ONCE — the server keeps only its hash.
+    $("#keynewbody").innerHTML = `
+      <div class="explain" style="margin-top:.6rem">Key <b>${esc(name)}</b> created.
+        Copy it now &mdash; it won't be shown again.</div>
+      <div class="keycode" id="kn_value">${esc(k.key)}</div>
+      <div class="arow">
+        <button class="mini link" onclick="copyKey()">Copy</button>
+        <button class="mini confirm" onclick="closeKeyNew(); refresh();">Done</button>
+      </div>`;
+  }catch(e){ toast(e.message); }
+}
+function copyKey(){ const el=$("#kn_value"); if(!el) return;
+  const t=el.textContent;
+  if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>toast("Copied."),()=>toast("Copy failed — select and copy manually."));
+  else toast("Copy not supported — select and copy manually.");
+}
+async function revokeKey(id, name){
+  if(!(await confirmDialog(`Revoke API key "${name||String(id).slice(0,8)}"? Any client using it stops working immediately.`))) return;
+  try{ await api("DELETE","/auth/keys/"+id); toast("Key revoked."); refresh(); }catch(e){ toast(e.message); }
+}
+
+function openChangePw(){
+  $("#pw_cur").value=""; $("#pw_new").value=""; $("#pw_new2").value=""; $("#pwerr").textContent="";
+  $("#chpw").style.display="flex";
+  setTimeout(()=>$("#pw_cur").focus(),30);
+}
+function closeChpw(){ $("#chpw").style.display="none"; }
+async function submitChangePw(){
+  const cur=($("#pw_cur")||{}).value||"", n1=($("#pw_new")||{}).value||"", n2=($("#pw_new2")||{}).value||"";
+  const err=$("#pwerr"); err.textContent="";
+  if(!cur||!n1){ err.textContent="All fields are required."; return; }
+  if(n1!==n2){ err.textContent="New passwords don't match."; return; }
+  try{
+    await api("POST","/auth/change-password",{current_password:cur, new_password:n1});
+    closeChpw(); toast("Password changed.");
+  }catch(e){ err.textContent=e.message||"Change failed."; }
 }
 
 // ---- Audit -----------------------------------------------------------------
