@@ -412,8 +412,10 @@ def test_reset_clears_tool_data(cli, capsys):
 
 
 @pytest.mark.integration
-def test_whoami_raises_in_solo(cli):
-    # /auth/me is session-based; solo mode has no session -> a clean SmoothClientError,
-    # not a crash. (Documented limitation.)
-    with pytest.raises(cli_main.SmoothClientError):
-        cli.whoami()
+def test_whoami_works_in_solo(cli):
+    # /auth/me now authenticates the same way as every other endpoint
+    # (session / API key / solo), so in solo mode it returns the built-in solo
+    # user instead of 401'ing. (It used to read only the session cookie, which
+    # also broke API-key clients — see test_auth.test_auth_me_accepts_api_key.)
+    me = cli.whoami()
+    assert me["email"] == "solo@localhost.smooth"

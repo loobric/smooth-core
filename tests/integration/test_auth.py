@@ -225,3 +225,34 @@ def test_machine_specific_key_access(client, disable_auth):
     # Access to mill-02 should fail with 403
     # Placeholder for now - will implement when presets API exists
     assert api_key is not None
+
+
+@pytest.mark.integration
+def test_auth_me_accepts_api_key(client):
+    """Regression: GET /auth/me must accept an API key (Bearer), not just a
+    session cookie.
+
+    It previously read only the session cookie, so an API-key client got 401
+    here even though every data endpoint accepted the same key — which broke
+    the API-key-first onboarding flow (e.g. `smooth whoami`). This test runs
+    with auth ENABLED (no disable_auth fixture).
+    """
+    client.post("/api/v1/auth/register",
+                json={"email": "me@example.com", "password": "password123"})
+    login = client.post("/api/v1/auth/login",
+                        json={"email": "me@example.com", "password": "password123"})
+    assert login.status_code == 200
+
+    # Mint a key (authenticated by the login session cookie).
+    key = client.post("/api/v1/auth/keys",
+                      json={"name": "k", "scopes": ["read"]}).json()["key"]
+
+    # Drop the session cookie so ONLY the Bearer key can authenticate.
+    client.cookies.clear()
+    resp = client.get("/api/v1/auth/me",
+                      headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200
+    assert resp.json()["email"] == "me@example.com"
+
+    # With neither cookie nor key, it is still 401.
+    assert client.get("/api/v1/auth/me").status_code == 401

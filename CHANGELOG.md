@@ -3,6 +3,21 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.1] — 2026-06-27
+
+### Fixed
+- **`GET /api/v1/auth/me` now accepts API-key (Bearer) auth**, not just a session
+  cookie. It previously read only the cookie, so an API-key client got a 401 here
+  even though every data endpoint accepted the same key — which broke the
+  API-key-first flow (`smooth whoami`) and, in solo mode, made `/auth/me` the one
+  endpoint that 401'd. It now uses the same `get_authenticated_user` dependency as
+  the rest of the API (session / Bearer / solo).
+
+### Changed
+- Bumped `smooth.version.__version__` to match `pyproject` (it had been pinned at
+  `0.2.0`), so the `/version` endpoint again reports the running build and a
+  redeploy is verifiable.
+
 ## [0.3.0] — 2026-06-23
 
 The **request-to-load** release: the cross-client sync loop now closes end to

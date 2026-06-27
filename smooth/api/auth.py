@@ -420,29 +420,25 @@ def logout(
 
 @router.get("/me", response_model=UserResponse)
 def get_current_user(
-    session: Annotated[str | None, Cookie()] = None,
-    db: Session = Depends(get_db)
+    user: User = Depends(get_authenticated_user)
 ):
     """Get current authenticated user.
-    
+
+    Accepts either auth mechanism — a session cookie or an `Authorization:
+    Bearer <api-key>` header (and solo mode) — by depending on
+    get_authenticated_user, the same dependency the rest of the API uses. (It
+    previously read only the session cookie, so API-key clients got a 401 here
+    even though every data endpoint accepted their key.)
+
     Args:
-        session: Session ID from cookie
-        db: Database session
-        
+        user: Authenticated user (from session, API key, or solo mode)
+
     Returns:
         UserResponse: Current user object
-        
+
     Raises:
         HTTPException: 401 if not authenticated
     """
-    user = get_session_user(session, db)
-    
-    if user is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Not authenticated"
-        )
-    
     return UserResponse(
         id=user.id,
         email=user.email,
