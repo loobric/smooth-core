@@ -412,9 +412,43 @@ function render(){
   $("#tabs").innerHTML = TABS.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
-  $("#view").innerHTML = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit,account:renderAccount}[state.tab]();
+  const body = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit,account:renderAccount}[state.tab]();
+  // A fresh account is empty, which makes Smooth hard to "see". Offer the demo
+  // right where a first-timer lands — but not on the Account tab, which already
+  // carries the demo/reset controls.
+  const banner = (accountIsEmpty() && state.tab!=="account") ? `
+    <div class="card" style="border-left:3px solid var(--ok)">
+      <div class="row"><strong>Your account is empty</strong></div>
+      <div class="explain" style="margin-top:.4rem">New here? Load a small sample
+        &mdash; a machine, a two-maker catalog, a tool set, and a tool table &mdash;
+        to see how the pieces fit. Clear it any time from the Account tab.</div>
+      <div class="arow" style="margin-top:.6rem"><button class="mini create" onclick="addDemoData()">Add demo data</button></div>
+    </div>` : "";
+  $("#view").innerHTML = banner + body;
 }
 function setTab(t){ state.tab=t; state.catalogSel=null; state.setSel=null; render(); refresh(); }
+
+// ---- account data: demo seed + reset (the caller's own data only) -----------
+function accountIsEmpty(){
+  return !((state.tools||[]).length || (state.toolsets||[]).length ||
+           (state.machines||[]).length || (state.catalogs||[]).length);
+}
+async function addDemoData(){
+  try{
+    await api("POST","/account/seed-demo",{});
+    toast("Demo data added — explore the tabs.");
+    refresh();
+  }catch(e){ toast(e.message); }
+}
+async function resetAccount(){
+  if(!(await confirmDialog("Delete ALL tool data in this account? Your login and "+
+       "API keys are kept."))) return;
+  try{
+    await api("POST","/account/reset",{});
+    toast("Account cleared.");
+    refresh();
+  }catch(e){ toast(e.message); }
+}
 
 function showSchema(title,obj){ $("#detailtitle").textContent=title; $("#detailbody").textContent=JSON.stringify(obj,null,2); $("#detail").style.display="flex"; }
 function closeDetail(){ $("#detail").style.display="none"; }
@@ -944,6 +978,20 @@ function renderAccount(){
         clients (the <code>smooth</code> CLI, FreeCAD, LinuxCNC). A key is shown
         <b>once</b> at creation &mdash; copy it then. Revoking takes effect immediately.</div>
       ${keyRows}
+    </div>
+    <div class="card">
+      <div class="row"><strong>Demo data</strong></div>
+      <div class="explain" style="margin-top:.6rem">Load a small sample &mdash; a
+        machine, a two-maker catalog, a couple of tools, a tool set, and a tool
+        table &mdash; to explore Smooth. Or reset to clear all tool data and start
+        fresh with your own. Both affect only this account; your login and API keys
+        are kept.</div>
+      <div class="arow" style="margin-top:.6rem">
+        ${accountIsEmpty()
+          ? `<button class="mini create" onclick="addDemoData()">Add demo data</button>`
+          : `<button class="mini" disabled title="Reset first to reload the demo">Add demo data</button>`}
+        <button class="mini del" onclick="resetAccount()">Reset tool data</button>
+      </div>
     </div>`;
 }
 
