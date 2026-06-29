@@ -256,3 +256,22 @@ def test_auth_me_accepts_api_key(client):
 
     # With neither cookie nor key, it is still 401.
     assert client.get("/api/v1/auth/me").status_code == 401
+
+
+@pytest.mark.integration
+def test_auth_me_exposes_is_admin(client):
+    """Regression: GET /auth/me must return is_admin, so clients (the Web UI's
+    admin Users tab, `smooth whoami`) can tell an admin from a regular user.
+
+    The first registrant becomes the admin, so /auth/me should report
+    is_admin=True and role="admin" for them. This previously omitted is_admin
+    entirely, which left the Web UI unable to show the admin-only tab. Runs with
+    auth ENABLED (no disable_auth fixture)."""
+    client.post("/api/v1/auth/register",
+                json={"email": "boss@example.com", "password": "password123"})
+    client.post("/api/v1/auth/login",
+                json={"email": "boss@example.com", "password": "password123"})
+
+    me = client.get("/api/v1/auth/me").json()
+    assert me["is_admin"] is True
+    assert me["role"] == "admin"

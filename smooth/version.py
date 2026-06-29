@@ -15,7 +15,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 
 def build_info() -> dict:

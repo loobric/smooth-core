@@ -70,6 +70,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     is_active: bool
+    is_admin: bool
     role: str
     created_at: datetime
 
@@ -337,6 +338,7 @@ def register(
             id=user.id,
             email=user.email,
             is_active=user.is_active,
+            is_admin=user.is_admin,
             role=user.role,
             created_at=user.created_at
         )
@@ -396,6 +398,7 @@ def login(
         id=user.id,
         email=user.email,
         is_active=user.is_active,
+        is_admin=user.is_admin,
         role=user.role,
         created_at=user.created_at
     )
@@ -449,6 +452,7 @@ def get_current_user(
         id=user.id,
         email=user.email,
         is_active=user.is_active,
+        is_admin=user.is_admin,
         role=user.role,
         created_at=user.created_at
     )

@@ -3,6 +3,15 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.6] — 2026-06-29
+
+### Fixed
+- **`GET /api/v1/auth/me` now returns `is_admin`.** The response omitted it, so a
+  client could not tell an admin from a regular user — which left the Web UI's
+  admin-only Users tab (0.3.5) hidden even for admins, and made `smooth whoami`
+  print `Admin: None`. The Web UI now also falls back to `role === "admin"` when
+  reading the admin signal, so it lights up correctly against any 0.3.5+ server.
+
 ## [0.3.5] — 2026-06-29
 
 ### Added

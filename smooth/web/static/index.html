@@ -390,7 +390,7 @@ async function refresh(){
     state.entriesById={}; for(const entries of Object.values(state.entriesByMachine)) for(const s of entries) state.entriesById[rid(s)]=s;
     // Admin-only: the account roster (how many accounts exist, and who they are).
     // Non-admins get a 403 here, so only fetch it for admins and tolerate failure.
-    state.users = (me && me.is_admin)
+    state.users = isAdmin(me)
       ? await api("GET","/admin/users").then(u=>u.users||[]).catch(()=>[]) : [];
     render();
   } catch(e){ if(e.message!=="auth") toast("Load failed: "+e.message); }
@@ -411,12 +411,16 @@ function hasProposal(entry){
 function pendingEntries(){ return unboundEntries().filter(({entry})=>hasProposal(entry)); }
 function togglePending(){ state.pendingOnly=!state.pendingOnly; render(); }
 
+// Admin check tolerant of either signal: is_admin (the bool) or role==="admin".
+// Older servers omitted is_admin from /auth/me, so role is the reliable fallback.
+function isAdmin(me){ return !!me && (me.is_admin === true || me.role === "admin"); }
+
 function render(){
   const pending = pendingEntries().length;
   // The Users tab is admin-only — append it just for admins (the server gates the
   // data too, so this is convenience, not the security boundary).
-  const tabs = (state.me && state.me.is_admin) ? TABS.concat([["users","Users"]]) : TABS;
-  if(state.tab==="users" && !(state.me && state.me.is_admin)) state.tab="machines";
+  const tabs = isAdmin(state.me) ? TABS.concat([["users","Users"]]) : TABS;
+  if(state.tab==="users" && !isAdmin(state.me)) state.tab="machines";
   $("#tabs").innerHTML = tabs.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
