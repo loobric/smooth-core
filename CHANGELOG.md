@@ -3,6 +3,20 @@
 All notable changes to **smooth-core** are recorded here. This project adheres to
 [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.3.5] — 2026-06-29
+
+### Added
+- **Admin account roster: `GET /api/v1/admin/users`.** A read-only, admin-only
+  listing for operating a shared/sandbox deployment — answers "how many accounts
+  exist, and who are they?" Returns `total` plus a per-account summary (email,
+  role, admin/active/verified flags, API-key count, created-at), newest first. No
+  secrets are exposed: never a password hash or any key material. Pairs with the
+  existing `POST /api/v1/admin/wipe` factory reset.
+- **Web UI (`/ui`): an admin-only Users tab.** For admins, a new tab shows the
+  account count and roster (email, role, flags, key count, created), backed by
+  `GET /api/v1/admin/users`. Hidden for non-admins (and the server gates the data
+  regardless).
+
 ## [0.3.4] — 2026-06-27
 
 ### Added

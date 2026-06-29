@@ -16,13 +16,16 @@ confirmation phrase in the body. There is no undo.
 Distinct from `POST /api/v1/account/reset`, which wipes only the caller's *tool
 data* and keeps every account and key.
 """
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from smooth.api.auth import get_db, clear_all_sessions
+from smooth.api.auth import clear_all_sessions, get_db
 from smooth.api.backup_api import require_admin
-from smooth.database.schema import Base, User
+from smooth.database.schema import ApiKey, Base, User
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -33,6 +36,59 @@ WIPE_CONFIRMATION = "WIPE ALL DATA AND ACCOUNTS"
 
 class WipeRequest(BaseModel):
     confirm: str = ""
+
+
+class UserSummary(BaseModel):
+    """One account, as seen by an administrator. No secrets — never the password
+    hash or any key material, only the count of keys the account holds."""
+    id: str
+    email: str
+    role: str
+    is_admin: bool
+    is_active: bool
+    is_verified: bool
+    api_key_count: int
+    created_at: datetime
+
+
+class UserListResponse(BaseModel):
+    total: int
+    users: list[UserSummary]
+
+
+@router.get("/users", response_model=UserListResponse)
+def list_users(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """List every account (admin-only). Read-only roster for operating a shared
+    or sandbox deployment — answers "how many accounts exist, and who are they?"
+    without exposing any password hashes or API keys.
+
+    `total` is the account count; `users` is the per-account detail, newest first.
+    """
+    # One grouped query for key counts, so we don't fan out a query per user.
+    key_counts = dict(
+        db.query(ApiKey.user_id, func.count(ApiKey.id))
+        .group_by(ApiKey.user_id)
+        .all()
+    )
+
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    summaries = [
+        UserSummary(
+            id=u.id,
+            email=u.email,
+            role=u.role,
+            is_admin=u.is_admin,
+            is_active=u.is_active,
+            is_verified=u.is_verified,
+            api_key_count=key_counts.get(u.id, 0),
+            created_at=u.created_at,
+        )
+        for u in users
+    ]
+    return UserListResponse(total=len(summaries), users=summaries)
 
 
 @router.post("/wipe")

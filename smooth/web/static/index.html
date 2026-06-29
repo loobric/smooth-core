@@ -286,7 +286,7 @@
 // as a "pending review" band/filter on the entries themselves.
 const TABS = [["machines","Machines"],["tools","Tools"],["toolsets","Tool Sets"],["catalog","Catalog"],["audit","Audit"],["account","Account"]];
 let state = { tab:"machines", pendingOnly:false, catalogSel:null, setSel:null, inbox:[], tools:[], toolsets:[], machines:[], audit:[], catalogs:[],
-              machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{}, keys:[], me:null };
+              machineNames:{}, toolNames:{}, entriesByMachine:{}, entriesById:{}, proposalByEntry:{}, keys:[], me:null, users:[] };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -388,6 +388,10 @@ async function refresh(){
       api("GET", "/tool-table-entry-records?machine_id="+rid(m)).then(t=>[rid(m),t.items]).catch(()=>[rid(m),[]])));
     state.entriesByMachine=Object.fromEntries(tables);
     state.entriesById={}; for(const entries of Object.values(state.entriesByMachine)) for(const s of entries) state.entriesById[rid(s)]=s;
+    // Admin-only: the account roster (how many accounts exist, and who they are).
+    // Non-admins get a 403 here, so only fetch it for admins and tolerate failure.
+    state.users = (me && me.is_admin)
+      ? await api("GET","/admin/users").then(u=>u.users||[]).catch(()=>[]) : [];
     render();
   } catch(e){ if(e.message!=="auth") toast("Load failed: "+e.message); }
 }
@@ -409,10 +413,14 @@ function togglePending(){ state.pendingOnly=!state.pendingOnly; render(); }
 
 function render(){
   const pending = pendingEntries().length;
-  $("#tabs").innerHTML = TABS.map(([id,label])=>
+  // The Users tab is admin-only — append it just for admins (the server gates the
+  // data too, so this is convenience, not the security boundary).
+  const tabs = (state.me && state.me.is_admin) ? TABS.concat([["users","Users"]]) : TABS;
+  if(state.tab==="users" && !(state.me && state.me.is_admin)) state.tab="machines";
+  $("#tabs").innerHTML = tabs.map(([id,label])=>
     `<button class="${state.tab===id?"active":""}" onclick="setTab('${id}')">${label}`+
     (id==="machines"&&pending?`<span class="n">${pending}</span>`:"")+`</button>`).join("");
-  const body = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit,account:renderAccount}[state.tab]();
+  const body = {tools:renderTools,toolsets:renderToolSets,machines:renderMachines,catalog:renderCatalog,audit:renderAudit,account:renderAccount,users:renderUsers}[state.tab]();
   // A fresh account is empty, which makes Smooth hard to "see". Offer the demo
   // right where a first-timer lands — but not on the Account tab, which already
   // carries the demo/reset controls.
@@ -1057,6 +1065,23 @@ async function submitChangePw(){
 }
 
 // ---- Audit -----------------------------------------------------------------
+function renderUsers(){
+  // Admin-only roster. The server never sends password hashes or key material —
+  // only the per-account summary, so there is nothing secret to leak here.
+  const us = state.users || [];
+  const count = `<div class="row" style="margin-bottom:.5rem"><strong>${us.length}</strong>&nbsp;account(s)</div>`;
+  if(!us.length) return count + `<div class="empty">No accounts.</div>`;
+  const flags = u => [u.is_admin?"admin":null, u.is_active===false?"inactive":null,
+                      u.is_verified?"verified":null].filter(Boolean).join(", ");
+  return count + `<div class="card"><table>`+
+    `<tr><th>email</th><th>role</th><th>keys</th><th>created</th><th></th></tr>`+
+    us.map(u=>`<tr><td>${esc(u.email||"")}</td><td>${esc(u.role||"")}</td>`+
+      `<td>${u.api_key_count||0}</td>`+
+      `<td class="muted">${esc((u.created_at||"").replace("T"," ").slice(0,16))}</td>`+
+      `<td class="muted">${esc(flags(u))}</td></tr>`).join("")+
+    `</table></div>`;
+}
+
 function renderAudit(){
   if(!state.audit.length) return `<div class="empty">No audit entries.</div>`;
   return `<div class="card"><table><tr><th>when</th><th>op</th><th>what</th></tr>`+
