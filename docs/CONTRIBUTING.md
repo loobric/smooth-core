@@ -16,7 +16,7 @@ Before contributing, please review these key documents:
 ## Licensing & the CLA
 
 Smooth Core is licensed **AGPL-3.0**. Contributing to **smooth-core** requires signing the
-project **CLA** (see [CLA.md](../CLA.md)) on your first pull request — it grants the maintainer
+project **CLA** (see [CLA.md](CLA.md)) on your first pull request — it grants the maintainer
 the rights needed to offer the commercial/hosted edition alongside the open core. The reference
 **clients** (`smooth-freecad`, `smooth-linuxcnc`) are MIT and use **DCO sign-off** (`git commit
 -s`) instead of a CLA.
